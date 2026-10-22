@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
 from opticfilm_linux.app.state import (
     EMPTY_STATE,
     AppState,
@@ -28,6 +29,7 @@ from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatus, TrayStage
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
+from opticfilm_linux.output import Format
 from opticfilm_linux.scanner.base import Scanner, ScannerStatus
 
 SLIDES_PER_TRAY = 4
@@ -68,6 +70,8 @@ class Controller:
         self._export: ExportView | None = None
         self._free_space: FreeSpaceView | None = None
         self._cancel_export = threading.Event()
+        self._cancel_free = threading.Event()
+        self._jobs = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-jobs")
         self._state = EMPTY_STATE
         self._reported = EMPTY_STATE
 
@@ -186,6 +190,59 @@ class Controller:
                     return slide.settings
         raise BatchError(f"no slide {position} in tray {number}")
 
+    # -- export and free disk space ------------------------------------------------------
+
+    def export(self, directory: Path, fmt: Format) -> None:
+        def job(_runner: BatchRunner) -> None:
+            if self._export is not None and self._export.running:
+                raise BatchError("an export is already running")
+            self._cancel_export.clear()
+            run_export(
+                self._open_store(),
+                directory,
+                fmt,
+                self._cancel_export,
+                lambda view: self._set(_export=view),
+            )
+
+        self._run_writer(job, "Could not export", pool=self._jobs)
+
+    def cancel_export(self) -> None:
+        self._cancel_export.set()
+
+    def dismiss_export(self) -> None:
+        self._set(_export=None)
+
+    def request_free_space(self) -> None:
+        self._run_writer(
+            lambda _runner: self._set(_free_space=free_space_candidates(self._open_store())),
+            "Could not check disk space",
+            pool=self._jobs,
+        )
+
+    def confirm_free_space(self) -> None:
+        def job(_runner: BatchRunner) -> None:
+            self._cancel_free.clear()
+            run_free_space(
+                self._open_store(),
+                self._cancel_free,
+                lambda view: self._set(_free_space=view),
+            )
+
+        self._run_writer(job, "Could not free disk space", pool=self._jobs)
+
+    def cancel_free_space(self) -> None:
+        self._cancel_free.set()
+
+    def dismiss_free_space(self) -> None:
+        self._set(_free_space=None)
+
+    def _open_store(self) -> BatchStore:
+        session = self._session
+        if session is None:
+            raise BatchError("no batch is open")
+        return session.store
+
     # -- closing the window --------------------------------------------------------------
 
     def shutdown_decision(self) -> Literal["ok", "scan_running"]:
@@ -197,13 +254,17 @@ class Controller:
     def shutdown(self) -> None:
         """Cancel an export, finish the job running now, drop queued work, release the batch."""
         self._cancel_export.set()
+        self._cancel_free.set()
+        self._jobs.shutdown(wait=True)
         self._command.shutdown(wait=True)
         self._detach()
         self._refresher.shutdown(wait=True)
 
     # -- internals shared with the other controller modules ------------------------------
 
-    def _run(self, job: Callable[[], None], message: str) -> None:
+    def _run(
+        self, job: Callable[[], None], message: str, pool: ThreadPoolExecutor | None = None
+    ) -> None:
         """Run ``job`` on the command worker; any failure becomes a banner, never an exception."""
 
         def guarded() -> None:
@@ -218,11 +279,16 @@ class Controller:
                 self._set(_banner=Banner(message, f"{type(exc).__name__}: {exc}"))
 
         try:
-            self._command.submit(guarded)
+            (pool or self._command).submit(guarded)
         except RuntimeError:  # shut down already
             log.debug("command ignored after shutdown")
 
-    def _run_writer(self, job: Callable[[BatchRunner], None], message: str) -> None:
+    def _run_writer(
+        self,
+        job: Callable[[BatchRunner], None],
+        message: str,
+        pool: ThreadPoolExecutor | None = None,
+    ) -> None:
         def guarded() -> None:
             session = self._session
             if session is None:
@@ -231,7 +297,7 @@ class Controller:
                 raise BatchError("this batch is open read-only")
             job(session.runner)
 
-        self._run(guarded, message)
+        self._run(guarded, message, pool)
 
     def _set(self, **changes) -> None:
         """Replace controller fields (names start with ``_``) under the lock."""
