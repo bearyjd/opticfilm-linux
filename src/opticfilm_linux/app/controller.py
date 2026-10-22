@@ -25,7 +25,7 @@ from opticfilm_linux.app.state import (
 )
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.manifest import ManifestFormatError
-from opticfilm_linux.batch.model import BatchDefaults, TrayStage
+from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatus, TrayStage
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.scanner.base import Scanner, ScannerStatus
@@ -134,6 +134,57 @@ class Controller:
 
     def select_tray(self, number: int) -> None:
         self._set(_selected=number)
+
+    # -- review --------------------------------------------------------------------------
+
+    def set_status(self, number: int, position: int, status: SlideStatus) -> None:
+        self._run_writer(
+            lambda runner: runner.set_slide_status(number, position, status),
+            f"Could not change slide {position} of tray {number}",
+        )
+
+    def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
+        self._run_writer(
+            lambda runner: self._edit(runner, number, position, settings),
+            f"Could not adjust slide {position} of tray {number}",
+        )
+
+    def rotate(self, number: int, position: int, quarter_turns: int) -> None:
+        def job(runner: BatchRunner) -> None:
+            current = self._slide_settings(number, position)
+            turned = (current.rotation + 90 * quarter_turns) % 360
+            self._edit(runner, number, position, dataclasses.replace(current, rotation=turned))
+
+        self._run_writer(job, f"Could not rotate slide {position} of tray {number}")
+
+    def reset_slide(self, number: int, position: int) -> None:
+        self.edit_slide(number, position, SlideSettings())
+
+    def accept_all(self) -> None:
+        self._run_writer(lambda runner: runner.accept_all(), "Could not accept all slides")
+
+    def _edit(
+        self, runner: BatchRunner, number: int, position: int, settings: SlideSettings
+    ) -> None:
+        key = (number, position)
+        with self._lock:
+            self._updating = self._updating | {key}
+        try:
+            runner.edit_slide(number, position, settings)
+        except Exception:
+            with self._lock:
+                self._updating = self._updating - {key}
+            raise
+
+    def _slide_settings(self, number: int, position: int) -> SlideSettings:
+        session = self._session
+        if session is None:
+            raise BatchError("no batch is open")
+        for tray in session.store.snapshot().trays:
+            for slide in tray.slides:
+                if (tray.number, slide.position) == (number, position):
+                    return slide.settings
+        raise BatchError(f"no slide {position} in tray {number}")
 
     # -- closing the window --------------------------------------------------------------
 
