@@ -45,9 +45,6 @@ markers = [
 # The Qt layer needs PySide6 and Kirigami; the optional Fedora CI job exercises it.
 omit = ["*/opticfilm_linux/app/qt/*"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/opticfilm_linux/app/qml" = "opticfilm_linux/app/qml"
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"
