@@ -44,6 +44,28 @@ Commands: `ofscan devices`, `ofscan scan --fake SWEEP_DIR --dpi 600 --out DIR`,
 `ofscan process SWEEP_DIR --out DIR` (options: `--album`, `--date`, `--format`, `--mode`, `--no-infrared`).
 Exit code 2 and an `error:` line on bad input.
 
+## Batch scanning
+
+`ofscan batch` keeps a whole session in one folder, so a crash or a closed terminal loses at most
+the tray being scanned:
+
+```sh
+ofscan batch new ~/slides/trips --name "Trips" --album "Family Trips" --dpi 600
+ofscan batch scan ~/slides/trips --fake demo-sweep --count 3   # real scanning: not yet
+ofscan batch status ~/slides/trips
+ofscan batch accept-all ~/slides/trips
+ofscan batch export ~/slides/trips --out ~/Pictures/scans
+```
+
+- **Enhancement runs in the background** while the next tray scans. Slides with no review flag are
+  accepted automatically; flagged ones (very dark, very bright, clipped, dusty) wait for you.
+  A choice you make on a slide is never overwritten later.
+- **Raw scans are kept** in the batch folder (about 1.3 GB per tray at 3600 dpi), so settings can
+  change without re-scanning. They are removed only by the explicit raw cleanup of an exported
+  tray, never automatically. Export always recomputes slides from the raw scans.
+- Scanning the real device still waits on the driver; the batch engine is tested against the
+  fake scanner. A window is the next project.
+
 ## Development
 
 ```sh

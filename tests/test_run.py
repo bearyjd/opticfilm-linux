@@ -45,3 +45,35 @@ def test_blank_positions_are_reported_one_based(tmp_path):
     sweep = make_sweep(dpi=600, filled=(True, False, True, False))
     result = process_sweep(sweep, ProcessOptions(), OutputSpec(directory=tmp_path))
     assert result.blank_positions == (2, 4)
+
+
+def _first_slide():
+    from opticfilm_linux.pipeline.split import split_slides
+
+    return split_slides(make_sweep(dpi=600))[0]
+
+
+def test_rotation_90_swaps_output_shape(tmp_path):
+    result = process_sweep(
+        make_sweep(dpi=600), ProcessOptions(rotation=90), OutputSpec(directory=tmp_path)
+    )
+    image = tifffile.imread(result.written[0])
+    assert image.shape[0] > image.shape[1]  # a landscape slide turned into portrait
+
+
+def test_color_strength_zero_skips_restoration():
+    from opticfilm_linux.pipeline.run import enhance_slide
+
+    slide = _first_slide()
+    default = enhance_slide(slide, ProcessOptions(), 600)
+    plain = enhance_slide(slide, ProcessOptions(color_strength=0.0), 600)
+    assert not (default == plain).all()
+
+
+def test_brightness_option_brightens():
+    from opticfilm_linux.pipeline.run import enhance_slide
+
+    slide = _first_slide()
+    base = enhance_slide(slide, ProcessOptions(), 600)
+    bright = enhance_slide(slide, ProcessOptions(brightness_ev=1.0), 600)
+    assert bright.mean() > base.mean()

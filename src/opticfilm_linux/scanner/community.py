@@ -6,7 +6,7 @@ says why real scanning is unavailable.
 """
 
 from opticfilm_linux.model import RawSweep, ScanSettings
-from opticfilm_linux.scanner.base import DeviceInfo, NotSupportedYet
+from opticfilm_linux.scanner.base import DeviceInfo, NotSupportedYet, ScannerStatus
 
 REASON = (
     "scanning a four-slide holder is not supported yet: it depends on slide-holder support in "
@@ -20,6 +20,9 @@ class CommunityDriverScanner:
 
     def scan_holder(self, settings: ScanSettings) -> RawSweep:
         raise NotSupportedYet(REASON)
+
+    def status(self) -> ScannerStatus:
+        return ScannerStatus.UNKNOWN
 
     def eject(self) -> None:
         raise NotSupportedYet(REASON)

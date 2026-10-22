@@ -94,3 +94,11 @@ def test_input_is_not_modified():
     rgb_before, ir_before = rgb.copy(), ir.copy()
     remove_dust(rgb, ir, dpi=DPI)
     assert np.array_equal(rgb, rgb_before) and np.array_equal(ir, ir_before)
+
+
+def test_defect_mask_for_scales_with_dpi_like_remove_dust():
+    from opticfilm_linux.pipeline.dust import defect_mask_for
+
+    ir = _apertures(DUST)[0][1]
+    assert np.array_equal(defect_mask_for(ir, 600), defect_mask(ir, dilate_px=2, median_px=21))
+    assert defect_mask_for(ir, 1200).sum() >= defect_mask_for(ir, 600).sum()

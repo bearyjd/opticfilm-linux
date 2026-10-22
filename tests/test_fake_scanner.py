@@ -2,7 +2,13 @@ import numpy as np
 import pytest
 
 from opticfilm_linux.model import HolderKind, ScanSettings
-from opticfilm_linux.scanner.base import NotSupportedYet, ScanError, Scanner
+from opticfilm_linux.scanner.base import (
+    NotSupportedYet,
+    ScanError,
+    Scanner,
+    ScannerNotReady,
+    ScannerStatus,
+)
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.sweepstore import save_sweep
 from synthetic import dust_centers, make_sweep, truth_boxes
@@ -77,3 +83,32 @@ def test_fake_scanner_drops_the_ir_plane_when_infrared_is_off(tmp_path):
     with_ir = FakeScanner(tmp_path).scan_holder(ScanSettings(dpi=600, infrared=True))
     without_ir = FakeScanner(tmp_path).scan_holder(ScanSettings(dpi=600, infrared=False))
     assert with_ir.ir is not None and without_ir.ir is None
+
+
+def test_default_fake_status_is_ready(tmp_path):
+    save_sweep(make_sweep(dpi=600), tmp_path)
+    assert FakeScanner(tmp_path).status() is ScannerStatus.READY
+
+
+def test_scripted_statuses_play_in_order_then_repeat_the_last(tmp_path):
+    save_sweep(make_sweep(dpi=600), tmp_path)
+    scanner = FakeScanner(tmp_path, statuses=(ScannerStatus.NOT_READY, ScannerStatus.READY))
+    seen = [scanner.status() for _ in range(4)]
+    assert seen == [ScannerStatus.NOT_READY] + [ScannerStatus.READY] * 3
+
+
+def test_before_scan_runs_once_per_scan(tmp_path):
+    save_sweep(make_sweep(dpi=600), tmp_path)
+    calls = []
+    scanner = FakeScanner(tmp_path, before_scan=lambda: calls.append(1))
+    scanner.scan_holder(ScanSettings(dpi=600))
+    scanner.scan_holder(ScanSettings(dpi=600))
+    assert len(calls) == 2
+
+
+def test_scanner_not_ready_is_a_scan_error():
+    assert issubclass(ScannerNotReady, ScanError)
+
+
+def test_status_values_are_stable_strings():
+    assert ScannerStatus.READY == "ready" and ScannerStatus.NOT_CONNECTED == "not_connected"
