@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from opticfilm_linux.model import HolderKind, RawSweep
-from opticfilm_linux.sweepstore import SweepFormatError, load_sweep, save_sweep
+from opticfilm_linux.sweepstore import SweepFormatError, load_sweep, save_sweep, sweep_dpi
 
 
 def _sweep(with_ir: bool = True) -> RawSweep:
@@ -52,3 +52,10 @@ def test_missing_meta_raises_sweepformaterror(tmp_path):
 def test_missing_directory_raises_sweepformaterror(tmp_path):
     with pytest.raises(SweepFormatError):
         load_sweep(tmp_path / "does-not-exist")
+
+
+def test_sweep_dpi_reads_meta_without_loading_arrays(tmp_path):
+    save_sweep(_sweep(), tmp_path)
+    assert sweep_dpi(tmp_path) == 600
+    with pytest.raises(SweepFormatError):
+        sweep_dpi(tmp_path / "missing")
