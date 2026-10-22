@@ -1,4 +1,5 @@
 import threading
+import time
 
 import pytest
 
@@ -11,7 +12,7 @@ from controller_helpers import (
 )
 from opticfilm_linux.batch import export as export_module
 from opticfilm_linux.batch.model import SlideStatus, TrayStage
-from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.batch.store import BatchLocked, BatchStore
 
 GATE_TIMEOUT = 30
 
@@ -187,3 +188,54 @@ def test_shutdown_cancels_running_export(two_trays, tmp_path, monkeypatch):
     assert not closer.is_alive()
     with BatchStore.open(store_dir, readonly=True) as store:
         assert sum(s.exported for t in store.snapshot().trays for s in t.slides) == 1
+
+
+def test_confirm_free_space_without_a_listed_request_is_refused(two_trays, tmp_path):
+    _export_all(two_trays, tmp_path / "out")
+    two_trays.confirm_free_space()
+    wait_until(two_trays, lambda: two_trays.state().banner is not None)
+    assert [t.raw_removed for t in two_trays._session.store.snapshot().trays] == [False, False]
+
+
+def test_free_space_only_removes_the_trays_that_were_listed(two_trays, tmp_path):
+    two_trays.set_status(2, 1, SlideStatus.NEEDS_LOOK)
+    wait_until(two_trays, lambda: _slide_status(two_trays, 2, 1) is SlideStatus.NEEDS_LOOK)
+    _export_all(two_trays, tmp_path / "out")
+    two_trays.request_free_space()
+    wait_until(two_trays, lambda: two_trays.state().free_space is not None)
+    assert [n for n, _ in two_trays.state().free_space.trays] == [1]
+    two_trays.set_status(2, 1, SlideStatus.ACCEPTED)  # tray 2 becomes exportable after the list
+    wait_until(two_trays, lambda: _slide_status(two_trays, 2, 1) is SlideStatus.ACCEPTED)
+    _export_all(two_trays, tmp_path / "out")
+    two_trays.confirm_free_space()
+    wait_until(two_trays, lambda: two_trays.state().free_space.freed is not None)
+    assert [t.raw_removed for t in two_trays._session.store.snapshot().trays] == [True, False]
+
+
+def test_second_confirm_does_not_overwrite_the_result(two_trays, tmp_path):
+    _export_all(two_trays, tmp_path / "out")
+    two_trays.request_free_space()
+    wait_until(two_trays, lambda: two_trays.state().free_space is not None)
+    two_trays.confirm_free_space()
+    two_trays.confirm_free_space()
+    wait_until(two_trays, lambda: two_trays.state().free_space.freed is not None)
+    time.sleep(0.3)
+    two_trays.tick()
+    assert two_trays.state().free_space.freed > 0
+
+
+def test_close_batch_waits_for_a_running_export_before_releasing_the_lock(
+    two_trays, tmp_path, monkeypatch
+):
+    reached, release = _gate_after_first_call(monkeypatch, "write_slide")
+    directory = two_trays._session.store.directory
+    two_trays.export(tmp_path / "out", "tiff16")
+    assert reached.wait(GATE_TIMEOUT)
+    two_trays.close_batch()
+    time.sleep(0.3)
+    with pytest.raises(BatchLocked):
+        BatchStore.open(directory)  # still held: the export is still writing the manifest
+    release.set()
+    wait_until(two_trays, lambda: two_trays.state().batch_name is None)
+    with BatchStore.open(directory) as reopened:
+        assert sum(s.exported for t in reopened.snapshot().trays for s in t.slides) == 1

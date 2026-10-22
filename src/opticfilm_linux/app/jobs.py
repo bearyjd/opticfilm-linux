@@ -1,7 +1,7 @@
 """Long-running jobs (export, free disk space) that report progress as immutable views."""
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 from opticfilm_linux.app.state import ExportView, FreeSpaceView
@@ -64,9 +64,10 @@ def run_free_space(
     store: BatchStore,
     cancel: threading.Event,
     publish: Callable[[FreeSpaceView], None],
+    numbers: Collection[int],
 ) -> None:
-    """Remove raw scans of fully exported trays; the final view carries the bytes freed."""
-    base = _candidates_view(freeable_trays(store))
+    """Remove the raw scans of the confirmed trays; the final view carries the bytes freed."""
+    base = _candidates_view(tuple(f for f in freeable_trays(store) if f.number in numbers))
     total = len(base.trays)
 
     def progress(done: int, _total: int) -> None:
@@ -74,7 +75,7 @@ def run_free_space(
 
     publish(FreeSpaceView(base.trays, base.total_bytes, running=True, done=0, total=total))
     try:
-        freed = free_space(store, on_progress=progress, cancel=cancel)
+        freed = free_space(store, on_progress=progress, cancel=cancel, only=numbers)
     except BaseException:
         publish(FreeSpaceView(base.trays, base.total_bytes, running=False, freed=0))
         raise

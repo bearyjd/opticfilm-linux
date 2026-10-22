@@ -10,7 +10,7 @@ import dataclasses
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
@@ -24,6 +24,7 @@ from opticfilm_linux.app.state import (
     FreeSpaceView,
     build_state,
 )
+from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatus, TrayStage
@@ -33,6 +34,7 @@ from opticfilm_linux.output import Format
 from opticfilm_linux.scanner.base import Scanner, ScannerStatus
 
 SLIDES_PER_TRAY = 4
+STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
 LOCKED_PREFIX = "LOCKED:"
 
 log = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ class _Session:
 
     store: BatchStore
     runner: BatchRunner | None  # None for a read-only batch
-    scanner: Scanner | None
+    poller: StatusPoller | None
 
 
 class Controller:
@@ -60,7 +62,7 @@ class Controller:
         self._refresher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-status")
         self._refreshing = False
         self._session: _Session | None = None
-        self._scanner_status = ScannerStatus.UNKNOWN
+        self._closing = threading.Event()
         self._selected: int | None = None
         self._updating: frozenset[tuple[int, int]] = frozenset()
         self._progress: dict[int, float] = {}
@@ -84,6 +86,9 @@ class Controller:
     def tick(self) -> bool:
         """Drain runner events, start a refresh if none is running; True if the state changed."""
         self._drain_events()
+        session = self._session
+        if session is not None and session.poller is not None:
+            session.poller.poll()
         with self._lock:
             start = not self._refreshing
             self._refreshing = True
@@ -153,6 +158,17 @@ class Controller:
             f"Could not adjust slide {position} of tray {number}",
         )
 
+    def adjust_slide(
+        self, number: int, position: int, changes: Mapping[str, float | int | None]
+    ) -> None:
+        """Change only the named ``SlideSettings`` fields, merged with what is stored now."""
+
+        def job(runner: BatchRunner) -> None:
+            current = self._slide_settings(number, position)
+            self._edit(runner, number, position, dataclasses.replace(current, **changes))
+
+        self._run_writer(job, f"Could not adjust slide {position} of tray {number}")
+
     def rotate(self, number: int, position: int, quarter_turns: int) -> None:
         def job(runner: BatchRunner) -> None:
             current = self._slide_settings(number, position)
@@ -194,9 +210,6 @@ class Controller:
 
     def export(self, directory: Path, fmt: Format) -> None:
         def job(_runner: BatchRunner) -> None:
-            if self._export is not None and self._export.running:
-                raise BatchError("an export is already running")
-            self._cancel_export.clear()
             run_export(
                 self._open_store(),
                 directory,
@@ -205,6 +218,8 @@ class Controller:
                 lambda view: self._set(_export=view),
             )
 
+        if not self._closing.is_set():
+            self._cancel_export.clear()  # at submit: a queued job must not undo a later cancel
         self._run_writer(job, "Could not export", pool=self._jobs)
 
     def cancel_export(self) -> None:
@@ -221,14 +236,23 @@ class Controller:
         )
 
     def confirm_free_space(self) -> None:
+        """Remove the raw scans of exactly the trays the owner was shown, once."""
+
         def job(_runner: BatchRunner) -> None:
-            self._cancel_free.clear()
+            view = self._free_space
+            if view is None or not view.trays:
+                raise BatchError("check which trays can be freed before removing anything")
+            if view.running or view.freed is not None:
+                return  # a second click: already running or done
             run_free_space(
                 self._open_store(),
                 self._cancel_free,
-                lambda view: self._set(_free_space=view),
+                lambda update: self._set(_free_space=update),
+                tuple(number for number, _ in view.trays),
             )
 
+        if not self._closing.is_set():
+            self._cancel_free.clear()
         self._run_writer(job, "Could not free disk space", pool=self._jobs)
 
     def cancel_free_space(self) -> None:
@@ -253,10 +277,11 @@ class Controller:
 
     def shutdown(self) -> None:
         """Cancel an export, finish the job running now, drop queued work, release the batch."""
+        self._closing.set()
         self._cancel_export.set()
         self._cancel_free.set()
-        self._jobs.shutdown(wait=True)
-        self._command.shutdown(wait=True)
+        self._jobs.shutdown(wait=True, cancel_futures=True)
+        self._command.shutdown(wait=True, cancel_futures=True)
         self._detach()
         self._refresher.shutdown(wait=True)
 
@@ -278,6 +303,8 @@ class Controller:
                 log.exception("%s", message)
                 self._set(_banner=Banner(message, f"{type(exc).__name__}: {exc}"))
 
+        if self._closing.is_set():
+            return
         try:
             (pool or self._command).submit(guarded)
         except RuntimeError:  # shut down already
@@ -311,24 +338,44 @@ class Controller:
 
     def _attach(self, store: BatchStore, readonly: bool) -> None:
         runner = None
-        scanner = None
-        if not readonly:
-            scanner = self._factory(store.snapshot().defaults.dpi)
-            runner = BatchRunner(store, scanner)
-            runner.resume()
+        poller = None
+        try:
+            if not readonly:
+                scanner = self._factory(store.snapshot().defaults.dpi)
+                poller = StatusPoller(scanner, self._clock, STATUS_TIMEOUT_S, self._scanner_problem)
+                runner = BatchRunner(store, CachedStatusScanner(scanner, poller))
+                runner.resume()
+        except BaseException:
+            if runner is not None:
+                runner.stop()
+            store.close()  # never leave the writer lock held after a failed open
+            raise
         first = store.snapshot().trays[0].number if store.snapshot().trays else None
         with self._lock:
-            self._session = _Session(store, runner, scanner)
+            self._session = _Session(store, runner, poller)
             self._selected = first
             self._banner = None
-            self._scanner_status = ScannerStatus.UNKNOWN
             self._updating = frozenset()
             self._progress = {}
             self._scan_started = {}
             self._enhancing = set()
             self._export = None
+            self._free_space = None
+
+    def _scanner_problem(self, message: str, detail: str) -> None:
+        self._set(_banner=Banner(message, detail))
+
+    def _stop_jobs(self) -> None:
+        """Cancel a running export or free-space job and wait until it has stopped."""
+        self._cancel_export.set()
+        self._cancel_free.set()
+        try:
+            self._jobs.submit(lambda: None).result()
+        except RuntimeError:  # the jobs pool is already shut down, so nothing is running
+            return
 
     def _detach(self) -> None:
+        self._stop_jobs()  # a job writes through the store, so it must finish before it closes
         with self._lock:
             session, self._session = self._session, None
         if session is not None:
@@ -337,7 +384,6 @@ class Controller:
             session.store.close()
         with self._lock:
             self._selected = None
-            self._scanner_status = ScannerStatus.UNKNOWN
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
 
     def _banner_only(self) -> AppState:
@@ -392,7 +438,7 @@ class Controller:
 
     def _rebuild(self) -> None:
         session = self._session
-        status = self._poll_scanner(session)
+        status = session.poller.current() if session and session.poller else ScannerStatus.UNKNOWN
         manifest = session.store.snapshot() if session is not None else None
         with self._lock:
             if session is not self._session:
@@ -414,18 +460,6 @@ class Controller:
                 export=self._export,
                 free_space=self._free_space,
             )
-
-    def _poll_scanner(self, session: _Session | None) -> ScannerStatus:
-        if session is None or session.scanner is None:
-            return ScannerStatus.UNKNOWN
-        try:
-            status = session.scanner.status()
-        except Exception as exc:  # the backend may raise anything; show it, keep polling
-            status = ScannerStatus.ERROR
-            if self._scanner_status is not ScannerStatus.ERROR:
-                self._set(_banner=Banner("Scanner error", f"{type(exc).__name__}: {exc}"))
-        self._scanner_status = status
-        return status
 
     @staticmethod
     def _preview_tokens(session, manifest, selected) -> dict[tuple[int, int], int]:

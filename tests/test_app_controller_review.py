@@ -139,3 +139,22 @@ def test_accept_all_on_empty_batch_is_noop(sweep600_dir, tmp_path):
         assert c.state().trays == () and dataclasses.is_dataclass(c.state())
     finally:
         c.shutdown()
+
+
+def test_adjust_merges_with_the_latest_stored_settings(reviewed):
+    reviewed.rotate(1, 1, 1)
+    reviewed.adjust_slide(1, 1, {"brightness_ev": 1.0})
+    reviewed.adjust_slide(1, 1, {"color_strength": 0.5})
+    wait_until(
+        reviewed,
+        lambda: (
+            _slide(reviewed).settings
+            == SlideSettings(rotation=90, brightness_ev=1.0, color_strength=0.5)
+        ),
+    )
+
+
+def test_adjust_with_out_of_range_value_gives_banner_and_changes_nothing(reviewed):
+    reviewed.adjust_slide(1, 1, {"brightness_ev": 9.0})
+    wait_until(reviewed, lambda: reviewed.state().banner is not None)
+    assert _slide(reviewed).settings == SlideSettings()

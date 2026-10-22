@@ -8,7 +8,7 @@ produce a duplicate file on the next export, never a missing one.
 import dataclasses
 import shutil
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,11 +47,16 @@ def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
     return next(t for t in manifest.trays if t.number == number)
 
 
-def _mark_exported(store: BatchStore, number: int, position: int) -> None:
+def _mark_exported(store: BatchStore, number: int, position: int, version: int) -> bool:
+    """Mark one slide exported, unless the tray was re-scanned since the export began."""
+    applied = False
+
     def change(manifest: BatchManifest) -> BatchManifest:
+        nonlocal applied
         trays = []
         for tray in manifest.trays:
-            if tray.number == number:
+            if tray.number == number and tray.sweep_version == version:
+                applied = True
                 slides = tuple(
                     dataclasses.replace(s, exported=True) if s.position == position else s
                     for s in tray.slides
@@ -61,6 +66,7 @@ def _mark_exported(store: BatchStore, number: int, position: int) -> None:
         return dataclasses.replace(manifest, trays=tuple(trays))
 
     store.update(change)
+    return applied
 
 
 def _finish_tray_if_done(store: BatchStore, number: int) -> None:
@@ -97,8 +103,9 @@ def _export_tray(
         options = options_for(defaults, tray.mode, record.settings)
         image = enhance_slide(slides[record.position - 1], options, sweep.dpi)
         path = write_slide(image, spec)
-        _mark_exported(store, tray.number, record.position)
         report(path)
+        if not _mark_exported(store, tray.number, record.position, tray.sweep_version):
+            return True  # re-scanned meanwhile: these slides are stale, the next export redoes it
     return True
 
 
@@ -179,12 +186,13 @@ def free_space(
     store: BatchStore,
     on_progress: Callable[[int, int], None] | None = None,
     cancel: threading.Event | None = None,
+    only: Collection[int] | None = None,
 ) -> int:
-    """Remove the raw scans of every fully exported tray; stops between trays when cancelled.
+    """Remove the raw scans of fully exported trays; stops between trays when cancelled.
 
-    Returns the bytes freed.
+    ``only`` limits it to the trays the owner was shown and confirmed. Returns the bytes freed.
     """
-    trays = freeable_trays(store)
+    trays = tuple(t for t in freeable_trays(store) if only is None or t.number in only)
     freed = 0
     for done, tray in enumerate(trays, start=1):
         if cancel is not None and cancel.is_set():

@@ -4,7 +4,6 @@ No behaviour lives here beyond translating types, debouncing slider moves, and r
 recent batches. Everything it calls on the controller returns at once.
 """
 
-import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +174,16 @@ class Bridge(QObject):
     exportTotal = _p(int, changed, lambda s, _: s.export.total if s.export else 0)  # noqa: N815
     exportWritten = _p(int, changed, lambda s, _: s.export.written if s.export else 0)  # noqa: N815
     exportCancelled = _p(bool, changed, lambda s, _: bool(s.export and s.export.cancelled))  # noqa: N815
+    freeSpaceReady = _p(  # noqa: N815
+        bool,
+        changed,
+        lambda s, _: bool(
+            s.free_space
+            and s.free_space.trays
+            and not s.free_space.running
+            and s.free_space.freed is None
+        ),
+    )
     hasFreeSpace = _p(bool, changed, lambda s, _: s.free_space is not None)  # noqa: N815
     freeSpaceRunning = _p(  # noqa: N815
         bool, changed, lambda s, _: bool(s.free_space and s.free_space.running)
@@ -267,20 +276,8 @@ class Bridge(QObject):
     def _flush(self) -> None:
         pending, self._pending = self._pending, {}
         for (number, position), fields in pending.items():
-            card = self._card(number, position)
-            if card is None:
-                continue
             changes = {FIELDS[name]: value for name, value in fields.items()}
-            try:
-                settings = dataclasses.replace(card.settings, **changes)
-            except ValueError:
-                continue  # a slider value outside the allowed range is ignored
-            self._controller.edit_slide(number, position, settings)
-
-    def _card(self, number: int, position: int) -> SlideCard | None:
-        if self._state.selected != number:
-            return None
-        return next((c for c in self._state.slides if c.position == position), None)
+            self._controller.adjust_slide(number, position, changes)
 
     # -- export and free disk space ------------------------------------------------------
 

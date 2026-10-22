@@ -212,3 +212,85 @@ def test_first_tray_is_selected_automatically_but_a_later_choice_is_kept(control
     assert c.state().selected == 1
     c.select_tray(2)
     wait_until(c, lambda: c.state().selected == 2)
+
+
+def test_shutdown_drops_queued_commands_and_refuses_new_ones(sweep600_dir, tmp_path):
+    from opticfilm_linux.app.controller import Controller
+
+    gate = threading.Event()
+    calls: list[int] = []
+
+    def factory(_dpi):
+        calls.append(1)
+        if len(calls) == 2:
+            gate.wait(30)  # the second batch opened blocks the command worker
+        return FakeScanner(sweep600_dir)
+
+    c = Controller(factory)
+    open_new(c, tmp_path / "b")
+    BatchStore.create(tmp_path / "b2", name="B2", defaults=BatchDefaults(dpi=600)).close()
+    other = tmp_path / "other"
+    c.open_batch(tmp_path / "b2")
+    time.sleep(0.2)
+    c.new_batch(other, "Other", "", None, 600)  # queued behind it
+    closer = threading.Thread(target=c.shutdown)
+    closer.start()
+    time.sleep(0.2)
+    gate.set()
+    closer.join(30)
+    assert not closer.is_alive()
+    c.new_batch(tmp_path / "late", "Late", "", None, 600)  # after shutdown: ignored
+    time.sleep(0.3)
+    assert not (other / "batch.json").exists() and not (tmp_path / "late").exists()
+
+
+def test_failed_attach_releases_the_writer_lock(sweep600_dir, tmp_path):
+    from opticfilm_linux.app.controller import Controller
+
+    BatchStore.create(tmp_path / "b", name="T", defaults=BatchDefaults(dpi=600)).close()
+
+    def broken(_dpi):
+        raise OSError("no scanner backend")
+
+    c = Controller(broken)
+    try:
+        c.open_batch(tmp_path / "b")
+        wait_until(c, lambda: c.state().banner is not None)
+        with BatchStore.open(tmp_path / "b"):  # the lock is free again
+            pass
+    finally:
+        c.shutdown()
+
+
+def test_hung_scanner_status_shows_error_and_does_not_freeze_the_app(
+    sweep600_dir, tmp_path, monkeypatch
+):
+    from opticfilm_linux.app import controller as controller_module
+
+    monkeypatch.setattr(controller_module, "STATUS_TIMEOUT_S", 0.3)
+    hang = threading.Event()
+    release = threading.Event()
+
+    class Hanging(FakeScanner):
+        def status(self):
+            if hang.is_set():
+                release.wait(60)
+            return ScannerStatus.READY
+
+    c = controller_module.Controller(lambda _dpi: Hanging(sweep600_dir))
+    try:
+        open_new(c, tmp_path / "b")
+        wait_until(c, lambda: c.state().can_scan)
+        hang.set()
+        wait_until(c, lambda: c.state().scanner is ScannerStatus.ERROR)
+        assert not c.state().can_scan and c.state().banner is not None
+        c.dismiss_banner()
+        c.scan()  # must be refused, not block the command worker
+        c.select_tray(1)
+        wait_until(c, lambda: c.state().banner is not None)
+        closer = threading.Thread(target=c.shutdown)
+        closer.start()
+        closer.join(10)
+        assert not closer.is_alive()
+    finally:
+        release.set()

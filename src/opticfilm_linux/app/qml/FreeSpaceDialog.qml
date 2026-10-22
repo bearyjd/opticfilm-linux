@@ -37,7 +37,7 @@ Kirigami.Dialog {
             Layout.alignment: Qt.AlignRight
 
             QQC2.Button {
-                visible: !bridge.freeSpaceDone && !bridge.freeSpaceRunning
+                visible: bridge.freeSpaceReady
                 text: qsTr("Remove raw scans")
                 icon.name: "edit-delete"
                 highlighted: true

@@ -3,6 +3,7 @@ import threading
 
 import pytest
 
+from opticfilm_linux.batch import export as export_module
 from opticfilm_linux.batch.export import (
     ExportProgress,
     cleanup_raw,
@@ -108,3 +109,31 @@ def test_free_space_cancel_stops_between_trays(store, tmp_path):
     free_space(store, on_progress=lambda *_: cancel.set(), cancel=cancel)
     assert [t.raw_removed for t in store.snapshot().trays] == [True, False]
     assert store.snapshot().trays[1].slides[0].status is SlideStatus.ACCEPTED
+
+
+def test_free_space_only_removes_the_listed_trays(store, tmp_path):
+    accept_all(store)
+    export_batch(store, tmp_path / "out")
+    freed = free_space(store, only=(1,))
+    assert [t.raw_removed for t in store.snapshot().trays] == [True, False]
+    assert freed > 0
+
+
+def test_export_stops_marking_a_tray_that_was_rescanned_meanwhile(store, tmp_path, monkeypatch):
+    accept_all(store)
+    real = export_module.write_slide
+    calls: list[int] = []
+
+    def rescan_after_first_write(*args, **kwargs):
+        path = real(*args, **kwargs)
+        if not calls:
+            store.update_tray(1, sweep_version=2)  # what a re-scan does to the tray
+        calls.append(1)
+        return path
+
+    monkeypatch.setattr(export_module, "write_slide", rescan_after_first_write)
+    result = export_batch(store, tmp_path / "out")
+    first, second = store.snapshot().trays
+    assert not any(s.exported for s in first.slides)
+    assert all(s.exported for s in second.slides)
+    assert len(result.written) == 5
