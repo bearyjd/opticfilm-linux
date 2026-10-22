@@ -36,6 +36,7 @@ packages = ["src/opticfilm_linux"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "-m 'not hardware and not qt'"
+tmp_path_retention_policy = "failed"  # batches and sweeps are large; keep only failed runs
 markers = [
     "hardware: needs the real scanner plugged in (read-only); excluded by default",
     "qt: needs the distribution's PySide6 and Kirigami (headless smoke test); excluded by default",

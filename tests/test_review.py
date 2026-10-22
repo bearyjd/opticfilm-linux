@@ -214,3 +214,54 @@ def test_edits_are_allowed_while_a_tray_is_being_re_enhanced(store):
     store.update_tray(1, stage=TrayStage.ENHANCING)
     apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
     set_tray_mode(store, 1, "negative")
+
+
+def test_editing_marks_the_preview_stale_and_reenhancing_clears_it(tmp_path, sweep600_dir):
+    from opticfilm_linux.batch.enhance import reenhance_slide
+    from opticfilm_linux.batch.runner import BatchRunner
+    from opticfilm_linux.batch.store import BatchStore
+    from opticfilm_linux.scanner.fake import FakeScanner
+
+    with BatchStore.create(tmp_path / "b", name="T", defaults=BatchDefaults(dpi=600)) as store:
+        runner = BatchRunner(store, FakeScanner(sweep600_dir))
+        runner.scan_tray()
+        assert runner.wait_idle(120)
+        runner.close()
+        assert not any(s.preview_stale for s in store.snapshot().trays[0].slides)
+        apply_slide_settings(store, 1, 1, SlideSettings(brightness_ev=1.0))
+        assert store.snapshot().trays[0].slides[0].preview_stale
+        reenhance_slide(store, 1, 1)
+        assert not store.snapshot().trays[0].slides[0].preview_stale
+
+
+def test_resume_requeues_slides_whose_preview_is_stale(tmp_path, sweep600_dir):
+    from opticfilm_linux.batch.runner import BatchRunner
+    from opticfilm_linux.batch.store import BatchStore
+    from opticfilm_linux.scanner.fake import FakeScanner
+
+    with BatchStore.create(tmp_path / "b", name="T", defaults=BatchDefaults(dpi=600)) as store:
+        runner = BatchRunner(store, FakeScanner(sweep600_dir))
+        runner.scan_tray()
+        assert runner.wait_idle(120)
+        runner.close()
+        apply_slide_settings(store, 1, 2, SlideSettings(rotation=90))  # app closed before it ran
+        again = BatchRunner(store, FakeScanner(sweep600_dir))
+        again.resume()
+        assert again.wait_idle(120)
+        again.close()
+        assert not any(s.preview_stale for s in store.snapshot().trays[0].slides)
+
+
+def test_a_manifest_without_the_stale_field_still_loads():
+    import json
+
+    from opticfilm_linux.batch.manifest import from_json, to_json
+    from opticfilm_linux.batch.model import BatchManifest, SlideRecord, TrayRecord, TrayStage
+
+    manifest = BatchManifest(
+        name="T",
+        trays=(TrayRecord(number=1, stage=TrayStage.REVIEW, slides=(SlideRecord(position=1),)),),
+    )
+    data = json.loads(to_json(manifest))
+    del data["trays"][0]["slides"][0]["preview_stale"]
+    assert from_json(json.dumps(data)) == manifest

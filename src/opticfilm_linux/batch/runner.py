@@ -100,6 +100,13 @@ class BatchRunner:
         """Apply crash recovery and queue enhancement for every tray still waiting for it."""
         for number in self._store.recover_interrupted():
             self._submit(self._enhance_pool, self._enhance_job, number)
+        for tray in self._store.snapshot().trays:  # edits whose preview was never redone
+            if tray.stage is TrayStage.REVIEW and not tray.raw_removed:
+                for slide in tray.slides:
+                    if slide.preview_stale:
+                        self._submit(
+                            self._enhance_pool, self._reenhance_job, tray.number, slide.position
+                        )
 
     def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
         """Apply per-slide settings now; the slide is re-enhanced in the background."""

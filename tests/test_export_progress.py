@@ -11,10 +11,16 @@ from opticfilm_linux.batch.export import (
     free_space,
     freeable_trays,
 )
-from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayStage
-from opticfilm_linux.batch.review import accept_all
+from opticfilm_linux.batch.model import (
+    BatchDefaults,
+    SlideRecord,
+    SlideSettings,
+    SlideStatus,
+    TrayStage,
+)
+from opticfilm_linux.batch.review import accept_all, apply_slide_settings, set_slide_status
 from opticfilm_linux.batch.runner import BatchRunner
-from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.sweepstore import save_sweep
 from synthetic import make_sweep
@@ -137,3 +143,61 @@ def test_export_stops_marking_a_tray_that_was_rescanned_meanwhile(store, tmp_pat
     assert not any(s.exported for s in first.slides)
     assert all(s.exported for s in second.slides)
     assert len(result.written) == 5
+
+
+def test_export_refuses_a_destination_inside_the_batch(store):
+    accept_all(store)
+    inside = store.directory / "trays" / "0001" / "sweep-1" / "finished"
+    with pytest.raises(BatchError, match="outside the batch"):
+        export_batch(store, inside)
+    assert not inside.exists()
+    assert not any(s.exported for t in store.snapshot().trays for s in t.slides)
+
+
+def test_editing_an_exported_slide_makes_it_exportable_again(store, tmp_path):
+    accept_all(store)
+    for position in (2, 3, 4):
+        set_slide_status(store, 1, position, SlideStatus.NEEDS_LOOK)
+    export_batch(store, tmp_path / "out")
+    assert store.snapshot().trays[0].slides[0].exported
+    apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
+    assert not store.snapshot().trays[0].slides[0].exported
+    result = export_batch(store, tmp_path / "out")
+    assert len(result.written) == 1 and store.snapshot().trays[0].slides[0].exported
+
+
+def test_export_does_not_mark_a_slide_edited_while_it_was_rendering(store, tmp_path, monkeypatch):
+    accept_all(store)
+    real = export_module.write_slide
+    calls: list[int] = []
+
+    def edit_after_first_write(*args, **kwargs):
+        path = real(*args, **kwargs)
+        if not calls:
+            apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
+        calls.append(1)
+        return path
+
+    monkeypatch.setattr(export_module, "write_slide", edit_after_first_write)
+    export_batch(store, tmp_path / "out")
+    slides = store.snapshot().trays[0].slides
+    assert not slides[0].exported and all(s.exported for s in slides[1:])
+    assert store.snapshot().trays[0].stage is TrayStage.REVIEW
+
+
+def test_finishing_a_tray_rechecks_it_after_a_rescan(store, tmp_path, monkeypatch):
+    accept_all(store)
+    real = export_module._finish_tray_if_done
+
+    def rescan_then_finish(store_, number):
+        if number == 1:  # a re-scan completed after the last slide was exported
+            fresh = tuple(
+                SlideRecord(position=p, status=SlideStatus.ACCEPTED) for p in (1, 2, 3, 4)
+            )
+            store_.update_tray(1, sweep_version=2, slides=fresh)
+        real(store_, number)
+
+    monkeypatch.setattr(export_module, "_finish_tray_if_done", rescan_then_finish)
+    export_batch(store, tmp_path / "out")
+    first = store.snapshot().trays[0]
+    assert first.stage is TrayStage.REVIEW and not any(s.exported for s in first.slides)

@@ -11,9 +11,16 @@ import threading
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from opticfilm_linux.batch.enhance import options_for
-from opticfilm_linux.batch.model import BatchManifest, SlideStatus, TrayRecord, TrayStage
+from opticfilm_linux.batch.model import (
+    BatchManifest,
+    SlideSettings,
+    SlideStatus,
+    TrayRecord,
+    TrayStage,
+)
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.output import Format, OutputSpec, write_slide
 from opticfilm_linux.pipeline.run import enhance_slide
@@ -47,34 +54,43 @@ def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
     return next(t for t in manifest.trays if t.number == number)
 
 
-def _mark_exported(store: BatchStore, number: int, position: int, version: int) -> bool:
-    """Mark one slide exported, unless the tray was re-scanned since the export began."""
-    applied = False
+def _mark_exported(
+    store: BatchStore, number: int, position: int, version: int, settings: SlideSettings
+) -> Literal["marked", "stale_slide", "stale_tray"]:
+    """Mark one slide exported, only if the file written still matches it.
+
+    A re-scan (new sweep version) or an edit made while the slide was rendering means the file
+    on disk is obsolete: nothing is marked, so the next export writes the slide again.
+    """
+    outcome: Literal["marked", "stale_slide", "stale_tray"] = "stale_tray"
 
     def change(manifest: BatchManifest) -> BatchManifest:
-        nonlocal applied
+        nonlocal outcome
         trays = []
         for tray in manifest.trays:
             if tray.number == number and tray.sweep_version == version:
-                applied = True
-                slides = tuple(
-                    dataclasses.replace(s, exported=True) if s.position == position else s
-                    for s in tray.slides
-                )
-                tray = dataclasses.replace(tray, slides=slides)
+                outcome = "stale_slide"
+                slides = []
+                for s in tray.slides:
+                    if s.position == position and s.settings == settings:
+                        outcome = "marked"
+                        s = dataclasses.replace(s, exported=True)
+                    slides.append(s)
+                tray = dataclasses.replace(tray, slides=tuple(slides))
             trays.append(tray)
         return dataclasses.replace(manifest, trays=tuple(trays))
 
     store.update(change)
-    return applied
+    return outcome
 
 
 def _finish_tray_if_done(store: BatchStore, number: int) -> None:
-    tray = _tray(store.snapshot(), number)
-    real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
-    done = all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
-    if tray.stage is TrayStage.REVIEW and tray.slides and done:
-        store.update_tray(number, stage=TrayStage.EXPORTED)
+    def done(tray: TrayRecord) -> bool:  # judged on the live tray, under the store's lock
+        real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
+        everything = all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
+        return tray.stage is TrayStage.REVIEW and bool(tray.slides) and everything
+
+    store.update_tray_if(number, done, stage=TrayStage.EXPORTED)
 
 
 def _pending_slides(tray: TrayRecord) -> list:
@@ -104,7 +120,10 @@ def _export_tray(
         image = enhance_slide(slides[record.position - 1], options, sweep.dpi)
         path = write_slide(image, spec)
         report(path)
-        if not _mark_exported(store, tray.number, record.position, tray.sweep_version):
+        outcome = _mark_exported(
+            store, tray.number, record.position, tray.sweep_version, record.settings
+        )
+        if outcome == "stale_tray":
             return True  # re-scanned meanwhile: these slides are stale, the next export redoes it
     return True
 
@@ -116,6 +135,8 @@ def export_batch(
     on_progress: Callable[[ExportProgress], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> ExportResult:
+    if directory.resolve().is_relative_to(store.directory.resolve()):
+        raise BatchError(f"export to a folder outside the batch folder, not {directory}")
     manifest = store.snapshot()
     spec = OutputSpec(directory=directory, fmt=fmt, album=manifest.album, date=manifest.date)
     exportable = [t for t in manifest.trays if t.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)]
