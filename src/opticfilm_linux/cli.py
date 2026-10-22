@@ -24,6 +24,11 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--date", default=None, help="date text used in file names")
     parser.add_argument("--format", choices=["tiff16", "png8", "jpeg"], default="tiff16")
     parser.add_argument("--mode", choices=["positive", "negative"], default="positive")
+    parser.add_argument(
+        "--no-infrared",
+        action="store_true",
+        help="do not use the infrared plane: skip dust removal",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _load_sweep(args: argparse.Namespace) -> RawSweep:
     if args.command == "process":
         return load_sweep(args.sweep)
-    settings = ScanSettings(dpi=args.dpi, mode=args.mode)
+    settings = ScanSettings(dpi=args.dpi, mode=args.mode, infrared=not args.no_infrared)
     if args.fake is not None:
         return FakeScanner(args.fake).scan_holder(settings)
     devices = find_devices()
@@ -86,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         return _list_devices()
     try:
         out = OutputSpec(directory=args.out, fmt=args.format, album=args.album, date=args.date)
-        result = process_sweep(_load_sweep(args), ProcessOptions(mode=args.mode), out)
+        options = ProcessOptions(mode=args.mode, remove_dust=not args.no_infrared)
+        result = process_sweep(_load_sweep(args), options, out)
     except (SweepFormatError, ScanError, SlideSplitError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR

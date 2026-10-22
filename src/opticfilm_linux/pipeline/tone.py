@@ -51,7 +51,10 @@ def restore_color(rgb: np.ndarray, strength: float = 1.0) -> np.ndarray:
 
 
 def invert_negative(rgb: np.ndarray) -> np.ndarray:
-    """Density inversion with automatic black and white points per channel."""
+    """Density inversion with automatic black and white points per channel.
+
+    A channel with no range (flat, all black or all white) is returned unchanged.
+    """
 
     def density(x: np.ndarray) -> np.ndarray:
         return -np.log10(np.clip(x, MIN_TRANSMITTANCE, 1.0))
@@ -64,6 +67,6 @@ def invert_negative(rgb: np.ndarray) -> np.ndarray:
     safe_span = np.where(usable, span, 1.0)
 
     def apply(x: np.ndarray) -> np.ndarray:
-        return np.where(usable, np.clip((density(x) - low) / safe_span, 0.0, 1.0), 0.0)
+        return np.where(usable, np.clip((density(x) - low) / safe_span, 0.0, 1.0), x)
 
     return map_strips(rgb, apply)

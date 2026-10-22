@@ -70,3 +70,10 @@ def test_fake_scanner_satisfies_protocol(tmp_path):
 
 def test_not_supported_yet_is_a_scan_error():
     assert issubclass(NotSupportedYet, ScanError)
+
+
+def test_fake_scanner_drops_the_ir_plane_when_infrared_is_off(tmp_path):
+    save_sweep(make_sweep(dpi=600), tmp_path)
+    with_ir = FakeScanner(tmp_path).scan_holder(ScanSettings(dpi=600, infrared=True))
+    without_ir = FakeScanner(tmp_path).scan_holder(ScanSettings(dpi=600, infrared=False))
+    assert with_ir.ir is not None and without_ir.ir is None
