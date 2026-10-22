@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from opticfilm_linux import __version__
+from opticfilm_linux.batch.cli import add_batch_commands, run_batch
 from opticfilm_linux.model import RawSweep, ScanSettings
 from opticfilm_linux.output import OutputSpec
 from opticfilm_linux.pipeline.run import ProcessOptions, RunResult, process_sweep
@@ -44,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"ofscan {__version__}")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("devices", help="list supported scanners (read-only)")
+    add_batch_commands(commands)
     scan = commands.add_parser("scan", help="scan a holder and process it")
     scan.add_argument("--fake", type=Path, help="replay the stored sweep in this folder")
     scan.add_argument("--dpi", type=int, default=3600)
@@ -94,6 +96,14 @@ def _summary(result: RunResult) -> str:
     return text
 
 
+def _run_batch_command(args: argparse.Namespace) -> int:
+    try:
+        return run_batch(args)
+    except (ValueError, LookupError, ScanError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -103,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "devices":
         return _list_devices()
+    if args.command == "batch":
+        return _run_batch_command(args)
     try:
         out = OutputSpec(directory=args.out, fmt=args.format, album=args.album, date=args.date)
         options = ProcessOptions(

@@ -47,3 +47,4 @@ select = ["E", "F", "I", "B", "UP", "T20"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/opticfilm_linux/cli.py" = ["T201"]
+"src/opticfilm_linux/batch/cli.py" = ["T201"]
