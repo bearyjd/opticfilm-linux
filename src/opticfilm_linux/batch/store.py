@@ -69,6 +69,20 @@ class BatchStore:
             self._manifest = new
             return new
 
+    def update_tray(self, number: int, **changes) -> BatchManifest:
+        """Change fields of one tray (``dataclasses.replace`` semantics)."""
+
+        def change(manifest: BatchManifest) -> BatchManifest:
+            if not any(tray.number == number for tray in manifest.trays):
+                raise BatchError(f"no tray {number} in this batch")
+            trays = tuple(
+                dataclasses.replace(tray, **changes) if tray.number == number else tray
+                for tray in manifest.trays
+            )
+            return dataclasses.replace(manifest, trays=trays)
+
+        return self.update(change)
+
     def tray_dir(self, number: int) -> Path:
         return self.directory / "trays" / f"{number:04d}"
 

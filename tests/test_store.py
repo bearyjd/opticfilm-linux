@@ -130,3 +130,19 @@ def test_recover_returns_scanned_trays_in_order(tmp_path):
     for stage in (TrayStage.SCANNED, TrayStage.REVIEW, TrayStage.ENHANCING, TrayStage.SCANNED):
         store.update(lambda m, s=stage: _add_tray(m, s))
     assert store.recover_interrupted() == (1, 3, 4)
+
+
+def test_update_tray_changes_only_the_named_tray(tmp_path):
+    store = _store(tmp_path)
+    store.update(_add_tray)
+    store.update(_add_tray)
+    store.update_tray(2, stage=TrayStage.REVIEW, error="x")
+    trays = store.snapshot().trays
+    assert trays[0].stage is TrayStage.SCANNED and trays[0].error is None
+    assert trays[1].stage is TrayStage.REVIEW and trays[1].error == "x"
+
+
+def test_update_tray_unknown_number_raises_batcherror(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(BatchError, match="no tray 3"):
+        store.update_tray(3, stage=TrayStage.REVIEW)

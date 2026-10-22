@@ -55,16 +55,6 @@ def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
     raise BatchError(f"no tray {number} in this batch")
 
 
-def _change_tray(store: BatchStore, number: int, **changes) -> None:
-    def change(manifest: BatchManifest) -> BatchManifest:
-        trays = tuple(
-            dataclasses.replace(t, **changes) if t.number == number else t for t in manifest.trays
-        )
-        return dataclasses.replace(manifest, trays=trays)
-
-    store.update(change)
-
-
 def _put_slide(store: BatchStore, number: int, record: SlideRecord) -> None:
     def change(manifest: BatchManifest) -> BatchManifest:
         tray = _tray(manifest, number)
@@ -117,19 +107,19 @@ def enhance_tray(
         raise BatchError(f"tray {number} is still scanning")
     if tray.raw_removed:
         raise RawRemoved(f"the raw scans of tray {number} were removed")
-    _change_tray(store, number, stage=TrayStage.ENHANCING, error=None)
+    store.update_tray(number, stage=TrayStage.ENHANCING, error=None)
     try:
         sweep = load_sweep(store.sweep_dir(number, tray.sweep_version))
         slides = split_slides(sweep)
     except (SweepFormatError, SlideSplitError) as exc:
-        _change_tray(store, number, stage=TrayStage.FAILED, error=str(exc))
+        store.update_tray(number, stage=TrayStage.FAILED, error=str(exc))
         return
     for slide in slides:
         record = _process_slide(store, number, slide, sweep, tray, _existing(tray, slide.index + 1))
         _put_slide(store, number, record)
         if on_progress is not None:
             on_progress(slide.index + 1, len(slides))
-    _change_tray(store, number, stage=TrayStage.REVIEW)
+    store.update_tray(number, stage=TrayStage.REVIEW)
 
 
 def reenhance_slide(store: BatchStore, number: int, position: int) -> None:
