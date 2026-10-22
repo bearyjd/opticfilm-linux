@@ -265,3 +265,26 @@ def test_a_manifest_without_the_stale_field_still_loads():
     data = json.loads(to_json(manifest))
     del data["trays"][0]["slides"][0]["preview_stale"]
     assert from_json(json.dumps(data)) == manifest
+
+
+def test_resume_also_requeues_stale_previews_of_an_exported_tray(tmp_path, sweep600_dir):
+    from opticfilm_linux.batch.runner import BatchRunner
+    from opticfilm_linux.batch.store import BatchStore
+    from opticfilm_linux.scanner.fake import FakeScanner
+
+    with BatchStore.create(tmp_path / "b", name="T", defaults=BatchDefaults(dpi=600)) as store:
+        runner = BatchRunner(store, FakeScanner(sweep600_dir))
+        runner.scan_tray()
+        assert runner.wait_idle(120)
+        runner.close()
+        tray = store.snapshot().trays[0]
+        stale = tuple(
+            dataclasses.replace(s, preview_stale=s.position == 2, exported=True)
+            for s in tray.slides
+        )
+        store.update_tray(1, stage=TrayStage.EXPORTED, slides=stale)
+        again = BatchRunner(store, FakeScanner(sweep600_dir))
+        again.resume()
+        assert again.wait_idle(120)
+        again.close()
+        assert not any(s.preview_stale for s in store.snapshot().trays[0].slides)

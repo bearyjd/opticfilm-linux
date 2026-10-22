@@ -60,3 +60,25 @@ def test_cached_scanner_status_never_calls_the_backend():
     poller = StatusPoller(_Blocking(gate, False), time.monotonic, 5.0, lambda *_: None)
     cached = CachedStatusScanner(_Blocking(gate, False), poller)
     assert cached.status() is ScannerStatus.UNKNOWN  # would block for 30 s if it asked the backend
+
+
+def test_close_waits_for_a_report_in_progress_and_blocks_later_ones():
+    started, finished = threading.Event(), threading.Event()
+    calls: list[str] = []
+
+    def slow_callback(message, _detail):
+        calls.append(message)
+        started.set()
+        time.sleep(0.3)
+        finished.set()
+
+    gate = threading.Event()
+    gate.set()
+    poller = StatusPoller(_Blocking(gate, True), time.monotonic, 5.0, slow_callback)
+    poller.poll()
+    assert started.wait(5)
+    poller.close()  # must not return while the callback is still running
+    assert finished.is_set()
+    poller._report("Scanner error", "again")  # after close: never reaches the callback
+    time.sleep(0.1)
+    assert calls == ["Scanner error"]

@@ -1,3 +1,4 @@
+import dataclasses
 import shutil
 import threading
 
@@ -5,6 +6,7 @@ import pytest
 
 from opticfilm_linux.batch import export as export_module
 from opticfilm_linux.batch.export import (
+    CleanupRefused,
     ExportProgress,
     cleanup_raw,
     export_batch,
@@ -18,7 +20,12 @@ from opticfilm_linux.batch.model import (
     SlideStatus,
     TrayStage,
 )
-from opticfilm_linux.batch.review import accept_all, apply_slide_settings, set_slide_status
+from opticfilm_linux.batch.review import (
+    accept_all,
+    apply_slide_settings,
+    set_slide_status,
+    set_tray_mode,
+)
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.scanner.fake import FakeScanner
@@ -185,19 +192,58 @@ def test_export_does_not_mark_a_slide_edited_while_it_was_rendering(store, tmp_p
     assert store.snapshot().trays[0].stage is TrayStage.REVIEW
 
 
-def test_finishing_a_tray_rechecks_it_after_a_rescan(store, tmp_path, monkeypatch):
+def test_finishing_a_tray_judges_the_live_tray_not_an_older_snapshot(store, tmp_path, monkeypatch):
     accept_all(store)
-    real = export_module._finish_tray_if_done
+    export_batch(store, tmp_path / "out")  # everything exported, trays EXPORTED
+    stale = store.snapshot()  # an all-done picture of the world
+    store.update_tray(1, stage=TrayStage.REVIEW, slides=())  # then the tray was re-scanned
+    store.update_tray(
+        1, slides=tuple(SlideRecord(position=p, status=SlideStatus.ACCEPTED) for p in (1, 2, 3, 4))
+    )
+    monkeypatch.setattr(store, "snapshot", lambda: stale)  # a stale read must not decide anything
+    export_module._finish_tray_if_done(store, 1)
+    assert store._manifest.trays[0].stage is TrayStage.REVIEW
 
-    def rescan_then_finish(store_, number):
-        if number == 1:  # a re-scan completed after the last slide was exported
-            fresh = tuple(
-                SlideRecord(position=p, status=SlideStatus.ACCEPTED) for p in (1, 2, 3, 4)
-            )
-            store_.update_tray(1, sweep_version=2, slides=fresh)
-        real(store_, number)
 
-    monkeypatch.setattr(export_module, "_finish_tray_if_done", rescan_then_finish)
+def test_export_does_not_mark_a_slide_after_the_tray_mode_changed(store, tmp_path, monkeypatch):
+    accept_all(store)
+    real = export_module.write_slide
+    calls: list[int] = []
+
+    def change_mode_after_first_write(*args, **kwargs):
+        path = real(*args, **kwargs)
+        if not calls:
+            set_tray_mode(store, 1, "negative")
+        calls.append(1)
+        return path
+
+    monkeypatch.setattr(export_module, "write_slide", change_mode_after_first_write)
     export_batch(store, tmp_path / "out")
     first = store.snapshot().trays[0]
-    assert first.stage is TrayStage.REVIEW and not any(s.exported for s in first.slides)
+    assert first.mode == "negative" and not any(s.exported for s in first.slides)
+    assert first.stage is TrayStage.REVIEW
+
+
+def test_changing_the_tray_mode_makes_exported_slides_exportable_again(store, tmp_path):
+    accept_all(store)
+    for position in (2, 3, 4):
+        set_slide_status(store, 1, position, SlideStatus.NEEDS_LOOK)
+    export_batch(store, tmp_path / "out")
+    assert store.snapshot().trays[0].slides[0].exported
+    set_tray_mode(store, 1, "negative")
+    assert not store.snapshot().trays[0].slides[0].exported
+
+
+def test_a_tray_with_a_stale_preview_is_not_freeable(store, tmp_path):
+    accept_all(store)
+    export_batch(store, tmp_path / "out")
+    assert [f.number for f in freeable_trays(store)] == [1, 2]
+    store.update_tray(
+        1,
+        slides=tuple(
+            dataclasses.replace(s, preview_stale=True) for s in store.snapshot().trays[0].slides
+        ),
+    )
+    assert [f.number for f in freeable_trays(store)] == [2]
+    with pytest.raises(CleanupRefused, match="preview"):
+        cleanup_raw(store, 1)

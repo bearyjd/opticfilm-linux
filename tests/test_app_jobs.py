@@ -301,3 +301,21 @@ def test_an_export_queued_for_a_closed_batch_never_touches_the_next_one(sweep600
         assert not (tmp_path / "out").exists() or list((tmp_path / "out").iterdir()) == []
     finally:
         c.shutdown()
+
+
+def test_a_cancelled_queued_job_cannot_deadlock_close_and_shutdown(
+    two_trays, tmp_path, monkeypatch
+):
+    reached, release = _gate_after_first_call(monkeypatch, "write_slide")
+    two_trays.export(tmp_path / "out", "tiff16")
+    assert reached.wait(GATE_TIMEOUT)
+    two_trays.export(tmp_path / "out2", "tiff16")  # queues behind the running one
+    time.sleep(0.4)
+    two_trays.close_batch()
+    time.sleep(0.3)
+    closer = threading.Thread(target=two_trays.shutdown)
+    closer.start()  # cancels the queued job while close is waiting for it
+    time.sleep(0.3)
+    release.set()
+    closer.join(GATE_TIMEOUT)
+    assert not closer.is_alive()

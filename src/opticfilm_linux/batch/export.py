@@ -16,6 +16,7 @@ from typing import Literal
 from opticfilm_linux.batch.enhance import options_for
 from opticfilm_linux.batch.model import (
     BatchManifest,
+    Mode,
     SlideSettings,
     SlideStatus,
     TrayRecord,
@@ -55,12 +56,17 @@ def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
 
 
 def _mark_exported(
-    store: BatchStore, number: int, position: int, version: int, settings: SlideSettings
+    store: BatchStore,
+    number: int,
+    position: int,
+    version: int,
+    mode: Mode,
+    settings: SlideSettings,
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
     """Mark one slide exported, only if the file written still matches it.
 
-    A re-scan (new sweep version) or an edit made while the slide was rendering means the file
-    on disk is obsolete: nothing is marked, so the next export writes the slide again.
+    A re-scan (new sweep version), a mode change, or an edit made while the slide was rendering
+    means the file on disk is obsolete: nothing is marked, so the next export redoes the slide.
     """
     outcome: Literal["marked", "stale_slide", "stale_tray"] = "stale_tray"
 
@@ -68,7 +74,7 @@ def _mark_exported(
         nonlocal outcome
         trays = []
         for tray in manifest.trays:
-            if tray.number == number and tray.sweep_version == version:
+            if tray.number == number and tray.sweep_version == version and tray.mode == mode:
                 outcome = "stale_slide"
                 slides = []
                 for s in tray.slides:
@@ -121,10 +127,10 @@ def _export_tray(
         path = write_slide(image, spec)
         report(path)
         outcome = _mark_exported(
-            store, tray.number, record.position, tray.sweep_version, record.settings
+            store, tray.number, record.position, tray.sweep_version, tray.mode, record.settings
         )
         if outcome == "stale_tray":
-            return True  # re-scanned meanwhile: these slides are stale, the next export redoes it
+            return True  # re-scanned or mode changed meanwhile: stale, the next export redoes it
     return True
 
 
@@ -158,6 +164,10 @@ def export_batch(
     return ExportResult(written=tuple(written))
 
 
+def _stale(tray: TrayRecord) -> bool:
+    return any(s.preview_stale for s in tray.slides)
+
+
 def _folder_size(path: Path) -> int:
     return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
@@ -185,6 +195,8 @@ def cleanup_raw(store: BatchStore, number: int) -> int:
         raise CleanupRefused(
             f"tray {number} is {tray.stage}; only exported trays can be cleaned up"
         )
+    if _stale(tray):
+        raise CleanupRefused(f"tray {number} still has a preview to update; try again shortly")
     folders = _checked_sweep_folders(store, number)
     freed = sum(_folder_size(path) for path in folders)
     for path in folders:
@@ -197,7 +209,7 @@ def freeable_trays(store: BatchStore) -> tuple[FreeableTray, ...]:
     """Fully exported trays whose raw scans are still on disk, with the space they use."""
     found = []
     for tray in store.snapshot().trays:
-        if tray.stage is TrayStage.EXPORTED and not tray.raw_removed:
+        if tray.stage is TrayStage.EXPORTED and not tray.raw_removed and not _stale(tray):
             size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
             found.append(FreeableTray(number=tray.number, bytes=size))
     return tuple(found)

@@ -1,4 +1,5 @@
 import dataclasses
+import threading
 
 import pytest
 
@@ -158,3 +159,18 @@ def test_adjust_with_out_of_range_value_gives_banner_and_changes_nothing(reviewe
     reviewed.adjust_slide(1, 1, {"brightness_ev": 9.0})
     wait_until(reviewed, lambda: reviewed.state().banner is not None)
     assert _slide(reviewed).settings == SlideSettings()
+
+
+def test_a_command_queued_before_reopening_the_same_batch_still_applies(reviewed):
+    gate = threading.Event()
+    directory = reviewed._session.store.directory
+    reviewed._command.submit(lambda: gate.wait(30))  # hold the command worker
+    reviewed.open_batch(directory)  # the batch is closed and opened again...
+    reviewed.adjust_slide(1, 1, {"brightness_ev": 1.25})  # ...and this was meant for it
+    gate.set()
+    wait_until(
+        reviewed,
+        lambda: any(
+            c.position == 1 and c.settings.brightness_ev == 1.25 for c in reviewed.state().slides
+        ),
+    )

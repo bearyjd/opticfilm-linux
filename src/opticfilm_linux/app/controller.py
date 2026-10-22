@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
@@ -64,6 +64,7 @@ class Controller:
         self._session: _Session | None = None
         self._closing = threading.Event()
         self._job_futures: set[Future] = set()
+        self._jobs_idle = threading.Condition(self._lock)
         self._selected: int | None = None
         self._updating: frozenset[tuple[int, int]] = frozenset()
         self._progress: dict[int, float] = {}
@@ -334,8 +335,9 @@ class Controller:
             future.add_done_callback(self._job_done)
 
     def _job_done(self, future: Future) -> None:
-        with self._lock:
+        with self._jobs_idle:  # also runs for a job cancelled before it started
             self._job_futures.discard(future)
+            self._jobs_idle.notify_all()
 
     def _run_writer(
         self,
@@ -349,11 +351,12 @@ class Controller:
         def guarded() -> None:
             if requested is None:
                 raise BatchError("no batch is open")
-            if self._session is not requested:
-                return  # the batch was closed or replaced meanwhile: drop, never retarget
-            if requested.runner is None:
+            current = self._session
+            if current is None or current.store.directory != requested.store.directory:
+                return  # a different batch is open now: drop, never retarget
+            if current.runner is None:
                 raise BatchError("this batch is open read-only")
-            job(requested.runner)
+            job(current.runner)  # the same batch, possibly reopened meanwhile
 
         self._run(guarded, message, pool, droppable)
 
@@ -400,9 +403,8 @@ class Controller:
         """Cancel a running export or free-space job and wait until every job has ended."""
         self._cancel_export.set()
         self._cancel_free.set()
-        with self._lock:
-            pending = list(self._job_futures)
-        wait(pending)
+        with self._jobs_idle:
+            self._jobs_idle.wait_for(lambda: not self._job_futures)
 
     def _detach(self) -> None:
         self._stop_jobs()  # a job writes through the store, so it must finish before it closes

@@ -64,10 +64,12 @@ class StatusPoller:
             self._report("Scanner error", problem)
 
     def _report(self, message: str, detail: str) -> None:
+        # The callback runs under the lock, so ``close()`` cannot return while one is in progress
+        # and nothing reaches the callback afterwards.
         with self._lock:
-            first = not self._reported_error and not self._closed
+            if self._closed or self._reported_error:
+                return
             self._reported_error = True
-        if first:
             self._on_problem(message, detail)
 
 
