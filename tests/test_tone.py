@@ -81,3 +81,15 @@ def test_invert_negative_matches_positive():
     negative = np.rint(10 ** (-2.0 * positive) * FULL).astype(np.uint16)
     recovered = invert_negative(negative).astype(np.float64) / FULL
     assert np.corrcoef(recovered.ravel(), positive.ravel())[0, 1] > 0.95
+
+
+def test_invert_negative_leaves_a_channel_with_no_range_unchanged():
+    image = _gradient(0.1, 0.9)
+    image[..., 1] = np.uint16(0.5 * FULL)  # a flat green channel
+    out = invert_negative(image)
+    assert np.array_equal(out[..., 1], image[..., 1])
+
+
+def test_invert_negative_leaves_an_all_white_frame_unchanged():
+    white = np.full((16, 16, 3), FULL, np.uint16)
+    assert np.array_equal(invert_negative(white), white)

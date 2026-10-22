@@ -23,6 +23,8 @@ four-slide holder and get finished, enhanced slides.
   has no mounted-slide sweep yet, and this project builds on it rather than duplicating it.
   `ofscan scan` without `--fake` says so and exits with an error.
 - Everything has only been tested on synthetic sweeps. Quality on real slides is unverified.
+- Dust repair is done at 8-bit precision: repaired pixels lose 16-bit depth (the rest of the
+  pipeline stays 16-bit).
 
 ## Quick start
 
@@ -39,7 +41,7 @@ uv run ofscan devices
 ```
 
 Commands: `ofscan devices`, `ofscan scan --fake SWEEP_DIR --dpi 600 --out DIR`,
-`ofscan process SWEEP_DIR --out DIR` (options: `--album`, `--date`, `--format`, `--mode`).
+`ofscan process SWEEP_DIR --out DIR` (options: `--album`, `--date`, `--format`, `--mode`, `--no-infrared`).
 Exit code 2 and an `error:` line on bad input.
 
 ## Development

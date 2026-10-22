@@ -1,5 +1,6 @@
 import numpy as np
 
+from opticfilm_linux import cli as cli_module
 from opticfilm_linux.cli import main
 from opticfilm_linux.model import HolderKind, RawSweep
 from opticfilm_linux.sweepstore import save_sweep
@@ -60,3 +61,36 @@ def test_album_with_path_separator_gives_exit_2(synthetic_sweep_dir, tmp_path, c
     )
     assert code == 2
     assert capsys.readouterr().err.startswith("error:")
+
+
+def test_no_infrared_flag_skips_dust_removal_and_the_ir_plane(
+    synthetic_sweep_dir, tmp_path, monkeypatch, capsys
+):
+    seen = {}
+    real = cli_module.process_sweep
+
+    def spy(sweep, options, out):
+        seen["ir"], seen["remove_dust"] = sweep.ir, options.remove_dust
+        return real(sweep, options, out)
+
+    monkeypatch.setattr(cli_module, "process_sweep", spy)
+    code = _scan(synthetic_sweep_dir, tmp_path / "out", "--dpi", "600", "--no-infrared")
+    assert code == 0
+    assert seen["ir"] is None and seen["remove_dust"] is False
+    assert "4 slides written" in capsys.readouterr().out
+
+
+def test_process_accepts_no_infrared_to_skip_dust_removal(
+    synthetic_sweep_dir, tmp_path, monkeypatch
+):
+    seen = {}
+    real = cli_module.process_sweep
+
+    def spy(sweep, options, out):
+        seen["remove_dust"] = options.remove_dust
+        return real(sweep, options, out)
+
+    monkeypatch.setattr(cli_module, "process_sweep", spy)
+    args = ["process", str(synthetic_sweep_dir), "--out", str(tmp_path / "out"), "--no-infrared"]
+    assert main(args) == 0
+    assert seen["remove_dust"] is False
