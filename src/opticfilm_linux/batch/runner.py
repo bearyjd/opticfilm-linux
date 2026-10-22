@@ -15,9 +15,17 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 
-from opticfilm_linux.batch.enhance import enhance_tray
+from opticfilm_linux.batch import review
+from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
 from opticfilm_linux.batch.events import BatchEvent, SlideUpdated, TrayFailed, TrayStageChanged
-from opticfilm_linux.batch.model import BatchManifest, TrayRecord, TrayStage
+from opticfilm_linux.batch.model import (
+    BatchManifest,
+    Mode,
+    SlideSettings,
+    SlideStatus,
+    TrayRecord,
+    TrayStage,
+)
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.model import ScanSettings
 from opticfilm_linux.scanner.base import Scanner, ScannerNotReady, ScannerStatus
@@ -78,6 +86,27 @@ class BatchRunner:
         for number in self._store.recover_interrupted():
             self._submit(self._enhance_pool, self._enhance_job, number)
 
+    def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
+        """Apply per-slide settings now; the slide is re-enhanced in the background."""
+        review.apply_slide_settings(self._store, number, position, settings)
+        self._submit(self._enhance_pool, self._reenhance_job, number, position)
+
+    def set_slide_status(self, number: int, position: int, status: SlideStatus) -> None:
+        review.set_slide_status(self._store, number, position, status)
+        self._emit(SlideUpdated(number, position))
+
+    def accept_all(self) -> None:
+        review.accept_all(self._store)
+        for tray in self._store.snapshot().trays:
+            if tray.stage is TrayStage.REVIEW:
+                for slide in tray.slides:
+                    self._emit(SlideUpdated(tray.number, slide.position))
+
+    def set_tray_mode(self, number: int, mode: Mode) -> None:
+        """Change a tray's mode; the whole tray is re-enhanced, keeping the owner's choices."""
+        review.set_tray_mode(self._store, number, mode)
+        self._submit(self._enhance_pool, self._enhance_job, number)
+
     def wait_idle(self, timeout: float | None = None) -> bool:
         """Block until all queued and running work is finished; False if the timeout hit first."""
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -131,6 +160,14 @@ class BatchRunner:
         self._emit(TrayStageChanged(number, tray.stage))
         if tray.stage is TrayStage.FAILED:
             self._emit(TrayFailed(number, tray.error or "enhancement failed"))
+
+    def _reenhance_job(self, number: int, position: int) -> None:
+        try:
+            reenhance_slide(self._store, number, position)
+        except Exception as exc:  # the tray stays in review; the problem is reported as an event
+            self._emit(TrayFailed(number, _describe(exc)))
+            return
+        self._emit(SlideUpdated(number, position))
 
     # -- helpers -------------------------------------------------------------------------
 
