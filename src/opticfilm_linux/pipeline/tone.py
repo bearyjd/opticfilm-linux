@@ -2,7 +2,8 @@
 
 import numpy as np
 
-FULL_SCALE = 65535.0
+from opticfilm_linux.pipeline.arrays import to_float, to_uint16
+
 SAMPLE_PIXELS = 1_000_000
 MIN_SPAN = 1e-4
 TARGET_MEDIAN = 0.45
@@ -12,22 +13,14 @@ NEGATIVE_PERCENTILES = (0.5, 99.5)
 MIN_TRANSMITTANCE = 1e-4
 
 
-def _to_float(rgb: np.ndarray) -> np.ndarray:
-    return rgb.astype(np.float32) / FULL_SCALE
-
-
-def _to_uint16(values: np.ndarray) -> np.ndarray:
-    return np.clip(np.rint(values * FULL_SCALE), 0, FULL_SCALE).astype(np.uint16)
-
-
 def _sample(values: np.ndarray) -> np.ndarray:
     step = max(1, int(np.sqrt(values.shape[0] * values.shape[1] / SAMPLE_PIXELS)))
     return values[::step, ::step]
 
 
 def auto_exposure(rgb: np.ndarray) -> np.ndarray:
-    """Global black/white stretch and gamma from luminance, keeping colour balance."""
-    x = _to_float(rgb)
+    """One shared black/white stretch and gamma for all channels, keeping colour balance."""
+    x = to_float(rgb)
     sample = _sample(x)
     # Black/white points come from the darkest and brightest channel at each pixel, so that
     # one shared stretch never clips a single channel by more than the percentile allows.
@@ -39,12 +32,12 @@ def auto_exposure(rgb: np.ndarray) -> np.ndarray:
     stretched = np.clip((x - low) / (high - low), 0.0, 1.0)
     mid = float(np.clip((median - low) / (high - low), 1e-3, 1 - 1e-3))
     gamma = float(np.clip(np.log(TARGET_MEDIAN) / np.log(mid), *GAMMA_LIMITS))
-    return _to_uint16(stretched**gamma)
+    return to_uint16(stretched**gamma)
 
 
 def restore_color(rgb: np.ndarray, strength: float = 1.0) -> np.ndarray:
     """Per-channel percentile stretch to undo fading and colour casts."""
-    x = _to_float(rgb)
+    x = to_float(rgb)
     sample = _sample(x)
     low = np.percentile(sample, EXPOSURE_PERCENTILES[0], axis=(0, 1))
     high = np.percentile(sample, EXPOSURE_PERCENTILES[1], axis=(0, 1))
@@ -52,12 +45,12 @@ def restore_color(rgb: np.ndarray, strength: float = 1.0) -> np.ndarray:
     usable = span > MIN_SPAN
     safe_span = np.where(usable, span, 1.0)
     stretched = np.where(usable, np.clip((x - low) / safe_span, 0.0, 1.0), x)
-    return _to_uint16((1.0 - strength) * x + strength * stretched)
+    return to_uint16((1.0 - strength) * x + strength * stretched)
 
 
 def invert_negative(rgb: np.ndarray) -> np.ndarray:
     """Density inversion with automatic black and white points per channel."""
-    transmittance = np.clip(_to_float(rgb), MIN_TRANSMITTANCE, 1.0)
+    transmittance = np.clip(to_float(rgb), MIN_TRANSMITTANCE, 1.0)
     density = -np.log10(transmittance)
     sample = _sample(density)
     low = np.percentile(sample, NEGATIVE_PERCENTILES[0], axis=(0, 1))
@@ -65,4 +58,4 @@ def invert_negative(rgb: np.ndarray) -> np.ndarray:
     span = high - low
     usable = span > MIN_SPAN
     safe_span = np.where(usable, span, 1.0)
-    return _to_uint16(np.where(usable, np.clip((density - low) / safe_span, 0.0, 1.0), 0.0))
+    return to_uint16(np.where(usable, np.clip((density - low) / safe_span, 0.0, 1.0), 0.0))
