@@ -18,6 +18,9 @@ dependencies = [
 
 [project.scripts]
 ofscan = "opticfilm_linux.cli:main"
+# Needs the distribution's PySide6 and Kirigami, which are deliberately not dependencies:
+# the PyPI PySide6 wheel bundles its own Qt and cannot load the system Kirigami plugin.
+opticfilm = "opticfilm_linux.app.qt.app:main"
 
 [dependency-groups]
 dev = [
@@ -32,10 +35,18 @@ packages = ["src/opticfilm_linux"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-m 'not hardware'"
+addopts = "-m 'not hardware and not qt'"
 markers = [
     "hardware: needs the real scanner plugged in (read-only); excluded by default",
+    "qt: needs the distribution's PySide6 and Kirigami (headless smoke test); excluded by default",
 ]
+
+[tool.coverage.run]
+# The Qt layer needs PySide6 and Kirigami; the optional Fedora CI job exercises it.
+omit = ["*/opticfilm_linux/app/qt/*"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/opticfilm_linux/app/qml" = "opticfilm_linux/app/qml"
 
 [tool.ruff]
 line-length = 100
@@ -46,5 +57,6 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP", "T20"]
 
 [tool.ruff.lint.per-file-ignores]
+"tests/qt/**" = ["E402"]
 "src/opticfilm_linux/cli.py" = ["T201"]
 "src/opticfilm_linux/batch/cli.py" = ["T201"]

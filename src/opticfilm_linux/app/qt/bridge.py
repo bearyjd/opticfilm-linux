@@ -1,0 +1,349 @@
+"""The thin Qt object QML talks to: it mirrors ``AppState`` and forwards slots to the controller.
+
+No behaviour lives here beyond translating types, debouncing slider moves, and remembering
+recent batches. Everything it calls on the controller returns at once.
+"""
+
+import dataclasses
+from pathlib import Path
+from typing import Any
+
+from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
+
+from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
+from opticfilm_linux.app.messages import bytes_text, slide_status_text
+from opticfilm_linux.app.prefs import (
+    DEFAULT_DPI,
+    DPI_CHOICES,
+    Prefs,
+    batch_subfolder,
+    forget_batch,
+    recent_batches,
+    remember_batch,
+)
+from opticfilm_linux.app.qt.models import DictListModel
+from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
+from opticfilm_linux.batch.model import BatchDefaults, SlideStatus
+
+TICK_MS = 500
+DEBOUNCE_MS = 300
+TRAY_KEYS = (
+    "number",
+    "stage",
+    "stageText",
+    "progress",
+    "elapsed",
+    "error",
+    "needsLook",
+    "rawRemoved",
+)
+SLIDE_KEYS = (
+    "position",
+    "status",
+    "statusText",
+    "flags",
+    "rotation",
+    "brightness",
+    "color",
+    "grain",
+    "sharpen",
+    "ownerDecided",
+    "exported",
+    "updating",
+    "afterUrl",
+    "beforeUrl",
+)
+FIELDS = {
+    "brightness": "brightness_ev",
+    "color": "color_strength",
+    "grain": "grain_strength",
+    "sharpen": "sharpen_amount",
+}
+DEFAULTS = BatchDefaults()
+EXPORT_FOLDER_KEY = "export_folder"
+EXPORT_FORMAT_KEY = "export_format"
+
+
+def _tray_dict(row: TrayRow) -> dict[str, Any]:
+    elapsed = "" if row.elapsed_s is None else f"{int(row.elapsed_s)} s"
+    return {
+        "number": row.number,
+        "stage": row.stage.value,
+        "stageText": row.stage_text,
+        "progress": -1.0 if row.progress is None else row.progress,
+        "elapsed": elapsed,
+        "error": row.error or "",
+        "needsLook": row.needs_look,
+        "rawRemoved": row.raw_removed,
+    }
+
+
+def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
+    s = card.settings
+    base = f"image://preview/{tray}/{card.position}"
+    return {
+        "position": card.position,
+        "status": card.status.value,
+        "statusText": slide_status_text(card.status),
+        "flags": list(card.flags),
+        "rotation": s.rotation,
+        "brightness": s.brightness_ev,
+        "color": DEFAULTS.color_strength if s.color_strength is None else s.color_strength,
+        "grain": DEFAULTS.grain_strength if s.grain_strength is None else s.grain_strength,
+        "sharpen": DEFAULTS.sharpen_amount if s.sharpen_amount is None else s.sharpen_amount,
+        "ownerDecided": card.owner_decided,
+        "exported": card.exported,
+        "updating": card.updating,
+        "afterUrl": f"{base}/after/{card.preview_token}" if card.preview_token else "",
+        "beforeUrl": f"{base}/before/{card.preview_token}" if card.preview_token else "",
+    }
+
+
+def _p(kind: Any, changed: Signal, read) -> Property:
+    return Property(kind, lambda self: read(self._state, self), notify=changed)
+
+
+class Bridge(QObject):
+    changed = Signal()
+
+    def __init__(
+        self, controller: Controller, prefs: Prefs, demo_dpi: int | None = None, parent=None
+    ) -> None:
+        super().__init__(parent)
+        self._controller = controller
+        self._prefs = prefs
+        self._demo_dpi = demo_dpi or 0
+        self._state: AppState = EMPTY_STATE
+        self._trays = DictListModel(TRAY_KEYS, self)
+        self._slides = DictListModel(SLIDE_KEYS, self)
+        self._pending: dict[tuple[int, int], dict[str, float]] = {}
+        self._opening: Path | None = None
+        self._last_attempt: Path | None = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(TICK_MS)
+        self._timer.timeout.connect(self.poll)
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(DEBOUNCE_MS)
+        self._flush_timer.timeout.connect(self._flush)
+
+    def start(self) -> None:
+        self._timer.start()
+
+    # -- state mirror --------------------------------------------------------------------
+
+    @Slot()
+    def poll(self) -> None:
+        if self._controller.tick():
+            self._apply(self._controller.state())
+
+    def _apply(self, state: AppState) -> None:
+        self._state = state
+        self._trays.set_rows([_tray_dict(t) for t in state.trays])
+        number = state.selected
+        self._slides.set_rows(
+            [] if number is None else [_slide_dict(number, c) for c in state.slides]
+        )
+        if state.batch_name is not None and self._opening is not None:
+            remember_batch(self._prefs, self._opening)
+            self._opening = None
+        self.changed.emit()
+
+    trays = Property(QObject, lambda self: self._trays, constant=True)
+    slides = Property(QObject, lambda self: self._slides, constant=True)
+    demoDpi = Property(int, lambda self: self._demo_dpi, constant=True)  # noqa: N815
+    defaultDpi = Property(int, lambda self: self._demo_dpi or DEFAULT_DPI, constant=True)  # noqa: N815
+    dpiChoices = Property("QVariantList", lambda self: list(DPI_CHOICES), constant=True)  # noqa: N815
+
+    hasBatch = _p(bool, changed, lambda s, _: s.batch_name is not None)  # noqa: N815
+    batchName = _p(str, changed, lambda s, _: s.batch_name or "")  # noqa: N815
+    readonly = _p(bool, changed, lambda s, _: s.readonly)
+    scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
+    canScan = _p(bool, changed, lambda s, _: s.can_scan)  # noqa: N815
+    scanPending = _p(bool, changed, lambda s, _: s.scan_pending)  # noqa: N815
+    selectedTray = _p(int, changed, lambda s, _: -1 if s.selected is None else s.selected)  # noqa: N815
+    hasBanner = _p(bool, changed, lambda s, _: s.banner is not None)  # noqa: N815
+    bannerMessage = _p(str, changed, lambda s, _: s.banner.message if s.banner else "")  # noqa: N815
+    bannerDetail = _p(str, changed, lambda s, _: s.banner.detail if s.banner else "")  # noqa: N815
+    bannerLocked = _p(  # noqa: N815
+        bool, changed, lambda s, _: bool(s.banner and s.banner.detail.startswith(LOCKED_PREFIX))
+    )
+    hasExport = _p(bool, changed, lambda s, _: s.export is not None)  # noqa: N815
+    exportRunning = _p(bool, changed, lambda s, _: bool(s.export and s.export.running))  # noqa: N815
+    exportFinished = _p(bool, changed, lambda s, _: bool(s.export and s.export.finished))  # noqa: N815
+    exportDone = _p(int, changed, lambda s, _: s.export.done if s.export else 0)  # noqa: N815
+    exportTotal = _p(int, changed, lambda s, _: s.export.total if s.export else 0)  # noqa: N815
+    exportWritten = _p(int, changed, lambda s, _: s.export.written if s.export else 0)  # noqa: N815
+    exportCancelled = _p(bool, changed, lambda s, _: bool(s.export and s.export.cancelled))  # noqa: N815
+    hasFreeSpace = _p(bool, changed, lambda s, _: s.free_space is not None)  # noqa: N815
+    freeSpaceRunning = _p(  # noqa: N815
+        bool, changed, lambda s, _: bool(s.free_space and s.free_space.running)
+    )
+    freeSpaceDone = _p(  # noqa: N815
+        bool, changed, lambda s, _: bool(s.free_space and s.free_space.freed is not None)
+    )
+    freeSpaceText = _p(str, changed, lambda s, _: _free_text(s))  # noqa: N815
+    lastExportFolder = _p(  # noqa: N815
+        str, changed, lambda _s, b: b._prefs.get(EXPORT_FOLDER_KEY, "") or ""
+    )
+    lastExportFormat = _p(  # noqa: N815
+        str, changed, lambda _s, b: b._prefs.get(EXPORT_FORMAT_KEY, "tiff16") or "tiff16"
+    )
+    recentBatches = _p(  # noqa: N815
+        "QVariantList",
+        changed,
+        lambda _s, _b: [
+            {"path": str(r.path), "name": r.path.name, "exists": r.exists}
+            for r in recent_batches(_b._prefs)
+        ],
+    )
+
+    # -- batch ---------------------------------------------------------------------------
+
+    @Slot(str, str, str, str, int)
+    def newBatch(self, parent_url: str, name: str, album: str, date: str, dpi: int) -> None:  # noqa: N802
+        folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
+        self._opening = self._last_attempt = folder
+        self._controller.new_batch(folder, name.strip() or folder.name, album, date or None, dpi)
+
+    @Slot(str, bool)
+    def openBatch(self, path: str, readonly: bool) -> None:  # noqa: N802
+        self._opening = self._last_attempt = Path(path)
+        self._controller.open_batch(Path(path), readonly=readonly)
+
+    @Slot()
+    def openLastReadonly(self) -> None:  # noqa: N802
+        if self._last_attempt is not None:
+            self.openBatch(str(self._last_attempt), True)
+
+    @Slot(str)
+    def forgetBatch(self, path: str) -> None:  # noqa: N802
+        forget_batch(self._prefs, Path(path))
+        self.changed.emit()
+
+    @Slot()
+    def closeBatch(self) -> None:  # noqa: N802
+        self._controller.close_batch()
+
+    # -- scanning and review -------------------------------------------------------------
+
+    @Slot()
+    def scan(self) -> None:
+        self._controller.scan()
+
+    @Slot(int)
+    def rescan(self, number: int) -> None:
+        self._controller.rescan(number)
+
+    @Slot(int)
+    def selectTray(self, number: int) -> None:  # noqa: N802
+        self._controller.select_tray(number)
+
+    @Slot(int, int, bool)
+    def setAccepted(self, number: int, position: int, accepted: bool) -> None:  # noqa: N802
+        status = SlideStatus.ACCEPTED if accepted else SlideStatus.NEEDS_LOOK
+        self._controller.set_status(number, position, status)
+
+    @Slot(int, int, int)
+    def rotate(self, number: int, position: int, quarter_turns: int) -> None:
+        self._controller.rotate(number, position, quarter_turns)
+
+    @Slot(int, int, str, float)
+    def adjust(self, number: int, position: int, field: str, value: float) -> None:
+        """Queue one slider value; the last value per slide is applied after a short pause."""
+        if field in FIELDS:
+            self._pending.setdefault((number, position), {})[field] = value
+            self._flush_timer.start()
+
+    @Slot(int, int)
+    def resetSlide(self, number: int, position: int) -> None:  # noqa: N802
+        self._pending.pop((number, position), None)
+        self._controller.reset_slide(number, position)
+
+    @Slot()
+    def acceptAll(self) -> None:  # noqa: N802
+        self._controller.accept_all()
+
+    def _flush(self) -> None:
+        pending, self._pending = self._pending, {}
+        for (number, position), fields in pending.items():
+            card = self._card(number, position)
+            if card is None:
+                continue
+            changes = {FIELDS[name]: value for name, value in fields.items()}
+            try:
+                settings = dataclasses.replace(card.settings, **changes)
+            except ValueError:
+                continue  # a slider value outside the allowed range is ignored
+            self._controller.edit_slide(number, position, settings)
+
+    def _card(self, number: int, position: int) -> SlideCard | None:
+        if self._state.selected != number:
+            return None
+        return next((c for c in self._state.slides if c.position == position), None)
+
+    # -- export and free disk space ------------------------------------------------------
+
+    @Slot(str, str)
+    def startExport(self, folder_url: str, fmt: str) -> None:  # noqa: N802
+        folder = QUrl(folder_url).toLocalFile() or folder_url
+        self._prefs.set(EXPORT_FOLDER_KEY, folder)
+        self._prefs.set(EXPORT_FORMAT_KEY, fmt)
+        self._controller.export(Path(folder), fmt)  # type: ignore[arg-type]
+
+    @Slot()
+    def cancelExport(self) -> None:  # noqa: N802
+        self._controller.cancel_export()
+
+    @Slot()
+    def dismissExport(self) -> None:  # noqa: N802
+        self._controller.dismiss_export()
+
+    @Slot()
+    def requestFreeSpace(self) -> None:  # noqa: N802
+        self._controller.request_free_space()
+
+    @Slot()
+    def confirmFreeSpace(self) -> None:  # noqa: N802
+        self._controller.confirm_free_space()
+
+    @Slot()
+    def cancelFreeSpace(self) -> None:  # noqa: N802
+        self._controller.cancel_free_space()
+
+    @Slot()
+    def dismissFreeSpace(self) -> None:  # noqa: N802
+        self._controller.dismiss_free_space()
+
+    @Slot()
+    def dismissBanner(self) -> None:  # noqa: N802
+        self._controller.dismiss_banner()
+
+    # -- closing -------------------------------------------------------------------------
+
+    @Slot(result=str)
+    def closeRequested(self) -> str:  # noqa: N802
+        return self._controller.shutdown_decision()
+
+    @Slot()
+    def shutdown(self) -> None:
+        self._timer.stop()
+        self._flush_timer.stop()
+        self._controller.shutdown()
+
+    @Slot(int, int, str, result=str)
+    def previewPath(self, number: int, position: int, kind: str) -> str:  # noqa: N802
+        path = self._controller.preview_path(number, position, kind)  # type: ignore[arg-type]
+        return "" if path is None else str(path)
+
+
+def _free_text(state: AppState) -> str:
+    view = state.free_space
+    if view is None:
+        return ""
+    if view.freed is not None:
+        return f"Freed {bytes_text(view.freed)}."
+    names = ", ".join(f"tray {n} ({bytes_text(b)})" for n, b in view.trays)
+    if not view.trays:
+        return "There are no fully exported trays with raw scans to remove."
+    return f"This removes the raw scans of {names}: {bytes_text(view.total_bytes)} in all."

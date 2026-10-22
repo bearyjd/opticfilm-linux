@@ -200,3 +200,15 @@ def test_shutdown_resumes_next_time(controller, tmp_path, sweep600_dir):
     c2 = controller()
     c2.open_batch(tmp_path / "b")
     wait_all_in_review(c2, 2)
+
+
+def test_first_tray_is_selected_automatically_but_a_later_choice_is_kept(controller, tmp_path):
+    c = controller()
+    open_new(c, tmp_path / "b")
+    scan_when_ready(c)
+    wait_until(c, lambda: c.state().selected == 1)
+    scan_when_ready(c)
+    wait_all_in_review(c, 2)
+    assert c.state().selected == 1
+    c.select_tray(2)
+    wait_until(c, lambda: c.state().selected == 2)

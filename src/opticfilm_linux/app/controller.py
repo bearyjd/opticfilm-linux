@@ -371,6 +371,8 @@ class Controller:
     def _on_stage(self, number: int, stage: TrayStage) -> None:
         if stage is TrayStage.SCANNING:
             self._scan_started = {**self._scan_started, number: self._clock()}
+            if self._selected is None:
+                self._selected = number  # show the first tray without making the owner click
         else:
             self._scan_started = {k: v for k, v in self._scan_started.items() if k != number}
         if stage is TrayStage.ENHANCING:
