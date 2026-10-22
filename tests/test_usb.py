@@ -55,3 +55,10 @@ def test_community_scanner_raises_not_supported_yet():
         scanner.scan_holder(ScanSettings())
     with pytest.raises(NotSupportedYet, match="C2"):
         scanner.eject()
+
+
+def test_community_scanner_status_is_unknown():
+    from opticfilm_linux.scanner.base import ScannerStatus
+
+    device = DeviceInfo(0x07B3, 0x1436, "Plustek OpticFilm 135i", 3, 54)
+    assert CommunityDriverScanner(device).status() is ScannerStatus.UNKNOWN
