@@ -34,6 +34,16 @@ def defect_mask(
     return mask.astype(bool)
 
 
+def defect_mask_for(ir: np.ndarray, dpi: int) -> np.ndarray:
+    """``defect_mask`` with its window and dilation scaled to the scan resolution."""
+    scale = dpi / REFERENCE_DPI
+    return defect_mask(
+        ir,
+        dilate_px=max(1, round(DILATE_PX_AT_REFERENCE * scale)),
+        median_px=_odd(MEDIAN_PX_AT_REFERENCE * scale),
+    )
+
+
 def remove_dust(rgb: np.ndarray, ir: np.ndarray | None, *, dpi: int = 3600) -> np.ndarray:
     """Inpaint infrared-detected defects in ``rgb``; returns a new array.
 
@@ -44,8 +54,7 @@ def remove_dust(rgb: np.ndarray, ir: np.ndarray | None, *, dpi: int = 3600) -> n
     if ir is None:
         return rgb.copy()
     scale = dpi / REFERENCE_DPI
-    dilate = max(1, round(DILATE_PX_AT_REFERENCE * scale))
-    mask = defect_mask(ir, dilate_px=dilate, median_px=_odd(MEDIAN_PX_AT_REFERENCE * scale))
+    mask = defect_mask_for(ir, dpi)
     out = rgb.copy()
     if not mask.any():
         return out
