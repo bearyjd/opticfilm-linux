@@ -37,11 +37,6 @@ def test_dpi_mismatch_gives_exit_2(synthetic_sweep_dir, tmp_path, capsys):
     assert "600" in capsys.readouterr().err
 
 
-def test_scan_without_fake_reports_not_supported(tmp_path, capsys):
-    assert main(["scan", "--out", str(tmp_path / "out")]) == 2
-    assert "not supported" in capsys.readouterr().err.lower()
-
-
 def test_sweep_with_no_openings_gives_exit_2(tmp_path, capsys):
     blank = RawSweep(
         rgb=np.zeros((5339, 827, 3), np.uint16), ir=None, dpi=600, holder=HolderKind.SLIDE4

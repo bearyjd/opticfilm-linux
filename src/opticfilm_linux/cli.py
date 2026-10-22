@@ -9,8 +9,10 @@ from opticfilm_linux.model import RawSweep, ScanSettings
 from opticfilm_linux.output import OutputSpec
 from opticfilm_linux.pipeline.run import ProcessOptions, process_sweep
 from opticfilm_linux.pipeline.split import SlideSplitError
-from opticfilm_linux.scanner.base import NotSupportedYet, ScanError
+from opticfilm_linux.scanner.base import ScanError
+from opticfilm_linux.scanner.community import CommunityDriverScanner
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.usb import find_devices
 from opticfilm_linux.sweepstore import SweepFormatError, load_sweep
 
 EXIT_ERROR = 2
@@ -31,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"ofscan {__version__}")
     commands = parser.add_subparsers(dest="command")
+    commands.add_parser("devices", help="list supported scanners (read-only)")
     scan = commands.add_parser("scan", help="scan a holder and process it")
     scan.add_argument("--fake", type=Path, help="replay the stored sweep in this folder")
     scan.add_argument("--dpi", type=int, default=3600)
@@ -44,11 +47,25 @@ def build_parser() -> argparse.ArgumentParser:
 def _load_sweep(args: argparse.Namespace) -> RawSweep:
     if args.command == "process":
         return load_sweep(args.sweep)
-    if args.fake is None:
-        raise NotSupportedYet(
-            "scanning the real device is not supported yet; use --fake SWEEP_DIR instead"
+    settings = ScanSettings(dpi=args.dpi, mode=args.mode)
+    if args.fake is not None:
+        return FakeScanner(args.fake).scan_holder(settings)
+    devices = find_devices()
+    if not devices:
+        raise ScanError("no supported scanner found; plug it in or use --fake SWEEP_DIR")
+    return CommunityDriverScanner(devices[0]).scan_holder(settings)
+
+
+def _list_devices() -> int:
+    devices = find_devices()
+    if not devices:
+        print("no supported scanner found")
+    for device in devices:
+        print(
+            f"{device.vendor_id:04x}:{device.product_id:04x} {device.name}  "
+            f"bus {device.bus} address {device.address}"
         )
-    return FakeScanner(args.fake).scan_holder(ScanSettings(dpi=args.dpi, mode=args.mode))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    if args.command == "devices":
+        return _list_devices()
     options = ProcessOptions(mode=args.mode)
     out = OutputSpec(directory=args.out, fmt=args.format, album=args.album, date=args.date)
     try:
