@@ -1,13 +1,13 @@
 """Immutable data types shared by the scanner layer and the pipeline."""
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 import numpy as np
 
 
-class HolderKind(str, Enum):
+class HolderKind(StrEnum):
     SLIDE4 = "slide4"
     STRIP6 = "strip6"
 
