@@ -10,18 +10,26 @@ from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.output import OutputSpec, write_slide
 from opticfilm_linux.pipeline.detail import reduce_grain, sharpen
 from opticfilm_linux.pipeline.dust import remove_dust
+from opticfilm_linux.pipeline.orient import rotate
 from opticfilm_linux.pipeline.split import is_blank, split_slides
-from opticfilm_linux.pipeline.tone import auto_exposure, invert_negative, restore_color
+from opticfilm_linux.pipeline.tone import (
+    adjust_brightness,
+    auto_exposure,
+    invert_negative,
+    restore_color,
+)
 
 
 @dataclass(frozen=True)
 class ProcessOptions:
     mode: Literal["positive", "negative"] = "positive"
     remove_dust: bool = True
-    restore_color: bool = True
+    color_strength: float = 1.0
     sharpen_amount: float = 0.5
     grain_strength: float = 0.3
     skip_blank: bool = True
+    brightness_ev: float = 0.0
+    rotation: int = 0
 
 
 @dataclass(frozen=True)
@@ -35,17 +43,20 @@ class RunResult:
 
 
 def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray:
-    """Dust removal, negative inversion, exposure, colour, grain, sharpening, in that order."""
+    """Dust, negative, exposure, colour, brightness, grain, sharpening, then rotation."""
     image = slide.rgb
     if options.remove_dust:
         image = remove_dust(image, slide.ir, dpi=dpi)
     if options.mode == "negative":
         image = invert_negative(image)
     image = auto_exposure(image)
-    if options.restore_color:
-        image = restore_color(image)
+    if options.color_strength > 0:
+        image = restore_color(image, strength=options.color_strength)
+    if options.brightness_ev != 0:
+        image = adjust_brightness(image, options.brightness_ev)
     image = reduce_grain(image, strength=options.grain_strength)
-    return sharpen(image, amount=options.sharpen_amount)
+    image = sharpen(image, amount=options.sharpen_amount)
+    return rotate(image, options.rotation) if options.rotation else image
 
 
 def process_sweep(sweep: RawSweep, options: ProcessOptions, out: OutputSpec) -> RunResult:

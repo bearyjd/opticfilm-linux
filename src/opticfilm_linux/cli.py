@@ -24,6 +24,11 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--date", default=None, help="date text used in file names")
     parser.add_argument("--format", choices=["tiff16", "png8", "jpeg"], default="tiff16")
     parser.add_argument("--mode", choices=["positive", "negative"], default="positive")
+    parser.add_argument("--sharpen", type=float, default=0.5, help="sharpening amount (0 = off)")
+    parser.add_argument("--grain", type=float, default=0.3, help="grain reduction (0 = off)")
+    parser.add_argument(
+        "--color-strength", type=float, default=1.0, help="colour restoration, 0 to 1 (0 = off)"
+    )
     parser.add_argument(
         "--no-infrared",
         action="store_true",
@@ -73,6 +78,14 @@ def _list_devices() -> int:
     return 0
 
 
+def _check_strengths(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if not 0.0 <= getattr(args, "color_strength", 0.0) <= 1.0:
+        parser.error("--color-strength must be between 0 and 1")
+    for name in ("sharpen", "grain"):
+        if getattr(args, name, 0.0) < 0:
+            parser.error(f"--{name} must not be negative")
+
+
 def _summary(result: RunResult) -> str:
     text = f"{len(result.written)} slides written, {result.blank_skipped} blank skipped"
     if result.blank_positions:
@@ -84,6 +97,7 @@ def _summary(result: RunResult) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _check_strengths(parser, args)
     if args.command is None:
         parser.print_help()
         return 0
@@ -91,7 +105,13 @@ def main(argv: list[str] | None = None) -> int:
         return _list_devices()
     try:
         out = OutputSpec(directory=args.out, fmt=args.format, album=args.album, date=args.date)
-        options = ProcessOptions(mode=args.mode, remove_dust=not args.no_infrared)
+        options = ProcessOptions(
+            mode=args.mode,
+            remove_dust=not args.no_infrared,
+            color_strength=args.color_strength,
+            sharpen_amount=args.sharpen,
+            grain_strength=args.grain,
+        )
         result = process_sweep(_load_sweep(args), options, out)
     except (SweepFormatError, ScanError, SlideSplitError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

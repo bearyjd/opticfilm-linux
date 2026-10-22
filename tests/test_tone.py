@@ -2,7 +2,12 @@ import warnings
 
 import numpy as np
 
-from opticfilm_linux.pipeline.tone import auto_exposure, invert_negative, restore_color
+from opticfilm_linux.pipeline.tone import (
+    adjust_brightness,
+    auto_exposure,
+    invert_negative,
+    restore_color,
+)
 
 FULL = 65535
 
@@ -93,3 +98,34 @@ def test_invert_negative_leaves_a_channel_with_no_range_unchanged():
 def test_invert_negative_leaves_an_all_white_frame_unchanged():
     white = np.full((16, 16, 3), FULL, np.uint16)
     assert np.array_equal(invert_negative(white), white)
+
+
+def _flat(level: float) -> np.ndarray:
+    return np.full((16, 16, 3), np.uint16(level * FULL), np.uint16)
+
+
+def test_brightness_plus_one_stop_doubles_midgrey():
+    out = adjust_brightness(_flat(0.25), 1.0)
+    assert abs(int(out[0, 0, 0]) - int(0.5 * FULL)) <= 2
+
+
+def test_brightness_minus_one_stop_halves():
+    out = adjust_brightness(_flat(0.5), -1.0)
+    assert abs(int(out[0, 0, 0]) - int(0.25 * FULL)) <= 2
+
+
+def test_brightness_zero_is_identity():
+    image = _gradient(0.1, 0.9)
+    assert np.array_equal(adjust_brightness(image, 0.0), image)
+
+
+def test_brightness_clips_at_white():
+    out = adjust_brightness(_flat(0.8), 2.0)
+    assert out.max() == FULL
+
+
+def test_brightness_all_black_has_no_nan_or_warning():
+    black = np.zeros((8, 8, 3), np.uint16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert np.array_equal(adjust_brightness(black, 1.5), black)

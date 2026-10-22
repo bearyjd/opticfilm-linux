@@ -70,3 +70,11 @@ def invert_negative(rgb: np.ndarray) -> np.ndarray:
         return np.where(usable, np.clip((density(x) - low) / safe_span, 0.0, 1.0), x)
 
     return map_strips(rgb, apply)
+
+
+def adjust_brightness(rgb: np.ndarray, ev: float) -> np.ndarray:
+    """Scale by 2**ev (photographic stops), clipping at white; ev 0 returns an equal copy."""
+    if ev == 0:
+        return rgb.copy()
+    gain = 2.0**ev
+    return map_strips(rgb, lambda x: x * gain)

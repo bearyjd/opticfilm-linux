@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from opticfilm_linux import cli as cli_module
 from opticfilm_linux.cli import main
@@ -94,3 +95,29 @@ def test_process_accepts_no_infrared_to_skip_dust_removal(
     args = ["process", str(synthetic_sweep_dir), "--out", str(tmp_path / "out"), "--no-infrared"]
     assert main(args) == 0
     assert seen["remove_dust"] is False
+
+
+def test_strength_flags_reach_process_options(synthetic_sweep_dir, tmp_path, monkeypatch):
+    seen = {}
+    real = cli_module.process_sweep
+
+    def spy(sweep, options, out):
+        seen["options"] = options
+        return real(sweep, options, out)
+
+    monkeypatch.setattr(cli_module, "process_sweep", spy)
+    args = ["process", str(synthetic_sweep_dir), "--out", str(tmp_path / "out")]
+    args += ["--sharpen", "0", "--grain", "0", "--color-strength", "0"]
+    assert main(args) == 0
+    options = seen["options"]
+    assert (options.sharpen_amount, options.grain_strength, options.color_strength) == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "flag, value", [("--color-strength", "2"), ("--grain", "-1"), ("--sharpen", "-0.5")]
+)
+def test_out_of_range_strength_is_rejected(synthetic_sweep_dir, tmp_path, flag, value):
+    args = ["process", str(synthetic_sweep_dir), "--out", str(tmp_path / "out"), flag, value]
+    with pytest.raises(SystemExit) as excinfo:
+        main(args)
+    assert excinfo.value.code == 2
