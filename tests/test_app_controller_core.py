@@ -294,3 +294,26 @@ def test_hung_scanner_status_shows_error_and_does_not_freeze_the_app(
         assert not closer.is_alive()
     finally:
         release.set()
+
+
+def test_failed_reenhance_clears_the_updating_marker(sweep600_dir, tmp_path, monkeypatch):
+    from opticfilm_linux.batch import runner as runner_module
+    from opticfilm_linux.batch.model import SlideSettings
+
+    c = make_controller(sweep600_dir)
+    try:
+        open_new(c, tmp_path / "b")
+        scan_when_ready(c)
+        wait_all_in_review(c, 1)
+        c.select_tray(1)
+        wait_until(c, lambda: len(c.state().slides) == 4)
+
+        def broken(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(runner_module, "reenhance_slide", broken)
+        c.edit_slide(1, 1, SlideSettings(brightness_ev=1.0))
+        wait_until(c, lambda: c.state().banner is not None)
+        wait_until(c, lambda: not any(s.updating for s in c.state().slides))
+    finally:
+        c.shutdown()

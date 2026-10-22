@@ -89,3 +89,49 @@ def test_second_window_on_the_same_batch_reports_in_use(qapp, sweep600_dir, tmp_
     finally:
         first.shutdown()
         second.shutdown()
+
+
+def _scanned(bridge, tmp_path, name):
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), name, "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch)
+    _wait(bridge, lambda: bridge.canScan)
+    bridge.scan()
+    _wait(bridge, lambda: bridge.trays.rowCount() == 1 and not bridge.scanPending)
+    _wait(bridge, lambda: bridge.selectedTray == 1 and bridge.slides.rowCount() == 4)
+    return tmp_path / name
+
+
+def _first_slide(directory):
+    from opticfilm_linux.batch.store import BatchStore
+
+    with BatchStore.open(directory, readonly=True) as store:
+        return store.snapshot().trays[0].slides[0]
+
+
+def test_a_pending_slider_edit_is_saved_before_the_batch_closes(window, tmp_path):
+    bridge, _warnings = window
+    directory = _scanned(bridge, tmp_path, "Closing")
+    bridge.adjust(1, 1, "brightness", 1.0)  # still inside the debounce pause
+    bridge.closeBatch()
+    _wait(bridge, lambda: not bridge.hasBatch)
+    assert _first_slide(directory).settings.brightness_ev == 1.0
+
+
+def test_a_pending_slider_edit_is_saved_when_the_window_shuts_down(window, tmp_path):
+    bridge, _warnings = window
+    directory = _scanned(bridge, tmp_path, "Quitting")
+    bridge.adjust(1, 1, "brightness", 1.5)
+    bridge.shutdown()
+    assert _first_slide(directory).settings.brightness_ev == 1.5
+
+
+def test_export_waits_for_a_pending_slider_edit(window, tmp_path):
+    bridge, _warnings = window
+    directory = _scanned(bridge, tmp_path, "Exporting")
+    bridge.acceptAll()
+    bridge.adjust(1, 1, "brightness", 1.0)
+    bridge.startExport(QUrl.fromLocalFile(str(tmp_path / "out")).toString(), "tiff16")
+    _wait(bridge, lambda: bridge.exportFinished)
+    bridge.shutdown()
+    slide = _first_slide(directory)
+    assert slide.settings.brightness_ev == 1.0 and slide.exported

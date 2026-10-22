@@ -239,3 +239,65 @@ def test_close_batch_waits_for_a_running_export_before_releasing_the_lock(
     wait_until(two_trays, lambda: two_trays.state().batch_name is None)
     with BatchStore.open(directory) as reopened:
         assert sum(s.exported for t in reopened.snapshot().trays for s in t.slides) == 1
+
+
+def test_close_and_shutdown_together_keep_the_lock_until_the_job_ends(
+    two_trays, tmp_path, monkeypatch
+):
+    reached, release = _gate_after_first_call(monkeypatch, "write_slide")
+    directory = two_trays._session.store.directory
+    two_trays.export(tmp_path / "out", "tiff16")
+    assert reached.wait(GATE_TIMEOUT)
+    two_trays.close_batch()
+    time.sleep(0.3)
+    closer = threading.Thread(target=two_trays.shutdown)
+    closer.start()
+    time.sleep(0.3)
+    with pytest.raises(BatchLocked):
+        BatchStore.open(directory)  # the export is still writing through the old store
+    release.set()
+    closer.join(GATE_TIMEOUT)
+    assert not closer.is_alive()
+    with BatchStore.open(directory) as reopened:
+        assert sum(s.exported for t in reopened.snapshot().trays for s in t.slides) == 1
+
+
+def test_edits_queued_before_shutdown_are_still_saved(two_trays):
+    gate = threading.Event()
+    directory = two_trays._session.store.directory
+    two_trays._command.submit(lambda: gate.wait(30))  # keep the command worker busy
+    two_trays.adjust_slide(1, 1, {"brightness_ev": 1.5})
+    closer = threading.Thread(target=two_trays.shutdown)
+    closer.start()
+    time.sleep(0.3)
+    gate.set()
+    closer.join(GATE_TIMEOUT)
+    assert not closer.is_alive()
+    with BatchStore.open(directory, readonly=True) as store:
+        assert store.snapshot().trays[0].slides[0].settings.brightness_ev == 1.5
+
+
+def test_an_export_queued_for_a_closed_batch_never_touches_the_next_one(sweep600_dir, tmp_path):
+    from controller_helpers import make_controller as make
+
+    c = make(sweep600_dir)
+    try:
+        open_new(c, tmp_path / "a")
+        scan_when_ready(c)
+        wait_all_in_review(c, 1)
+        c.accept_all()
+        gate = threading.Event()
+        c._jobs.submit(lambda: gate.wait(30))  # the jobs worker is busy, so the export queues
+        c.export(tmp_path / "out", "tiff16")
+        time.sleep(0.3)
+        c.close_batch()
+        threading.Timer(0.5, gate.set).start()
+        time.sleep(0.2)
+        BatchStore.create(tmp_path / "b", name="B").close()
+        c.open_batch(tmp_path / "b")
+        wait_until(c, lambda: c.state().batch_name == "B")
+        time.sleep(0.5)
+        c.tick()
+        assert not (tmp_path / "out").exists() or list((tmp_path / "out").iterdir()) == []
+    finally:
+        c.shutdown()

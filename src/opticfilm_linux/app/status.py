@@ -28,6 +28,12 @@ class StatusPoller:
         self._status = ScannerStatus.UNKNOWN
         self._started: float | None = None  # set while a request is out
         self._reported_error = False
+        self._closed = False
+
+    def close(self) -> None:
+        """The batch is gone: a request still out must not report to whatever is open next."""
+        with self._lock:
+            self._closed = True
 
     def poll(self) -> None:
         """Ask the scanner in the background, unless an earlier request is still out."""
@@ -59,7 +65,7 @@ class StatusPoller:
 
     def _report(self, message: str, detail: str) -> None:
         with self._lock:
-            first = not self._reported_error
+            first = not self._reported_error and not self._closed
             self._reported_error = True
         if first:
             self._on_problem(message, detail)

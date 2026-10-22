@@ -212,11 +212,13 @@ class Bridge(QObject):
     @Slot(str, str, str, str, int)
     def newBatch(self, parent_url: str, name: str, album: str, date: str, dpi: int) -> None:  # noqa: N802
         folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
+        self._pending.clear()
         self._opening = self._last_attempt = folder
         self._controller.new_batch(folder, name.strip() or folder.name, album, date or None, dpi)
 
     @Slot(str, bool)
     def openBatch(self, path: str, readonly: bool) -> None:  # noqa: N802
+        self._pending.clear()
         self._opening = self._last_attempt = Path(path)
         self._controller.open_batch(Path(path), readonly=readonly)
 
@@ -232,6 +234,7 @@ class Bridge(QObject):
 
     @Slot()
     def closeBatch(self) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.close_batch()
 
     # -- scanning and review -------------------------------------------------------------
@@ -273,6 +276,10 @@ class Bridge(QObject):
     def acceptAll(self) -> None:  # noqa: N802
         self._controller.accept_all()
 
+    def _flush_now(self) -> None:
+        self._flush_timer.stop()
+        self._flush()
+
     def _flush(self) -> None:
         pending, self._pending = self._pending, {}
         for (number, position), fields in pending.items():
@@ -283,6 +290,7 @@ class Bridge(QObject):
 
     @Slot(str, str)
     def startExport(self, folder_url: str, fmt: str) -> None:  # noqa: N802
+        self._flush_now()  # the export must see the slider the owner just moved
         folder = QUrl(folder_url).toLocalFile() or folder_url
         self._prefs.set(EXPORT_FOLDER_KEY, folder)
         self._prefs.set(EXPORT_FORMAT_KEY, fmt)
@@ -325,7 +333,7 @@ class Bridge(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._timer.stop()
-        self._flush_timer.stop()
+        self._flush_now()
         self._controller.shutdown()
 
     @Slot(int, int, str, result=str)

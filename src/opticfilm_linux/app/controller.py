@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Literal
 
@@ -63,6 +63,7 @@ class Controller:
         self._refreshing = False
         self._session: _Session | None = None
         self._closing = threading.Event()
+        self._job_futures: set[Future] = set()
         self._selected: int | None = None
         self._updating: frozenset[tuple[int, int]] = frozenset()
         self._progress: dict[int, float] = {}
@@ -117,29 +118,31 @@ class Controller:
             defaults = BatchDefaults(dpi=dpi)
             self._attach(BatchStore.create(directory, name, album, date, defaults), False)
 
-        self._run(job, "Could not create the batch")
+        self._run(job, "Could not create the batch", droppable=True)
 
     def open_batch(self, directory: Path, readonly: bool = False) -> None:
         def job() -> None:
             self._detach()
             self._attach(BatchStore.open(directory, readonly=readonly), readonly)
 
-        self._run(job, "Could not open the batch")
+        self._run(job, "Could not open the batch", droppable=True)
 
     def close_batch(self) -> None:
-        self._run(self._detach, "Could not close the batch")
+        self._run(self._detach, "Could not close the batch", droppable=True)
 
     # -- scanning ------------------------------------------------------------------------
 
     def scan(self) -> None:
-        self._run_writer(lambda runner: runner.scan_tray(), "Could not start a scan")
+        self._run_writer(
+            lambda runner: runner.scan_tray(), "Could not start a scan", droppable=True
+        )
 
     def rescan(self, number: int) -> None:
         def job(runner: BatchRunner) -> None:
             self._drop_progress(number)
             runner.rescan_tray(number)
 
-        self._run_writer(job, f"Could not re-scan tray {number}")
+        self._run_writer(job, f"Could not re-scan tray {number}", droppable=True)
 
     def select_tray(self, number: int) -> None:
         self._set(_selected=number)
@@ -220,7 +223,7 @@ class Controller:
 
         if not self._closing.is_set():
             self._cancel_export.clear()  # at submit: a queued job must not undo a later cancel
-        self._run_writer(job, "Could not export", pool=self._jobs)
+        self._after_pending_commands(job, "Could not export")
 
     def cancel_export(self) -> None:
         self._cancel_export.set()
@@ -229,10 +232,9 @@ class Controller:
         self._set(_export=None)
 
     def request_free_space(self) -> None:
-        self._run_writer(
+        self._after_pending_commands(
             lambda _runner: self._set(_free_space=free_space_candidates(self._open_store())),
             "Could not check disk space",
-            pool=self._jobs,
         )
 
     def confirm_free_space(self) -> None:
@@ -253,7 +255,12 @@ class Controller:
 
         if not self._closing.is_set():
             self._cancel_free.clear()
-        self._run_writer(job, "Could not free disk space", pool=self._jobs)
+        self._after_pending_commands(job, "Could not free disk space")
+
+    def _after_pending_commands(self, job: Callable[[BatchRunner], None], message: str) -> None:
+        """Queue a long job behind every command already submitted (an edit made a moment
+        ago must be stored before an export reads the slides), then run it on the jobs worker."""
+        self._run_writer(lambda _runner: self._run_writer(job, message, pool=self._jobs), message)
 
     def cancel_free_space(self) -> None:
         self._cancel_free.set()
@@ -281,18 +288,28 @@ class Controller:
         self._cancel_export.set()
         self._cancel_free.set()
         self._jobs.shutdown(wait=True, cancel_futures=True)
-        self._command.shutdown(wait=True, cancel_futures=True)
+        self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
         self._detach()
         self._refresher.shutdown(wait=True)
 
     # -- internals shared with the other controller modules ------------------------------
 
     def _run(
-        self, job: Callable[[], None], message: str, pool: ThreadPoolExecutor | None = None
+        self,
+        job: Callable[[], None],
+        message: str,
+        pool: ThreadPoolExecutor | None = None,
+        droppable: bool = False,
     ) -> None:
-        """Run ``job`` on the command worker; any failure becomes a banner, never an exception."""
+        """Run ``job`` on a worker; any failure becomes a banner, never an exception.
+
+        A ``droppable`` job (scan, open, close) is skipped if the window is closing by the
+        time its turn comes; edits are not, so the owner's last changes are saved.
+        """
 
         def guarded() -> None:
+            if droppable and self._closing.is_set():
+                return
             try:
                 job()
             except BatchLocked as exc:
@@ -305,26 +322,40 @@ class Controller:
 
         if self._closing.is_set():
             return
+        target = pool or self._command
         try:
-            (pool or self._command).submit(guarded)
+            future = target.submit(guarded)
         except RuntimeError:  # shut down already
             log.debug("command ignored after shutdown")
+            return
+        if target is self._jobs:
+            with self._lock:
+                self._job_futures.add(future)
+            future.add_done_callback(self._job_done)
+
+    def _job_done(self, future: Future) -> None:
+        with self._lock:
+            self._job_futures.discard(future)
 
     def _run_writer(
         self,
         job: Callable[[BatchRunner], None],
         message: str,
         pool: ThreadPoolExecutor | None = None,
+        droppable: bool = False,
     ) -> None:
-        def guarded() -> None:
-            session = self._session
-            if session is None:
-                raise BatchError("no batch is open")
-            if session.runner is None:
-                raise BatchError("this batch is open read-only")
-            job(session.runner)
+        requested = self._session  # the batch the owner meant, not whichever is open later
 
-        self._run(guarded, message, pool)
+        def guarded() -> None:
+            if requested is None:
+                raise BatchError("no batch is open")
+            if self._session is not requested:
+                return  # the batch was closed or replaced meanwhile: drop, never retarget
+            if requested.runner is None:
+                raise BatchError("this batch is open read-only")
+            job(requested.runner)
+
+        self._run(guarded, message, pool, droppable)
 
     def _set(self, **changes) -> None:
         """Replace controller fields (names start with ``_``) under the lock."""
@@ -366,19 +397,20 @@ class Controller:
         self._set(_banner=Banner(message, detail))
 
     def _stop_jobs(self) -> None:
-        """Cancel a running export or free-space job and wait until it has stopped."""
+        """Cancel a running export or free-space job and wait until every job has ended."""
         self._cancel_export.set()
         self._cancel_free.set()
-        try:
-            self._jobs.submit(lambda: None).result()
-        except RuntimeError:  # the jobs pool is already shut down, so nothing is running
-            return
+        with self._lock:
+            pending = list(self._job_futures)
+        wait(pending)
 
     def _detach(self) -> None:
         self._stop_jobs()  # a job writes through the store, so it must finish before it closes
         with self._lock:
             session, self._session = self._session, None
         if session is not None:
+            if session.poller is not None:
+                session.poller.close()
             if session.runner is not None:
                 session.runner.stop()
             session.store.close()
@@ -413,6 +445,7 @@ class Controller:
                 }
         elif isinstance(event, TrayFailed):
             self._banner = Banner(f"Tray {event.number} failed", event.message)
+            self._updating = frozenset(k for k in self._updating if k[0] != event.number)
 
     def _on_stage(self, number: int, stage: TrayStage) -> None:
         if stage is TrayStage.SCANNING:
