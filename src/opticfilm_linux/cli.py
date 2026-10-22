@@ -7,7 +7,7 @@ from pathlib import Path
 from opticfilm_linux import __version__
 from opticfilm_linux.model import RawSweep, ScanSettings
 from opticfilm_linux.output import OutputSpec
-from opticfilm_linux.pipeline.run import ProcessOptions, process_sweep
+from opticfilm_linux.pipeline.run import ProcessOptions, RunResult, process_sweep
 from opticfilm_linux.pipeline.split import SlideSplitError
 from opticfilm_linux.scanner.base import ScanError
 from opticfilm_linux.scanner.community import CommunityDriverScanner
@@ -68,6 +68,14 @@ def _list_devices() -> int:
     return 0
 
 
+def _summary(result: RunResult) -> str:
+    text = f"{len(result.written)} slides written, {result.blank_skipped} blank skipped"
+    if result.blank_positions:
+        label = "position" if len(result.blank_positions) == 1 else "positions"
+        text += f" ({label} {', '.join(str(p) for p in result.blank_positions)})"
+    return text
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -76,12 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "devices":
         return _list_devices()
-    options = ProcessOptions(mode=args.mode)
-    out = OutputSpec(directory=args.out, fmt=args.format, album=args.album, date=args.date)
     try:
-        result = process_sweep(_load_sweep(args), options, out)
-    except (SweepFormatError, ScanError, SlideSplitError, OSError) as exc:
+        out = OutputSpec(directory=args.out, fmt=args.format, album=args.album, date=args.date)
+        result = process_sweep(_load_sweep(args), ProcessOptions(mode=args.mode), out)
+    except (SweepFormatError, ScanError, SlideSplitError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    print(f"{len(result.written)} slides written, {result.blank_skipped} blank skipped")
+    print(_summary(result))
     return 0

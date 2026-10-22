@@ -39,3 +39,9 @@ def test_negative_mode_runs(tmp_path):
         make_sweep(dpi=600), ProcessOptions(mode="negative"), OutputSpec(directory=tmp_path)
     )
     assert len(result.written) == 4
+
+
+def test_blank_positions_are_reported_one_based(tmp_path):
+    sweep = make_sweep(dpi=600, filled=(True, False, True, False))
+    result = process_sweep(sweep, ProcessOptions(), OutputSpec(directory=tmp_path))
+    assert result.blank_positions == (2, 4)

@@ -44,3 +44,19 @@ def test_sweep_with_no_openings_gives_exit_2(tmp_path, capsys):
     save_sweep(blank, tmp_path / "sweep")
     assert main(["process", str(tmp_path / "sweep"), "--out", str(tmp_path / "out")]) == 2
     assert capsys.readouterr().err.startswith("error:")
+
+
+def test_blank_positions_are_named_in_the_summary(tmp_path, capsys):
+    from synthetic import make_sweep
+
+    save_sweep(make_sweep(dpi=600, filled=(True, False, True, True)), tmp_path / "sweep")
+    assert main(["process", str(tmp_path / "sweep"), "--out", str(tmp_path / "out")]) == 0
+    assert "3 slides written, 1 blank skipped (position 2)" in capsys.readouterr().out
+
+
+def test_album_with_path_separator_gives_exit_2(synthetic_sweep_dir, tmp_path, capsys):
+    code = main(
+        ["process", str(synthetic_sweep_dir), "--out", str(tmp_path / "out"), "--album", "../x"]
+    )
+    assert code == 2
+    assert capsys.readouterr().err.startswith("error:")

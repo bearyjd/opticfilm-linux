@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from opticfilm_linux.pipeline.arrays import to_float, to_uint16
+from opticfilm_linux.pipeline.arrays import map_strips, to_float
 
-SAMPLE_PIXELS = 1_000_000
+SAMPLE_PIXELS = 250_000
 MIN_SPAN = 1e-4
 TARGET_MEDIAN = 0.45
 GAMMA_LIMITS = (0.5, 2.0)
@@ -13,15 +13,15 @@ NEGATIVE_PERCENTILES = (0.5, 99.5)
 MIN_TRANSMITTANCE = 1e-4
 
 
-def _sample(values: np.ndarray) -> np.ndarray:
-    step = max(1, int(np.sqrt(values.shape[0] * values.shape[1] / SAMPLE_PIXELS)))
-    return values[::step, ::step]
+def _sample(image: np.ndarray) -> np.ndarray:
+    """A strided subsample of a uint16 image, as float32 in [0, 1]; statistics come from this."""
+    step = max(1, int(np.sqrt(image.shape[0] * image.shape[1] / SAMPLE_PIXELS)))
+    return to_float(image[::step, ::step])
 
 
 def auto_exposure(rgb: np.ndarray) -> np.ndarray:
     """One shared black/white stretch and gamma for all channels, keeping colour balance."""
-    x = to_float(rgb)
-    sample = _sample(x)
+    sample = _sample(rgb)
     # Black/white points come from the darkest and brightest channel at each pixel, so that
     # one shared stretch never clips a single channel by more than the percentile allows.
     low = np.percentile(sample.min(axis=2), EXPOSURE_PERCENTILES[0])
@@ -29,33 +29,41 @@ def auto_exposure(rgb: np.ndarray) -> np.ndarray:
     median = np.percentile(sample.mean(axis=2), 50)
     if high - low < MIN_SPAN:
         return rgb.copy()
-    stretched = np.clip((x - low) / (high - low), 0.0, 1.0)
     mid = float(np.clip((median - low) / (high - low), 1e-3, 1 - 1e-3))
     gamma = float(np.clip(np.log(TARGET_MEDIAN) / np.log(mid), *GAMMA_LIMITS))
-    return to_uint16(stretched**gamma)
+    return map_strips(rgb, lambda x: np.clip((x - low) / (high - low), 0.0, 1.0) ** gamma)
 
 
 def restore_color(rgb: np.ndarray, strength: float = 1.0) -> np.ndarray:
     """Per-channel percentile stretch to undo fading and colour casts."""
-    x = to_float(rgb)
-    sample = _sample(x)
+    sample = _sample(rgb)
     low = np.percentile(sample, EXPOSURE_PERCENTILES[0], axis=(0, 1))
     high = np.percentile(sample, EXPOSURE_PERCENTILES[1], axis=(0, 1))
     span = high - low
     usable = span > MIN_SPAN
     safe_span = np.where(usable, span, 1.0)
-    stretched = np.where(usable, np.clip((x - low) / safe_span, 0.0, 1.0), x)
-    return to_uint16((1.0 - strength) * x + strength * stretched)
+
+    def apply(x: np.ndarray) -> np.ndarray:
+        stretched = np.where(usable, np.clip((x - low) / safe_span, 0.0, 1.0), x)
+        return (1.0 - strength) * x + strength * stretched
+
+    return map_strips(rgb, apply)
 
 
 def invert_negative(rgb: np.ndarray) -> np.ndarray:
     """Density inversion with automatic black and white points per channel."""
-    transmittance = np.clip(to_float(rgb), MIN_TRANSMITTANCE, 1.0)
-    density = -np.log10(transmittance)
-    sample = _sample(density)
+
+    def density(x: np.ndarray) -> np.ndarray:
+        return -np.log10(np.clip(x, MIN_TRANSMITTANCE, 1.0))
+
+    sample = density(_sample(rgb))
     low = np.percentile(sample, NEGATIVE_PERCENTILES[0], axis=(0, 1))
     high = np.percentile(sample, NEGATIVE_PERCENTILES[1], axis=(0, 1))
     span = high - low
     usable = span > MIN_SPAN
     safe_span = np.where(usable, span, 1.0)
-    return to_uint16(np.where(usable, np.clip((density - low) / safe_span, 0.0, 1.0), 0.0))
+
+    def apply(x: np.ndarray) -> np.ndarray:
+        return np.where(usable, np.clip((density(x) - low) / safe_span, 0.0, 1.0), 0.0)
+
+    return map_strips(rgb, apply)

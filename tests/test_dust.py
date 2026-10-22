@@ -70,13 +70,23 @@ def test_no_ir_returns_copy():
     assert np.array_equal(out, rgb) and out is not rgb
 
 
-def test_tiling_leaves_no_seam():
-    rgb, ir, _, _ = _apertures(DUST)[0]
-    small = remove_dust(rgb, ir, dpi=DPI, tile=256).astype(np.int64)
-    large = remove_dust(rgb, ir, dpi=DPI, tile=4096).astype(np.int64)
-    seams = [r for r in range(256, rgb.shape[0], 256)]
-    diff = np.abs(small - large)
-    assert max(diff[r - 2 : r + 2].max() for r in seams) <= 0.02 * 65535
+def test_repair_does_not_depend_on_where_the_image_is_cut():
+    """The same defect on the same texture is repaired identically wherever it falls."""
+    rng = np.random.default_rng(5)
+    base = np.clip(rng.normal(0.5, 0.12, (1500, 300, 1)) * np.ones((1, 1, 3)), 0, 1)
+    base = (base * 65535).astype(np.uint16)
+
+    def repaired(first_row: int) -> np.ndarray:
+        rgb = base[first_row : first_row + 1400].copy()
+        ir = np.full(rgb.shape[:2], int(0.9 * 65535), np.uint16)
+        top = 1000 - first_row
+        rgb[top : top + 60, 140:144] = 0
+        ir[top : top + 60, 140:144] = int(0.2 * 65535)
+        out = remove_dust(rgb, ir, dpi=3600)
+        return out[top - 30 : top + 90].astype(np.int64)
+
+    # at first_row=0 the defect straddles row 1024; at 100 it sits well clear of it
+    assert np.abs(repaired(0) - repaired(100)).max() <= 0.001 * 65535
 
 
 def test_input_is_not_modified():

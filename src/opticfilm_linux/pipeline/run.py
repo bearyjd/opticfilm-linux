@@ -27,7 +27,11 @@ class ProcessOptions:
 @dataclass(frozen=True)
 class RunResult:
     written: tuple[Path, ...]
-    blank_skipped: int
+    blank_positions: tuple[int, ...]  # 1-based holder positions skipped as blank
+
+    @property
+    def blank_skipped(self) -> int:
+        return len(self.blank_positions)
 
 
 def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray:
@@ -46,10 +50,10 @@ def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray
 
 def process_sweep(sweep: RawSweep, options: ProcessOptions, out: OutputSpec) -> RunResult:
     written: list[Path] = []
-    blank_skipped = 0
+    blank: list[int] = []
     for slide in split_slides(sweep):
         if options.skip_blank and is_blank(slide):
-            blank_skipped += 1
+            blank.append(slide.index + 1)
             continue
         written.append(write_slide(enhance_slide(slide, options, sweep.dpi), out))
-    return RunResult(written=tuple(written), blank_skipped=blank_skipped)
+    return RunResult(written=tuple(written), blank_positions=tuple(blank))

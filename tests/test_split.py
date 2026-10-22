@@ -68,3 +68,22 @@ def test_too_few_openings_raises():
         ir[box.y : box.y + box.h] = 0
     with pytest.raises(SlideSplitError, match="expected 4"):
         split_slides(dataclasses.replace(sweep, rgb=rgb, ir=ir))
+
+
+@pytest.mark.parametrize("level", [0.05, 0.02])
+def test_dark_slide_without_ir_does_not_lose_the_holder(level):
+    sweep = make_sweep(dpi=600, ir=False)
+    box = truth_boxes(600)[2]
+    rgb = sweep.rgb.copy()
+    rgb[box.y : box.y + box.h] = np.uint16(level * 65535)
+    slides = split_slides(dataclasses.replace(sweep, rgb=rgb))
+    assert len(slides) == 4
+
+
+def test_bright_flat_slide_is_not_blank():
+    sweep = make_sweep(dpi=600)
+    box = truth_boxes(600)[1]
+    rgb = sweep.rgb.copy()
+    rgb[box.y : box.y + box.h] = np.uint16(0.9 * 65535)
+    slides = split_slides(dataclasses.replace(sweep, rgb=rgb))
+    assert is_blank(slides[1]) is False

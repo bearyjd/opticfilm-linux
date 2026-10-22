@@ -22,6 +22,11 @@ class OutputSpec:
     album: str = ""
     date: str | None = None
 
+    def __post_init__(self) -> None:
+        for label, value in (("album", self.album), ("date", self.date or "")):
+            if "/" in value or "\\" in value or value in (".", ".."):
+                raise ValueError(f"{label} must not contain path separators or be '..': {value!r}")
+
 
 @cache
 def _srgb_profile() -> bytes:
@@ -72,7 +77,7 @@ def write_slide(rgb: np.ndarray, spec: OutputSpec) -> Path:
         try:
             with handle:
                 _encode(rgb, spec.fmt, handle)
-        except Exception:
+        except BaseException:
             path.unlink(missing_ok=True)
             raise
         return path

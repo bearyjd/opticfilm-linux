@@ -83,3 +83,24 @@ def test_failed_encode_leaves_no_partial_file(tmp_path):
     with pytest.raises(ValueError):
         write_slide(bad, OutputSpec(directory=tmp_path, fmt="jpeg"))
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("album", ["../escaped", "a/b", "..", "a\\b"])
+def test_album_with_path_parts_is_rejected(tmp_path, album):
+    with pytest.raises(ValueError, match="album"):
+        OutputSpec(directory=tmp_path, album=album)
+
+
+def test_date_with_path_parts_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="date"):
+        OutputSpec(directory=tmp_path, date="1975/06")
+
+
+def test_interrupt_during_encode_leaves_no_partial_file(tmp_path, monkeypatch):
+    def interrupted(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("opticfilm_linux.output._encode", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        write_slide(_image(), OutputSpec(directory=tmp_path))
+    assert list(tmp_path.iterdir()) == []
