@@ -1,0 +1,110 @@
+import shutil
+import threading
+
+import pytest
+
+from opticfilm_linux.batch.export import (
+    ExportProgress,
+    cleanup_raw,
+    export_batch,
+    free_space,
+    freeable_trays,
+)
+from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayStage
+from opticfilm_linux.batch.review import accept_all
+from opticfilm_linux.batch.runner import BatchRunner
+from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.sweepstore import save_sweep
+from synthetic import make_sweep
+
+TIMEOUT = 120
+
+
+@pytest.fixture(scope="module")
+def template(tmp_path_factory):
+    """A batch with two trays already scanned and enhanced (both in review)."""
+    sweep_dir = tmp_path_factory.mktemp("sweep600")
+    save_sweep(make_sweep(dpi=600), sweep_dir)
+    root = tmp_path_factory.mktemp("template") / "batch"
+    store = BatchStore.create(root, name="T", defaults=BatchDefaults(dpi=600))
+    runner = BatchRunner(store, FakeScanner(sweep_dir))
+    runner.scan_tray()
+    assert runner.wait_scans_idle(TIMEOUT)
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    runner.close()
+    store.close()
+    return root
+
+
+@pytest.fixture
+def store(tmp_path, template):
+    shutil.copytree(template, tmp_path / "b")
+    with BatchStore.open(tmp_path / "b") as opened:
+        yield opened
+
+
+def test_export_reports_progress_per_slide(store, tmp_path):
+    accept_all(store)
+    calls: list[ExportProgress] = []
+    result = export_batch(store, tmp_path / "out", on_progress=calls.append)
+    assert calls[0] == ExportProgress(done=0, total=8)
+    assert calls[-1] == ExportProgress(done=8, total=8)
+    assert len(calls) == 9 and len(result.written) == 8 and not result.cancelled
+
+
+def test_export_cancel_keeps_written_and_continues_later(store, tmp_path):
+    accept_all(store)
+    cancel = threading.Event()
+
+    def stop_after_first(progress: ExportProgress) -> None:
+        if progress.done == 1:
+            cancel.set()
+
+    first = export_batch(store, tmp_path / "out", on_progress=stop_after_first, cancel=cancel)
+    assert first.cancelled and len(first.written) == 1
+    exported = [s.exported for t in store.snapshot().trays for s in t.slides]
+    assert exported.count(True) == 1
+    second = export_batch(store, tmp_path / "out")
+    assert len(second.written) == 7 and not second.cancelled
+    assert len(list((tmp_path / "out").iterdir())) == 8
+
+
+def test_export_to_unwritable_directory_raises_and_marks_nothing(store, tmp_path):
+    accept_all(store)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+    with pytest.raises(OSError):
+        export_batch(store, blocker)
+    assert not any(s.exported for t in store.snapshot().trays for s in t.slides)
+    assert [t.stage for t in store.snapshot().trays] == [TrayStage.REVIEW] * 2
+
+
+def test_freeable_trays_lists_only_fully_exported(store, tmp_path):
+    accept_all(store)
+    assert freeable_trays(store) == ()
+    export_batch(store, tmp_path / "out")
+    found = freeable_trays(store)
+    assert [f.number for f in found] == [1, 2] and all(f.bytes > 0 for f in found)
+    cleanup_raw(store, 1)
+    assert [f.number for f in freeable_trays(store)] == [2]
+
+
+def test_free_space_returns_bytes_freed_and_reports_progress(store, tmp_path):
+    accept_all(store)
+    export_batch(store, tmp_path / "out")
+    expected = sum(f.bytes for f in freeable_trays(store))
+    calls: list[tuple[int, int]] = []
+    freed = free_space(store, on_progress=lambda d, t: calls.append((d, t)))
+    assert freed == expected and calls == [(1, 2), (2, 2)]
+    assert all(t.raw_removed for t in store.snapshot().trays)
+
+
+def test_free_space_cancel_stops_between_trays(store, tmp_path):
+    accept_all(store)
+    export_batch(store, tmp_path / "out")
+    cancel = threading.Event()
+    free_space(store, on_progress=lambda *_: cancel.set(), cancel=cancel)
+    assert [t.raw_removed for t in store.snapshot().trays] == [True, False]
+    assert store.snapshot().trays[1].slides[0].status is SlideStatus.ACCEPTED

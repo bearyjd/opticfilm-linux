@@ -7,6 +7,8 @@ produce a duplicate file on the next export, never a missing one.
 
 import dataclasses
 import shutil
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,8 +26,21 @@ class CleanupRefused(BatchError):
 
 
 @dataclass(frozen=True)
+class ExportProgress:
+    done: int  # slides written so far
+    total: int  # slides this export will write
+
+
+@dataclass(frozen=True)
 class ExportResult:
     written: tuple[Path, ...]
+    cancelled: bool = False
+
+
+@dataclass(frozen=True)
+class FreeableTray:
+    number: int
+    bytes: int
 
 
 def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
@@ -56,30 +71,62 @@ def _finish_tray_if_done(store: BatchStore, number: int) -> None:
         store.update_tray(number, stage=TrayStage.EXPORTED)
 
 
-def _export_tray(store: BatchStore, tray: TrayRecord, spec: OutputSpec) -> list[Path]:
-    pending = [s for s in tray.slides if s.status is SlideStatus.ACCEPTED and not s.exported]
-    if not pending or tray.raw_removed:
+def _pending_slides(tray: TrayRecord) -> list:
+    if tray.raw_removed:
         return []
+    return [s for s in tray.slides if s.status is SlideStatus.ACCEPTED and not s.exported]
+
+
+def _export_tray(
+    store: BatchStore,
+    tray: TrayRecord,
+    spec: OutputSpec,
+    report: Callable[[Path], None],
+    cancel: threading.Event | None,
+) -> bool:
+    """Write a tray's pending slides; returns False if cancelled before finishing."""
+    pending = _pending_slides(tray)
+    if not pending:
+        return True
     defaults = store.snapshot().defaults
     sweep = load_sweep(store.sweep_dir(tray.number, tray.sweep_version))
     slides = split_slides(sweep)
-    written = []
     for record in pending:
+        if cancel is not None and cancel.is_set():
+            return False
         options = options_for(defaults, tray.mode, record.settings)
         image = enhance_slide(slides[record.position - 1], options, sweep.dpi)
-        written.append(write_slide(image, spec))
+        path = write_slide(image, spec)
         _mark_exported(store, tray.number, record.position)
-    return written
+        report(path)
+    return True
 
 
-def export_batch(store: BatchStore, directory: Path, fmt: Format = "tiff16") -> ExportResult:
+def export_batch(
+    store: BatchStore,
+    directory: Path,
+    fmt: Format = "tiff16",
+    on_progress: Callable[[ExportProgress], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> ExportResult:
     manifest = store.snapshot()
     spec = OutputSpec(directory=directory, fmt=fmt, album=manifest.album, date=manifest.date)
+    exportable = [t for t in manifest.trays if t.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)]
+    total = sum(len(_pending_slides(t)) for t in exportable)
     written: list[Path] = []
-    for tray in manifest.trays:
-        if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED):
-            written.extend(_export_tray(store, tray, spec))
-            _finish_tray_if_done(store, tray.number)
+
+    def report(path: Path | None) -> None:
+        if path is not None:
+            written.append(path)
+        if on_progress is not None:
+            on_progress(ExportProgress(done=len(written), total=total))
+
+    report(None)
+    for tray in exportable:
+        finished = _export_tray(store, tray, spec, report, cancel)
+        _finish_tray_if_done(store, tray.number)
+        if not finished:
+            return ExportResult(written=tuple(written), cancelled=True)
     return ExportResult(written=tuple(written))
 
 
@@ -115,4 +162,34 @@ def cleanup_raw(store: BatchStore, number: int) -> int:
     for path in folders:
         shutil.rmtree(path)
     store.update_tray(number, raw_removed=True)
+    return freed
+
+
+def freeable_trays(store: BatchStore) -> tuple[FreeableTray, ...]:
+    """Fully exported trays whose raw scans are still on disk, with the space they use."""
+    found = []
+    for tray in store.snapshot().trays:
+        if tray.stage is TrayStage.EXPORTED and not tray.raw_removed:
+            size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
+            found.append(FreeableTray(number=tray.number, bytes=size))
+    return tuple(found)
+
+
+def free_space(
+    store: BatchStore,
+    on_progress: Callable[[int, int], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> int:
+    """Remove the raw scans of every fully exported tray; stops between trays when cancelled.
+
+    Returns the bytes freed.
+    """
+    trays = freeable_trays(store)
+    freed = 0
+    for done, tray in enumerate(trays, start=1):
+        if cancel is not None and cancel.is_set():
+            break
+        freed += cleanup_raw(store, tray.number)
+        if on_progress is not None:
+            on_progress(done, len(trays))
     return freed
