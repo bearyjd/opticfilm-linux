@@ -3,10 +3,13 @@
 One worker scans (the hardware can do one thing at a time) and one worker enhances, so a tray
 is enhanced while the next one scans. The caller never blocks: it asks for a scan, then reads
 the manifest or the event queue. Everything the workers do ends in the manifest, so a crash
-loses at most the tray being scanned.
+loses at most the tray being scanned. Every state change is a conditional update, so a late or
+stale job can never overwrite what happened meanwhile, and a job that dies unexpectedly always
+ends as a visible FAILED tray plus a ``TrayFailed`` event.
 """
 
 import dataclasses
+import logging
 import os
 import queue
 import shutil
@@ -32,6 +35,9 @@ from opticfilm_linux.scanner.base import Scanner, ScannerNotReady, ScannerStatus
 from opticfilm_linux.sweepstore import save_sweep
 
 RESCANNABLE = (TrayStage.REVIEW, TrayStage.FAILED)
+IN_FLIGHT = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
+
+log = logging.getLogger(__name__)
 
 
 class BatchRunner:
@@ -42,12 +48,14 @@ class BatchRunner:
         self._scan_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan")
         self._enhance_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="enhance")
         self._pending: set[Future] = set()
+        self._scans: set[Future] = set()
         self._lock = threading.Lock()
+        self._scan_guard = threading.Lock()
 
     # -- requests from the caller (never block) ------------------------------------------
 
     def scan_tray(self) -> int:
-        """Start scanning a new tray; the scanner must be ready. Returns the tray number."""
+        """Start scanning a new tray; the scanner must be ready and no scan pending."""
         self._require_ready()
         defaults = self._store.snapshot().defaults
 
@@ -57,9 +65,11 @@ class BatchRunner:
             )
             return dataclasses.replace(manifest, trays=manifest.trays + (tray,))
 
-        number = self._store.update(add).trays[-1].number
-        self._emit(TrayStageChanged(number, TrayStage.SCANNING))
-        self._submit(self._scan_pool, self._scan_job, number)
+        with self._scan_guard:
+            self._require_no_scan_pending()
+            number = self._store.update(add).trays[-1].number
+            self._emit(TrayStageChanged(number, TrayStage.SCANNING))
+            self._submit(self._scan_pool, self._scan_job, number, scan=True)
         return number
 
     def rescan_tray(self, number: int) -> int:
@@ -70,15 +80,20 @@ class BatchRunner:
                 f"tray {number} is {tray.stage}; it can only be re-scanned from review"
             )
         self._require_ready()
-        self._store.update_tray(
-            number,
-            stage=TrayStage.SCANNING,
-            sweep_version=tray.sweep_version + 1,
-            slides=(),
-            error=None,
-        )
-        self._emit(TrayStageChanged(number, TrayStage.SCANNING))
-        self._submit(self._scan_pool, self._scan_job, number)
+        with self._scan_guard:
+            self._require_no_scan_pending()
+            started = self._store.update_tray_if(
+                number,
+                lambda t: t.stage in RESCANNABLE and t.sweep_version == tray.sweep_version,
+                stage=TrayStage.SCANNING,
+                sweep_version=tray.sweep_version + 1,
+                slides=(),
+                error=None,
+            )
+            if not started:
+                raise BatchError(f"tray {number} changed meanwhile; try again")
+            self._emit(TrayStageChanged(number, TrayStage.SCANNING))
+            self._submit(self._scan_pool, self._scan_job, number, scan=True)
         return number
 
     def resume(self) -> None:
@@ -109,16 +124,11 @@ class BatchRunner:
 
     def wait_idle(self, timeout: float | None = None) -> bool:
         """Block until all queued and running work is finished; False if the timeout hit first."""
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            with self._lock:
-                pending = list(self._pending)
-            if not pending:
-                return True
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            _done, not_done = wait(pending, timeout=remaining)
-            if not_done:
-                return False
+        return self._wait_for(self._pending, timeout)
+
+    def wait_scans_idle(self, timeout: float | None = None) -> bool:
+        """Block until no scan is pending (enhancement may still be running)."""
+        return self._wait_for(self._scans, timeout)
 
     def close(self) -> None:
         """Finish running work, then stop both workers. Queued enhancement still runs."""
@@ -139,7 +149,7 @@ class BatchRunner:
         except Exception as exc:  # a failed scan must end as a visible FAILED tray, never vanish
             if tmp.is_dir() and not tmp.is_symlink():
                 shutil.rmtree(tmp, ignore_errors=True)
-            self._fail(number, _describe(exc))
+            self._fail(number, _describe(exc), (TrayStage.SCANNING,))
             return
         self._store.update_tray(number, stage=TrayStage.SCANNED)
         self._emit(TrayStageChanged(number, TrayStage.SCANNED))
@@ -151,10 +161,10 @@ class BatchRunner:
             enhance_tray(
                 self._store,
                 number,
-                on_progress=lambda done, _t: self._emit(SlideUpdated(number, done)),
+                on_progress=lambda done, _total: self._emit(SlideUpdated(number, done)),
             )
         except Exception as exc:
-            self._fail(number, _describe(exc))
+            self._fail(number, _describe(exc), (TrayStage.SCANNED, TrayStage.ENHANCING))
             return
         tray = self._tray(number)
         self._emit(TrayStageChanged(number, tray.stage))
@@ -176,31 +186,84 @@ class BatchRunner:
         if status is not ScannerStatus.READY:
             raise ScannerNotReady(f"the scanner is not ready ({status})")
 
+    def _require_no_scan_pending(self) -> None:
+        with self._lock:
+            busy = bool(self._scans)
+        if busy:
+            raise BatchError("a scan is already in progress; wait until it has finished")
+
     def _tray(self, number: int) -> TrayRecord:
         for tray in self._store.snapshot().trays:
             if tray.number == number:
                 return tray
         raise BatchError(f"no tray {number} in this batch")
 
-    def _fail(self, number: int, message: str) -> None:
-        self._store.update_tray(number, stage=TrayStage.FAILED, error=message)
-        self._emit(TrayStageChanged(number, TrayStage.FAILED))
+    def _fail(self, number: int, message: str, expected: tuple[TrayStage, ...]) -> None:
+        """Mark a tray FAILED, but only from a stage the failing job owns."""
+        applied = self._store.update_tray_if(
+            number, lambda t: t.stage in expected, stage=TrayStage.FAILED, error=message
+        )
+        if applied:
+            self._emit(TrayStageChanged(number, TrayStage.FAILED))
         self._emit(TrayFailed(number, message))
 
     def _emit(self, event: BatchEvent) -> None:
         self.events.put(event)
 
-    def _submit(self, pool: ThreadPoolExecutor, job: Callable[..., None], *args) -> None:
-        future = pool.submit(job, *args)
+    def _submit(
+        self,
+        pool: ThreadPoolExecutor,
+        job: Callable[..., None],
+        number: int,
+        *args,
+        scan: bool = False,
+    ) -> None:
+        future = pool.submit(job, number, *args)
         with self._lock:
             self._pending.add(future)
-        future.add_done_callback(self._finished)
+            if scan:
+                self._scans.add(future)
+        future.add_done_callback(lambda f: self._finished(f, number))
 
-    def _finished(self, future: Future) -> None:
-        with self._lock:
-            self._pending.discard(future)
+    def _finished(self, future: Future, number: int) -> None:
+        # Report a crash BEFORE leaving the pending sets, so wait_idle() never returns while a
+        # failure is still unreported.
+        try:
+            error = future.exception()
+            if error is not None:
+                self._report_crash(number, error)
+        finally:
+            with self._lock:
+                self._pending.discard(future)
+                self._scans.discard(future)
+
+    def _report_crash(self, number: int, error: BaseException) -> None:
+        """A job died outside its own error handling: never leave the tray stuck or silent."""
+        message = _describe(error)  # type: ignore[arg-type]
+        log.error("job for tray %s crashed: %s", number, message)
+        try:
+            applied = self._store.update_tray_if(
+                number, lambda t: t.stage in IN_FLIGHT, stage=TrayStage.FAILED, error=message
+            )
+            if applied:
+                self._emit(TrayStageChanged(number, TrayStage.FAILED))
+        except Exception:  # the manifest itself may be unwritable (disk full); still report it
+            log.exception("could not record the failure of tray %s", number)
+        self._emit(TrayFailed(number, message))
+
+    def _wait_for(self, futures: set[Future], timeout: float | None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            with self._lock:
+                pending = list(futures)
+            if not pending:
+                return True
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            _done, not_done = wait(pending, timeout=remaining)
+            if not_done:
+                return False
 
 
-def _describe(exc: Exception) -> str:
+def _describe(exc: BaseException) -> str:
     text = str(exc)
     return text if text and not isinstance(exc, RuntimeError) else f"{type(exc).__name__}: {text}"

@@ -1,6 +1,7 @@
 """``ofscan batch ...``: drive a batch from a terminal (and exercise the core without a window)."""
 
 import argparse
+import sys
 from pathlib import Path
 
 from opticfilm_linux.batch import review
@@ -10,6 +11,8 @@ from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.base import NotSupportedYet
 from opticfilm_linux.scanner.fake import FakeScanner
+
+EXIT_INTERRUPTED = 130
 
 
 def add_batch_commands(commands: argparse._SubParsersAction) -> None:
@@ -62,7 +65,7 @@ def _print_status(store: BatchStore, only: set[int] | None = None) -> None:
 
 def _new(args: argparse.Namespace) -> int:
     defaults = BatchDefaults(dpi=args.dpi)
-    BatchStore.create(args.directory, args.name, args.album, args.date, defaults)
+    BatchStore.create(args.directory, args.name, args.album, args.date, defaults).close()
     print(f"created batch {args.name!r} in {args.directory}")
     return 0
 
@@ -70,15 +73,27 @@ def _new(args: argparse.Namespace) -> int:
 def _scan(args: argparse.Namespace) -> int:
     if args.fake is None:
         raise NotSupportedYet("scanning the real device is not supported yet; use --fake SWEEP_DIR")
-    store = BatchStore.open(args.directory)
-    runner = BatchRunner(store, FakeScanner(args.fake))
-    try:
-        runner.resume()
-        numbers = {runner.scan_tray() for _ in range(args.count)}
-        runner.wait_idle()
-    finally:
-        runner.close()
-    _print_status(store, numbers)
+    numbers: list[int] = []
+    with BatchStore.open(args.directory) as store:
+        runner = BatchRunner(store, FakeScanner(args.fake))
+        try:
+            runner.resume()
+            for _ in range(args.count):
+                numbers.append(runner.scan_tray())
+                runner.wait_scans_idle()
+            runner.wait_idle()
+        except KeyboardInterrupt:
+            print("interrupted: finishing the scan in progress", file=sys.stderr)
+            runner.close()
+            _print_status(store, set(numbers))
+            return EXIT_INTERRUPTED
+        finally:
+            runner.close()
+        _print_status(store, set(numbers))
+        failed = [t.number for t in store.snapshot().trays if t.number in numbers and t.error]
+    if failed:
+        print(f"error: tray(s) {', '.join(map(str, failed))} failed", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -88,13 +103,15 @@ def run_batch(args: argparse.Namespace) -> int:
         return _new(args)
     if command == "scan":
         return _scan(args)
-    store = BatchStore.open(args.directory)
     if command == "status":
-        _print_status(store)
-    elif command == "accept-all":
-        review.accept_all(store)
-        print("accepted every slide in every reviewed tray")
-    else:
-        result = export_batch(store, args.out, args.format)
-        print(f"{len(result.written)} slides written")
+        with BatchStore.open(args.directory, readonly=True) as store:
+            _print_status(store)
+        return 0
+    with BatchStore.open(args.directory) as store:
+        if command == "accept-all":
+            review.accept_all(store)
+            print("accepted every slide in every reviewed tray")
+        else:
+            result = export_batch(store, args.out, args.format)
+            print(f"{len(result.written)} slides written")
     return 0

@@ -24,7 +24,9 @@ TIMEOUT = 240
 def _scan_when_ready(runner: BatchRunner) -> int:
     for _ in range(1000):
         try:
-            return runner.scan_tray()
+            number = runner.scan_tray()
+            assert runner.wait_scans_idle(TIMEOUT)
+            return number
         except ScannerNotReady:
             time.sleep(0.01)
     raise AssertionError("the scanner never became ready")
@@ -65,6 +67,7 @@ def test_five_trays_with_crash_resume_edit_and_export(tmp_path):
         return dataclasses.replace(manifest, trays=manifest.trays + extra)
 
     store.update(crashed)
+    store.close()
     store = BatchStore.open(root)
     runner = BatchRunner(store, FakeScanner(sweep_dir))
     runner.resume()
@@ -88,4 +91,4 @@ def test_five_trays_with_crash_resume_edit_and_export(tmp_path):
     with pytest.raises(RawRemoved):
         runner.edit_slide(1, 1, SlideSettings(rotation=90))
     runner.close()
-    assert BatchStore.open(root).snapshot() == store.snapshot()
+    assert BatchStore.open(root, readonly=True).snapshot() == store.snapshot()

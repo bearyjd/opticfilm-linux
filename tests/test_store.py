@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import threading
 
 import pytest
@@ -20,6 +21,7 @@ def _add_tray(manifest: BatchManifest, stage: TrayStage = TrayStage.SCANNED) -> 
 def test_create_then_open_roundtrip(tmp_path):
     store = _store(tmp_path)
     store.update(_add_tray)
+    store.close()
     reopened = BatchStore.open(tmp_path / "batch")
     assert reopened.snapshot() == store.snapshot()
     assert reopened.snapshot().album == "Family"
@@ -37,7 +39,7 @@ def test_open_missing_raises_batcherror(tmp_path):
 
 
 def test_open_corrupt_manifest_raises_manifestformaterror(tmp_path):
-    _store(tmp_path)
+    _store(tmp_path).close()
     (tmp_path / "batch" / "batch.json").write_text("{garbage")
     with pytest.raises(ManifestFormatError):
         BatchStore.open(tmp_path / "batch")
@@ -146,3 +148,56 @@ def test_update_tray_unknown_number_raises_batcherror(tmp_path):
     store = _store(tmp_path)
     with pytest.raises(BatchError, match="no tray 3"):
         store.update_tray(3, stage=TrayStage.REVIEW)
+
+
+def test_update_that_changes_nothing_writes_nothing(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    calls = []
+    real = os.replace
+    monkeypatch.setattr(
+        "opticfilm_linux.batch.store.os.replace", lambda *a, **k: calls.append(1) or real(*a, **k)
+    )
+    store.update(lambda manifest: manifest)
+    assert calls == []
+
+
+def test_update_tray_if_applies_only_when_the_condition_holds(tmp_path):
+    store = _store(tmp_path)
+    store.update(_add_tray)
+    assert store.update_tray_if(1, lambda t: t.stage is TrayStage.SCANNED, stage=TrayStage.REVIEW)
+    assert not store.update_tray_if(
+        1, lambda t: t.stage is TrayStage.SCANNED, stage=TrayStage.FAILED
+    )
+    assert store.snapshot().trays[0].stage is TrayStage.REVIEW
+
+
+def test_update_tray_if_unknown_tray_raises(tmp_path):
+    with pytest.raises(BatchError, match="no tray 2"):
+        _store(tmp_path).update_tray_if(2, lambda t: True, stage=TrayStage.REVIEW)
+
+
+def test_second_writer_is_refused_while_a_batch_is_open(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(BatchError, match="in use"):
+        BatchStore.open(tmp_path / "batch")
+    store.close()
+    BatchStore.open(tmp_path / "batch").close()
+
+
+def test_read_only_open_works_beside_a_writer_and_sees_the_latest(tmp_path):
+    store = _store(tmp_path)
+    store.update(_add_tray)
+    reader = BatchStore.open(tmp_path / "batch", readonly=True)
+    assert len(reader.snapshot().trays) == 1
+    store.update(_add_tray)
+    assert len(BatchStore.open(tmp_path / "batch", readonly=True).snapshot().trays) == 2
+    with pytest.raises(BatchError, match="read-only"):
+        reader.update(_add_tray)
+    with pytest.raises(BatchError, match="read-only"):
+        reader.recover_interrupted()
+
+
+def test_context_manager_releases_the_lock(tmp_path):
+    with _store(tmp_path):
+        pass
+    BatchStore.open(tmp_path / "batch").close()

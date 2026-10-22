@@ -1,4 +1,5 @@
 import dataclasses
+import errno
 import threading
 import time
 
@@ -127,6 +128,7 @@ def test_enhancement_runs_while_the_next_tray_scans(tmp_path, sweep_dir):
 
     store, runner = _make(tmp_path, sweep_dir, before_scan=hold_second_scan)
     runner.scan_tray()
+    assert runner.wait_scans_idle(TIMEOUT)
     runner.scan_tray()
     assert _wait_for(lambda: _tray(store, 1).stage is TrayStage.REVIEW)
     assert _tray(store, 2).stage is TrayStage.SCANNING
@@ -245,3 +247,104 @@ def test_close_waits_for_running_jobs_including_queued_enhancement(tmp_path, swe
     runner.scan_tray()
     runner.close()
     assert _tray(store).stage is TrayStage.REVIEW
+
+
+def test_a_second_scan_while_one_is_pending_is_refused(tmp_path, sweep_dir):
+    gate = threading.Event()
+    store, runner = _make(tmp_path, sweep_dir, before_scan=lambda: gate.wait(TIMEOUT))
+    runner.scan_tray()
+    with pytest.raises(BatchError, match="already"):
+        runner.scan_tray()
+    assert len(store.snapshot().trays) == 1
+    gate.set()
+    assert runner.wait_idle(TIMEOUT)
+    runner.close()
+
+
+def test_a_rescan_while_another_scan_is_pending_is_refused(tmp_path, sweep_dir):
+    gate = threading.Event()
+    calls = []
+
+    def hold_second():
+        calls.append(1)
+        if len(calls) >= 2:
+            gate.wait(TIMEOUT)
+
+    store, runner = _make(tmp_path, sweep_dir, before_scan=hold_second)
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    runner.scan_tray()  # tray 2 now scanning (held)
+    with pytest.raises(BatchError, match="already"):
+        runner.rescan_tray(1)
+    gate.set()
+    assert runner.wait_idle(TIMEOUT)
+    runner.close()
+
+
+def test_wait_scans_idle_waits_for_the_scan_only(tmp_path, sweep_dir):
+    gate = threading.Event()
+    store, runner = _make(tmp_path, sweep_dir, before_scan=lambda: gate.wait(TIMEOUT))
+    runner.scan_tray()
+    assert runner.wait_scans_idle(0.05) is False
+    gate.set()
+    assert runner.wait_scans_idle(TIMEOUT) is True
+    assert _tray(store).stage is not TrayStage.SCANNING
+    assert runner.wait_idle(TIMEOUT)
+    runner.close()
+
+
+def test_changing_the_mode_of_a_scanning_tray_is_refused_and_the_scan_survives(tmp_path, sweep_dir):
+    gate = threading.Event()
+    store, runner = _make(tmp_path, sweep_dir, before_scan=lambda: gate.wait(TIMEOUT))
+    runner.scan_tray()
+    with pytest.raises(BatchError, match="review"):
+        runner.set_tray_mode(1, "negative")
+    gate.set()
+    assert runner.wait_idle(TIMEOUT)
+    assert _tray(store).stage is TrayStage.REVIEW
+    runner.close()
+
+
+def test_disk_full_while_recording_a_scan_fails_the_tray_visibly(tmp_path, sweep_dir, monkeypatch):
+    real = BatchStore.update_tray
+
+    def flaky(self, number, **changes):
+        if changes.get("stage") is TrayStage.SCANNED:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(self, number, **changes)
+
+    monkeypatch.setattr(BatchStore, "update_tray", flaky)
+    store, runner = _make(tmp_path, sweep_dir)
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    tray = _tray(store)
+    assert tray.stage is TrayStage.FAILED and "No space" in (tray.error or "")
+    assert any(isinstance(e, TrayFailed) and "No space" in e.message for e in _drain(runner))
+    runner.close()
+
+
+def test_a_job_crash_is_reported_even_if_the_manifest_cannot_be_written(
+    tmp_path, sweep_dir, monkeypatch
+):
+    def broken(self, *args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(BatchStore, "update_tray", broken)
+    monkeypatch.setattr(BatchStore, "update_tray_if", broken)
+    store, runner = _make(tmp_path, sweep_dir)
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    assert any(isinstance(e, TrayFailed) and "No space" in e.message for e in _drain(runner))
+    runner.close()
+
+
+def test_a_crashing_enhancement_fails_the_tray(tmp_path, sweep_dir, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("opticfilm_linux.batch.runner.enhance_tray", boom)
+    store, runner = _make(tmp_path, sweep_dir)
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    assert _tray(store).stage is TrayStage.FAILED and "boom" in _tray(store).error
+    runner.close()

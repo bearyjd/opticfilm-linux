@@ -11,6 +11,7 @@ from opticfilm_linux.batch.flags import compute_flags
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
+    Flag,
     Mode,
     SlideRecord,
     SlideSettings,
@@ -55,10 +56,38 @@ def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
     raise BatchError(f"no tray {number} in this batch")
 
 
-def _put_slide(store: BatchStore, number: int, record: SlideRecord) -> None:
+def _merge_slide(
+    store: BatchStore,
+    number: int,
+    tray: TrayRecord,
+    snapshot: SlideRecord,
+    flags: tuple[Flag, ...],
+    blank: bool,
+) -> None:
+    """Write fresh flags (and an automatic status) into the slide's *current* record.
+
+    Results computed from an out-of-date snapshot are dropped: the sweep was replaced by a
+    re-scan, the tray mode changed, or the owner changed this slide's settings meanwhile (a
+    newer job is queued for those). The owner's status, settings and export mark are never
+    overwritten, because only flags and an automatic status are written, onto the live record.
+    """
+
     def change(manifest: BatchManifest) -> BatchManifest:
-        tray = _tray(manifest, number)
-        others = tuple(s for s in tray.slides if s.position != record.position)
+        now = _tray(manifest, number)
+        if now.sweep_version != tray.sweep_version or now.mode != tray.mode:
+            return manifest
+        current = next((s for s in now.slides if s.position == snapshot.position), None)
+        if current is not None and current.settings != snapshot.settings:
+            return manifest
+        base = current or snapshot
+        if blank:
+            record = dataclasses.replace(base, status=SlideStatus.BLANK, flags=())
+        else:
+            auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
+            record = dataclasses.replace(
+                base, status=base.status if base.owner_decided else auto, flags=flags
+            )
+        others = tuple(s for s in now.slides if s.position != snapshot.position)
         slides = tuple(sorted(others + (record,), key=lambda s: s.position))
         trays = tuple(
             dataclasses.replace(t, slides=slides) if t.number == number else t
@@ -75,24 +104,20 @@ def _process_slide(
     slide: Slide,
     sweep: RawSweep,
     tray: TrayRecord,
-    current: SlideRecord | None,
-) -> SlideRecord:
+    snapshot: SlideRecord,
+) -> None:
     defaults = store.snapshot().defaults
     position = slide.index + 1
-    record = current or SlideRecord(position=position)
     if defaults.skip_blank and is_blank(slide):
-        return dataclasses.replace(record, status=SlideStatus.BLANK, flags=())
-    enhanced = enhance_slide(slide, options_for(defaults, tray.mode, record.settings), sweep.dpi)
+        _merge_slide(store, number, tray, snapshot, (), blank=True)
+        return
+    enhanced = enhance_slide(slide, options_for(defaults, tray.mode, snapshot.settings), sweep.dpi)
     write_preview(
         make_preview(slide.rgb, gamma=BEFORE_GAMMA), store.preview_path(number, position, "before")
     )
     write_preview(make_preview(enhanced), store.preview_path(number, position, "after"))
     flags = compute_flags(enhanced, slide.ir, sweep.dpi)
-    if record.owner_decided:
-        status = record.status
-    else:
-        status = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
-    return dataclasses.replace(record, status=status, flags=flags)
+    _merge_slide(store, number, tray, snapshot, flags, blank=False)
 
 
 def _existing(tray: TrayRecord, position: int) -> SlideRecord | None:
@@ -103,34 +128,45 @@ def enhance_tray(
     store: BatchStore, number: int, on_progress: Callable[[int, int], None] | None = None
 ) -> None:
     tray = _tray(store.snapshot(), number)
-    if tray.stage is TrayStage.SCANNING:
-        raise BatchError(f"tray {number} is still scanning")
     if tray.raw_removed:
         raise RawRemoved(f"the raw scans of tray {number} were removed")
-    store.update_tray(number, stage=TrayStage.ENHANCING, error=None)
+    version = tray.sweep_version
+    started = store.update_tray_if(
+        number,
+        lambda t: t.stage is not TrayStage.SCANNING and t.sweep_version == version,
+        stage=TrayStage.ENHANCING,
+        error=None,
+    )
+    if not started:
+        if _tray(store.snapshot(), number).stage is TrayStage.SCANNING:
+            raise BatchError(f"tray {number} is still scanning")
+        return  # the tray was re-scanned meanwhile; a newer job will handle it
+
+    def current(t: TrayRecord) -> bool:
+        return t.sweep_version == version and t.stage is TrayStage.ENHANCING
+
     try:
-        sweep = load_sweep(store.sweep_dir(number, tray.sweep_version))
+        sweep = load_sweep(store.sweep_dir(number, version))
         slides = split_slides(sweep)
     except (SweepFormatError, SlideSplitError) as exc:
-        store.update_tray(number, stage=TrayStage.FAILED, error=str(exc))
+        store.update_tray_if(number, current, stage=TrayStage.FAILED, error=str(exc))
         return
     for slide in slides:
-        record = _process_slide(store, number, slide, sweep, tray, _existing(tray, slide.index + 1))
-        _put_slide(store, number, record)
+        position = slide.index + 1
+        snapshot = _existing(tray, position) or SlideRecord(position=position)
+        _process_slide(store, number, slide, sweep, tray, snapshot)
         if on_progress is not None:
-            on_progress(slide.index + 1, len(slides))
-    store.update_tray(number, stage=TrayStage.REVIEW)
+            on_progress(position, len(slides))
+    store.update_tray_if(number, current, stage=TrayStage.REVIEW)
 
 
 def reenhance_slide(store: BatchStore, number: int, position: int) -> None:
     tray = _tray(store.snapshot(), number)
     if tray.raw_removed:
         raise RawRemoved(f"the raw scans of tray {number} were removed")
-    current = _existing(tray, position)
-    if current is None:
+    snapshot = _existing(tray, position)
+    if snapshot is None:
         raise BatchError(f"tray {number} has no slide {position}")
     sweep = load_sweep(store.sweep_dir(number, tray.sweep_version))
     slides = split_slides(sweep)
-    _put_slide(
-        store, number, _process_slide(store, number, slides[position - 1], sweep, tray, current)
-    )
+    _process_slide(store, number, slides[position - 1], sweep, tray, snapshot)

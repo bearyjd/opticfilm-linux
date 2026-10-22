@@ -81,11 +81,38 @@ def test_scan_without_fake_reports_not_supported(tmp_path, capsys):
     assert "not supported" in capsys.readouterr().err.lower()
 
 
-def test_scan_with_wrong_dpi_gives_exit_2(tmp_path, synthetic_sweep_dir, capsys):
+def test_scan_exit_code_is_2_when_a_tray_failed(tmp_path, synthetic_sweep_dir, capsys):
     main(["batch", "new", str(tmp_path / "b"), "--name", "T", "--dpi", "3600"])
-    assert _scan(tmp_path / "b", synthetic_sweep_dir) == 0  # the tray fails, the command reports it
-    out = capsys.readouterr().out
-    assert "failed" in out and "600" in out
+    assert _scan(tmp_path / "b", synthetic_sweep_dir) == 2
+    captured = capsys.readouterr()
+    assert "failed" in captured.out and "600" in captured.out
+    assert captured.err.startswith("error:")
+
+
+def test_second_writer_is_refused_while_a_batch_is_open(tmp_path, capsys):
+    from opticfilm_linux.batch.store import BatchStore
+
+    _new(tmp_path / "b")
+    with BatchStore.open(tmp_path / "b"):
+        assert main(["batch", "accept-all", str(tmp_path / "b")]) == 2
+        assert "in use" in capsys.readouterr().err
+        assert main(["batch", "status", str(tmp_path / "b")]) == 0  # reading is always allowed
+
+
+def test_ctrl_c_stops_after_the_scan_in_progress(
+    tmp_path, synthetic_sweep_dir, monkeypatch, capsys
+):
+    from opticfilm_linux.batch.runner import BatchRunner
+    from opticfilm_linux.batch.store import BatchStore
+
+    def interrupted(self, timeout=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(BatchRunner, "wait_scans_idle", interrupted)
+    _new(tmp_path / "b")
+    assert _scan(tmp_path / "b", synthetic_sweep_dir, "--count", "3") == 130
+    assert "interrupted" in capsys.readouterr().err
+    assert len(BatchStore.open(tmp_path / "b", readonly=True).snapshot().trays) == 1
 
 
 def test_status_of_an_empty_batch(tmp_path, capsys):

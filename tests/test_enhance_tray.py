@@ -1,9 +1,11 @@
 import dataclasses
+import threading
 
 import numpy as np
 import pytest
 from PIL import Image
 
+from opticfilm_linux.batch import enhance as enhance_module
 from opticfilm_linux.batch.enhance import (
     RawRemoved,
     enhance_tray,
@@ -181,3 +183,86 @@ def test_reenhance_of_an_unknown_slide_raises(tmp_path):
     with pytest.raises(BatchError, match="slide 9"):
         reenhance_slide(store, 1, 9)
     assert SlideRecord(position=1).position == 1
+
+
+def _gate_enhance(monkeypatch):
+    """Make the first enhance_slide call wait, so a test can act in the middle of enhancement."""
+    started, release = threading.Event(), threading.Event()
+    real = enhance_module.enhance_slide
+    first = threading.Lock()
+
+    def gated(*args, **kwargs):
+        if first.acquire(blocking=False):
+            started.set()
+            assert release.wait(60)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(enhance_module, "enhance_slide", gated)
+    return started, release
+
+
+def _run_gated(target, *args):
+    worker = threading.Thread(target=target, args=args)
+    worker.start()
+    return worker
+
+
+def test_settings_changed_during_re_enhancement_are_not_lost(tmp_path, monkeypatch):
+    store = _store(tmp_path, make_sweep(dpi=600))
+    enhance_tray(store, 1)
+    started, release = _gate_enhance(monkeypatch)
+    worker = _run_gated(reenhance_slide, store, 1, 1)
+    assert started.wait(60)
+    newer = SlideSettings(brightness_ev=1.5)
+    _set_slide(store, 1, settings=newer, owner_decided=True)
+    release.set()
+    worker.join(60)
+    assert _tray(store).slides[0].settings == newer
+
+
+def test_status_chosen_during_re_enhancement_is_kept(tmp_path, monkeypatch):
+    store = _store(tmp_path, make_sweep(dpi=600))
+    enhance_tray(store, 1)
+    started, release = _gate_enhance(monkeypatch)
+    worker = _run_gated(reenhance_slide, store, 1, 1)
+    assert started.wait(60)
+    _set_slide(store, 1, status=SlideStatus.NEEDS_LOOK, owner_decided=True)
+    release.set()
+    worker.join(60)
+    kept = _tray(store).slides[0]
+    assert kept.status is SlideStatus.NEEDS_LOOK and kept.owner_decided
+
+
+def test_exported_mark_survives_a_stale_re_enhancement(tmp_path, monkeypatch):
+    store = _store(tmp_path, make_sweep(dpi=600))
+    enhance_tray(store, 1)
+    started, release = _gate_enhance(monkeypatch)
+    worker = _run_gated(reenhance_slide, store, 1, 1)
+    assert started.wait(60)
+    _set_slide(store, 1, exported=True)
+    release.set()
+    worker.join(60)
+    assert _tray(store).slides[0].exported
+
+
+def test_a_rescan_during_enhancement_discards_the_stale_results(tmp_path, monkeypatch):
+    store = _store(tmp_path, make_sweep(dpi=600))
+    started, release = _gate_enhance(monkeypatch)
+    worker = _run_gated(enhance_tray, store, 1)
+    assert started.wait(60)
+    store.update_tray(1, sweep_version=2, slides=(), stage=TrayStage.SCANNING)
+    release.set()
+    worker.join(60)
+    tray = _tray(store)
+    assert tray.stage is TrayStage.SCANNING and tray.slides == () and tray.sweep_version == 2
+
+
+def test_a_mode_change_during_enhancement_discards_the_stale_results(tmp_path, monkeypatch):
+    store = _store(tmp_path, make_sweep(dpi=600))
+    started, release = _gate_enhance(monkeypatch)
+    worker = _run_gated(enhance_tray, store, 1)
+    assert started.wait(60)
+    store.update_tray(1, mode="negative")
+    release.set()
+    worker.join(60)
+    assert _tray(store).slides == ()  # a newer enhancement job (for the new mode) will fill it

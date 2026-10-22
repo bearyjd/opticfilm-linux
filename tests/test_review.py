@@ -43,9 +43,11 @@ def template(tmp_path_factory, sweep_dir):
     store = BatchStore.create(root, name="T", defaults=BatchDefaults(dpi=600))
     runner = BatchRunner(store, FakeScanner(sweep_dir))
     runner.scan_tray()
+    assert runner.wait_scans_idle(TIMEOUT)
     runner.scan_tray()
     assert runner.wait_idle(TIMEOUT)
     runner.close()
+    store.close()
     return root
 
 
@@ -188,10 +190,27 @@ def test_concurrent_edits_and_enhancement_never_corrupt_the_manifest(store, swee
         thread.join()
     assert runner.wait_idle(TIMEOUT)
     runner.close()
-    reopened = BatchStore.open(store.directory)
+    reopened = BatchStore.open(store.directory, readonly=True)
     assert reopened.snapshot() == store.snapshot()
     for number in (1, 2):
         for position in (1, 2, 3, 4):
             slide = _slide(reopened, number, position)
             assert slide.owner_decided and slide.settings.brightness_ev == position / 4
     assert reopened.snapshot().trays[2].stage is TrayStage.REVIEW
+
+
+@pytest.mark.parametrize(
+    "stage", [TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.FAILED, TrayStage.EXPORTED]
+)
+def test_edits_and_mode_changes_need_a_reviewable_tray(store, stage):
+    store.update_tray(1, stage=stage)
+    with pytest.raises(BatchError, match="review"):
+        apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
+    with pytest.raises(BatchError, match="review"):
+        set_tray_mode(store, 1, "negative")
+
+
+def test_edits_are_allowed_while_a_tray_is_being_re_enhanced(store):
+    store.update_tray(1, stage=TrayStage.ENHANCING)
+    apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
+    set_tray_mode(store, 1, "negative")

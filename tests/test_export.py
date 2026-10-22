@@ -29,9 +29,11 @@ def template(tmp_path_factory):
     store = BatchStore.create(root, name="T", defaults=BatchDefaults(dpi=600))
     runner = BatchRunner(store, FakeScanner(sweep_dir))
     runner.scan_tray()
+    assert runner.wait_scans_idle(TIMEOUT)
     runner.scan_tray()
     assert runner.wait_idle(TIMEOUT)
     runner.close()
+    store.close()
     return root
 
 

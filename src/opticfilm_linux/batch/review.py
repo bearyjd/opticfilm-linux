@@ -49,9 +49,16 @@ def _replace_slide(
     return dataclasses.replace(manifest, trays=trays)
 
 
-def _require_raw(tray: TrayRecord) -> None:
+EDITABLE_STAGES = (TrayStage.REVIEW, TrayStage.ENHANCING)
+
+
+def _require_editable(tray: TrayRecord) -> None:
     if tray.raw_removed:
         raise RawRemoved(f"the raw scans of tray {tray.number} were removed")
+    if tray.stage not in EDITABLE_STAGES:
+        raise BatchError(
+            f"tray {tray.number} is {tray.stage}; slides can only be edited while it is in review"
+        )
 
 
 def set_slide_status(store: BatchStore, number: int, position: int, status: SlideStatus) -> None:
@@ -72,7 +79,7 @@ def apply_slide_settings(
 ) -> None:
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, slide = _find(manifest, number, position)
-        _require_raw(tray)
+        _require_editable(tray)
         if slide.status is SlideStatus.BLANK:
             raise BatchError(f"slide {position} of tray {number} is blank")
         return _replace_slide(manifest, tray, slide, settings=settings, owner_decided=True)
@@ -101,7 +108,7 @@ def accept_all(store: BatchStore) -> None:
 def set_tray_mode(store: BatchStore, number: int, mode: Mode) -> None:
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, _ = _find(manifest, number)
-        _require_raw(tray)
+        _require_editable(tray)
         trays = tuple(
             dataclasses.replace(t, mode=mode) if t.number == number else t for t in manifest.trays
         )

@@ -6,6 +6,7 @@ a partial manifest.
 """
 
 import dataclasses
+import fcntl
 import os
 import shutil
 import threading
@@ -17,6 +18,7 @@ from opticfilm_linux.batch.manifest import from_json, to_json
 from opticfilm_linux.batch.model import BatchDefaults, BatchManifest, TrayRecord, TrayStage
 
 MANIFEST_FILE = "batch.json"
+LOCK_FILE = "batch.lock"
 INTERRUPTED_SCAN = "scan was interrupted"
 
 
@@ -25,10 +27,19 @@ class BatchError(ValueError):
 
 
 class BatchStore:
-    def __init__(self, directory: Path, manifest: BatchManifest) -> None:
+    """One batch folder. A writer holds an exclusive lock on the folder for as long as it is open,
+    so two programs can never both change the manifest; readers open it ``readonly`` and always
+    see the latest manifest on disk."""
+
+    def __init__(self, directory: Path, manifest: BatchManifest, lock_file=None) -> None:
         self.directory = directory
         self._manifest = manifest
+        self._lock_file = lock_file
         self._lock = threading.Lock()
+
+    @property
+    def readonly(self) -> bool:
+        return self._lock_file is None
 
     @classmethod
     def create(
@@ -42,46 +53,83 @@ class BatchStore:
         if (directory / MANIFEST_FILE).exists():
             raise BatchError(f"a batch already exists in {directory}")
         directory.mkdir(parents=True, exist_ok=True)
+        lock_file = _acquire_lock(directory)
         manifest = BatchManifest(
             name=name, album=album, date=date, defaults=defaults or BatchDefaults()
         )
-        store = cls(directory, manifest)
-        store._write(manifest)
+        store = cls(directory, manifest, lock_file)
+        try:
+            store._write(manifest)
+        except BaseException:
+            store.close()
+            raise
         return store
 
     @classmethod
-    def open(cls, directory: Path) -> "BatchStore":
-        path = directory / MANIFEST_FILE
+    def open(cls, directory: Path, readonly: bool = False) -> "BatchStore":
+        if not (directory / MANIFEST_FILE).is_file():
+            raise BatchError(f"batch not found in {directory}")
+        lock_file = None if readonly else _acquire_lock(directory)
         try:
-            text = path.read_text()
-        except FileNotFoundError as exc:
-            raise BatchError(f"batch not found in {directory}") from exc
-        return cls(directory, from_json(text))
+            return cls(directory, _read_manifest(directory), lock_file)
+        except BaseException:
+            _release_lock(lock_file)
+            raise
+
+    def close(self) -> None:
+        """Release the writer lock (a no-op for read-only stores)."""
+        _release_lock(self._lock_file)
+        self._lock_file = None
+
+    def __enter__(self) -> "BatchStore":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
 
     def snapshot(self) -> BatchManifest:
+        if self.readonly:
+            return _read_manifest(self.directory)
         with self._lock:
             return self._manifest
 
     def update(self, change: Callable[[BatchManifest], BatchManifest]) -> BatchManifest:
+        if self.readonly:
+            raise BatchError("this batch is open read-only")
         with self._lock:
             new = change(self._manifest)
-            self._write(new)
-            self._manifest = new
+            if new != self._manifest:
+                self._write(new)
+                self._manifest = new
             return new
 
-    def update_tray(self, number: int, **changes) -> BatchManifest:
-        """Change fields of one tray (``dataclasses.replace`` semantics)."""
+    def update_tray_if(
+        self, number: int, condition: Callable[[TrayRecord], bool], **changes
+    ) -> bool:
+        """Change one tray only if ``condition`` holds for it *now* (checked under the lock)."""
+        applied = False
 
         def change(manifest: BatchManifest) -> BatchManifest:
-            if not any(tray.number == number for tray in manifest.trays):
+            nonlocal applied
+            tray = next((t for t in manifest.trays if t.number == number), None)
+            if tray is None:
                 raise BatchError(f"no tray {number} in this batch")
+            if not condition(tray):
+                return manifest
+            applied = True
             trays = tuple(
-                dataclasses.replace(tray, **changes) if tray.number == number else tray
-                for tray in manifest.trays
+                dataclasses.replace(t, **changes) if t.number == number else t
+                for t in manifest.trays
             )
             return dataclasses.replace(manifest, trays=trays)
 
-        return self.update(change)
+        self.update(change)
+        return applied
+
+    def update_tray(self, number: int, **changes) -> BatchManifest:
+        """Change fields of one tray (``dataclasses.replace`` semantics)."""
+        self.update_tray_if(number, lambda _tray: True, **changes)
+        return self.snapshot()
 
     def tray_dir(self, number: int) -> Path:
         return self.directory / "trays" / f"{number:04d}"
@@ -128,6 +176,31 @@ class BatchStore:
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+
+
+def _read_manifest(directory: Path) -> BatchManifest:
+    try:
+        return from_json((directory / MANIFEST_FILE).read_text())
+    except FileNotFoundError as exc:
+        raise BatchError(f"batch not found in {directory}") from exc
+
+
+def _acquire_lock(directory: Path):
+    handle = open(directory / LOCK_FILE, "w")  # noqa: SIM115 - held until the store closes
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise BatchError(
+            f"this batch is in use by another program or window; close it first ({directory})"
+        ) from exc
+    return handle
+
+
+def _release_lock(handle) -> None:
+    if handle is not None:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
 
 
 def _recovered(tray: TrayRecord) -> TrayRecord:
