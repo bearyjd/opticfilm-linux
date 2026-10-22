@@ -1,0 +1,13 @@
+# Local research notes derived from vendor files; never commit.
+.local-research/
+
+# Tool and cache artifacts
+.venv/
+__pycache__/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.superpowers/
+graft/
+.ignore
