@@ -83,3 +83,25 @@ def test_an_absurdly_large_image_is_refused_before_it_is_decoded(tmp_path, monke
     tifffile.imwrite(tmp_path / "big.tif", _gradient(20, 20))
     with pytest.raises(ValueError, match="too large"):
         load_image(tmp_path / "big.tif")
+
+
+@pytest.mark.parametrize(
+    "extra, expected", [([], (0, False)), (["--rotate", "90", "--mirror"], (90, True))]
+)
+def test_enhance_command_passes_orientation_to_the_options(tmp_path, monkeypatch, extra, expected):
+    from opticfilm_linux import cli as cli_module
+
+    seen = {}
+    real = cli_module.process_images
+
+    def spy(paths, options, out, dpi):
+        seen["options"] = options
+        return real(paths, options, out, dpi)
+
+    monkeypatch.setattr(cli_module, "process_images", spy)
+    tifffile.imwrite(tmp_path / "one.tif", _gradient())
+    out = tmp_path / "out"
+    assert main(["enhance", str(tmp_path / "one.tif"), "--out", str(out), *extra]) == 0
+    assert (seen["options"].rotation, seen["options"].mirror) == expected
+    (written,) = out.glob("*.tif")
+    assert tifffile.imread(written).shape[:2] == ((90, 60) if expected[0] == 90 else (60, 90))

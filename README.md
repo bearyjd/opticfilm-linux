@@ -55,7 +55,7 @@ ofscan enhance scans/*.tif --out ~/Pictures/scans --album "Family Trips" --dpi 3
 ```
 
 TIFF, PNG and JPEG are read (8-bit is scaled to 16-bit); there is no infrared plane, so dust
-removal is off.
+removal is off. `--rotate` and `--mirror` work here too.
 
 ## Batch scanning
 
