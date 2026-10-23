@@ -159,22 +159,23 @@ def set_batch_orientation(store: BatchStore, rotation: int, mirror: bool) -> tup
     Every non-blank slide of a tray whose raw scans are kept gets ``preview_stale`` (it must be
     enhanced again) and loses its export mark; an exported tray goes back to review. Trays whose
     raw scans were removed cannot be re-rendered: they are left untouched and their numbers are
-    returned. Refused while any tray is scanning or enhancing. Setting the current value again
-    changes nothing.
+    returned (a tray whose raw cleanup has started is marked removed first, so it is skipped
+    too). Setting the current value again changes nothing, even while a tray is busy; any
+    other change is refused while a tray is scanning or enhancing.
     """
     skipped: tuple[int, ...] = ()
 
     def change(manifest: BatchManifest) -> BatchManifest:
         nonlocal skipped
+        defaults = dataclasses.replace(manifest.defaults, rotation=rotation, mirror=mirror)
+        if defaults == manifest.defaults:
+            return manifest
         busy = [t.number for t in manifest.trays if t.stage in BUSY_STAGES]
         if busy:
             raise BatchError(
                 f"tray {busy[0]} is still being scanned or enhanced; change the batch "
                 "orientation once it has finished"
             )
-        defaults = dataclasses.replace(manifest.defaults, rotation=rotation, mirror=mirror)
-        if defaults == manifest.defaults:
-            return manifest
         skipped = tuple(t.number for t in manifest.trays if t.raw_removed)
         trays = tuple(t if t.raw_removed else _reoriented(t) for t in manifest.trays)
         return dataclasses.replace(manifest, defaults=defaults, trays=trays)

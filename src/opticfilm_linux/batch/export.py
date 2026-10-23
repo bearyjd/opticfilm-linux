@@ -210,10 +210,29 @@ def cleanup_raw(store: BatchStore, number: int) -> int:
         raise CleanupRefused(f"tray {number} still has a preview to update; try again shortly")
     folders = _checked_sweep_folders(store, number)
     freed = sum(_folder_size(path) for path in folders)
-    for path in folders:
-        shutil.rmtree(path)
-    store.update_tray(number, raw_removed=True)
+    # Commit first, under the store's lock: once marked removed, nothing (a new batch
+    # orientation, an edit) can send the tray back to review while its raw scans go.
+    if not store.update_tray_if(number, _still_freeable, raw_removed=True):
+        raise CleanupRefused(f"tray {number} changed meanwhile; it is no longer fully exported")
+    try:
+        for path in folders:
+            shutil.rmtree(path)
+    except OSError as exc:
+        raise BatchError(
+            f"the raw scans of tray {number} were only partly removed and can no longer be "
+            f"used: {exc}"
+        ) from exc
     return freed
+
+
+def _still_freeable(tray: TrayRecord) -> bool:
+    real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
+    return (
+        tray.stage is TrayStage.EXPORTED
+        and not tray.raw_removed
+        and not _stale(tray)
+        and all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
+    )
 
 
 def freeable_trays(store: BatchStore) -> tuple[FreeableTray, ...]:

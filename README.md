@@ -84,10 +84,10 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
 Mounted slides can come out turned or mirrored, and nobody knows yet which way the real scanner
 delivers them. So orientation is set once per batch (`ofscan batch new --rotate 90 --mirror`, or
 "Slide orientation" in the app) and fine-tuned per slide (rotate buttons, **Mirror**, keys `[`, `]`
-and `m`). A slide is mirrored left-right first, then turned: the batch and slide rotations add up and
-the two mirror settings cancel out. Scan one tray, check it, and change the whole batch later with
-**Batch orientation…**: every slide is enhanced again and must be exported again; trays whose raw
-scans were removed keep their old orientation.
+and `m`). Every control acts on the image as you see it: a slide is turned first, then flipped
+left-right, and the slide's own rotate and mirror apply on top of the batch's. Scan one tray, check
+it, and change the whole batch later with **Batch orientation…**: every slide is enhanced again
+and must be exported again; trays whose raw scans were removed keep their old orientation.
 
 ## Desktop app
 

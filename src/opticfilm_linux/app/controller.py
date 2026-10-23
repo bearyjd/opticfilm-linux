@@ -185,7 +185,9 @@ class Controller:
     def rotate(self, number: int, position: int, quarter_turns: int) -> None:
         def job(runner: BatchRunner) -> None:
             current = self._slide_settings(number, position)
-            turned = (current.rotation + 90 * quarter_turns) % 360
+            # the slide is flipped after it is turned: on screen, a flipped turn runs backwards
+            step = -90 if current.mirror else 90
+            turned = (current.rotation + step * quarter_turns) % 360
             self._edit(runner, number, position, dataclasses.replace(current, rotation=turned))
 
         self._run_writer(job, f"Could not rotate slide {position} of tray {number}")

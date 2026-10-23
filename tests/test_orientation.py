@@ -60,33 +60,52 @@ def test_a_manifest_written_before_orientation_existed_still_loads():
     assert loaded.trays[0].slides[0].settings == SlideSettings(rotation=90)
 
 
-def test_a_bad_default_rotation_in_the_manifest_is_a_format_error():
+@pytest.mark.parametrize(
+    "where, key, value",
+    [
+        ("defaults", "rotation", 45),
+        ("defaults", "rotation", "90"),
+        ("defaults", "rotation", False),
+        ("defaults", "mirror", "false"),
+        ("defaults", "mirror", 0),
+        ("settings", "rotation", "90"),
+        ("settings", "rotation", True),
+        ("settings", "mirror", "false"),
+        ("settings", "mirror", 1),
+    ],
+)
+def test_a_bad_orientation_in_the_manifest_is_a_format_error(where, key, value):
     data = json.loads(to_json(_manifest()))
-    data["defaults"]["rotation"] = 45
+    target = data["defaults"] if where == "defaults" else data["trays"][0]["slides"][0]["settings"]
+    target[key] = value
     with pytest.raises(ManifestFormatError):
         from_json(json.dumps(data))
 
 
-@pytest.mark.parametrize(
-    "default_rotation, slide_rotation, expected_rotation",
-    [(0, 0, 0), (90, 0, 90), (0, 270, 270), (90, 90, 180), (270, 180, 90), (180, 180, 0)],
-)
-@pytest.mark.parametrize(
-    "default_mirror, slide_mirror, expected_mirror",
-    [(False, False, False), (True, False, True), (False, True, True), (True, True, False)],
-)
-def test_options_for_composes_batch_and_slide_orientation(
-    default_rotation,
-    slide_rotation,
-    expected_rotation,
-    default_mirror,
-    slide_mirror,
-    expected_mirror,
-):
-    defaults = BatchDefaults(rotation=default_rotation, mirror=default_mirror)
-    settings = SlideSettings(rotation=slide_rotation, mirror=slide_mirror)
+@pytest.mark.parametrize("kind", [BatchDefaults, SlideSettings])
+def test_mirror_must_be_a_real_bool(kind):
+    with pytest.raises(ValueError, match="mirror"):
+        kind(mirror="false")
+
+
+ORIENTATIONS = [(r, m) for r in (0, 90, 180, 270) for m in (False, True)]
+
+
+def _shown(image: np.ndarray, rotation: int, mirrored: bool) -> np.ndarray:
+    """What the owner sees: turned clockwise, then flipped left-right."""
+    turned = np.rot90(image, k=-(rotation // 90))
+    return np.fliplr(turned) if mirrored else turned
+
+
+@pytest.mark.parametrize("default", ORIENTATIONS)
+@pytest.mark.parametrize("own", ORIENTATIONS)
+def test_options_for_is_the_batch_orientation_followed_by_the_slides_own(default, own):
+    image = np.arange(2 * 3, dtype=np.uint16).reshape(2, 3)  # no symmetry at all
+    defaults = BatchDefaults(rotation=default[0], mirror=default[1])
+    settings = SlideSettings(rotation=own[0], mirror=own[1])
     options = options_for(defaults, "positive", settings)
-    assert (options.rotation, options.mirror) == (expected_rotation, expected_mirror)
+    expected = _shown(_shown(image, *default), *own)
+    assert np.array_equal(_shown(image, options.rotation, options.mirror), expected)
 
 
 def test_mirror_flips_left_and_right_into_a_new_contiguous_array():
@@ -97,12 +116,12 @@ def test_mirror_flips_left_and_right_into_a_new_contiguous_array():
     assert np.array_equal(mirror(out), image)
 
 
-def test_mirror_then_rotate_on_a_small_array_is_pixel_exact():
+def test_rotate_then_mirror_on_a_small_array_is_pixel_exact():
     pixels = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint16)
     image = np.repeat(pixels[:, :, None], 3, axis=2)
-    out = rotate(mirror(image), 90)
-    # mirrored: [[3,2,1],[6,5,4]]; then a clockwise quarter turn
-    assert np.array_equal(out[:, :, 0], np.array([[6, 3], [5, 2], [4, 1]], dtype=np.uint16))
+    out = mirror(rotate(image, 90))
+    # turned clockwise: [[4,1],[5,2],[6,3]]; then flipped left-right
+    assert np.array_equal(out[:, :, 0], np.array([[1, 4], [2, 5], [3, 6]], dtype=np.uint16))
 
 
 def _slide() -> Slide:
@@ -116,11 +135,11 @@ def _plain() -> ProcessOptions:
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
-def test_enhance_slide_mirrors_before_rotating(rotation):
+def test_enhance_slide_rotates_then_mirrors(rotation):
     base = enhance_slide(_slide(), _plain(), dpi=600)
     options = dataclasses.replace(_plain(), mirror=True, rotation=rotation)
     out = enhance_slide(_slide(), options, dpi=600)
-    assert np.array_equal(out, rotate(base[:, ::-1], rotation))
+    assert np.array_equal(out, rotate(base, rotation)[:, ::-1])
 
 
 def test_enhance_slide_without_mirror_is_unchanged():

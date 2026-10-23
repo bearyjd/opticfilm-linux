@@ -30,7 +30,7 @@ class ProcessOptions:
     skip_blank: bool = True
     brightness_ev: float = 0.0
     rotation: int = 0
-    mirror: bool = False  # left-right flip, applied before the rotation
+    mirror: bool = False  # left-right flip, applied after the rotation
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class RunResult:
 
 
 def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray:
-    """Dust, negative, exposure, colour, brightness, grain, sharpening, mirror, then rotation."""
+    """Dust, negative, exposure, colour, brightness, grain, sharpening, rotation, then mirror."""
     image = slide.rgb
     if options.remove_dust:
         image = remove_dust(image, slide.ir, dpi=dpi)
@@ -57,9 +57,9 @@ def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray
         image = adjust_brightness(image, options.brightness_ev)
     image = reduce_grain(image, strength=options.grain_strength)
     image = sharpen(image, amount=options.sharpen_amount)
-    if options.mirror:
-        image = mirror(image)
-    return rotate(image, options.rotation) if options.rotation else image
+    if options.rotation:
+        image = rotate(image, options.rotation)
+    return mirror(image) if options.mirror else image
 
 
 def process_sweep(sweep: RawSweep, options: ProcessOptions, out: OutputSpec) -> RunResult:

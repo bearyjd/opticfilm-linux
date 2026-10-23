@@ -77,3 +77,10 @@ def test_set_batch_orientation_while_a_tray_is_busy_gives_a_banner(reviewed):
     wait_until(reviewed, lambda: reviewed.state().banner is not None)
     assert "orientation" in reviewed.state().banner.message
     assert reviewed.state().default_rotation == 0
+
+
+def test_rotate_turns_the_shown_image_clockwise_even_when_the_slide_is_mirrored(reviewed):
+    reviewed.mirror(1, 1)
+    reviewed.rotate(1, 1, 1)  # mirrored last, so a clockwise turn on screen is -90 underneath
+    wait_until(reviewed, lambda: _slide(reviewed).settings.mirror)
+    wait_until(reviewed, lambda: _slide(reviewed).settings.rotation == 270)

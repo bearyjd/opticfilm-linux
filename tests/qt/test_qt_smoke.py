@@ -12,7 +12,9 @@ pytestmark = pytest.mark.qt
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication, QMetaObject, QObject, QUrl  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QMetaObject, QObject, QPoint, QPointF, Qt, QUrl  # noqa: E402
+from PySide6.QtQuick import QQuickItem  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from opticfilm_linux.app.controller import Controller  # noqa: E402
@@ -173,3 +175,35 @@ def _all_reviewed(directory):
 
     with BatchStore.open(directory, readonly=True) as store:
         return all(t.stage.value == "review" for t in store.snapshot().trays)
+
+
+def _click(root, name):
+    item = root.findChild(QQuickItem, name)
+    assert item is not None and item.isVisible(), name
+    centre = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+    QTest.mouseClick(
+        root,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        QPoint(int(centre.x()), int(centre.y())),
+    )
+
+
+def test_the_batch_orientation_dialog_shows_the_current_orientation_and_applies(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Dialog", "", "", 600, 270, True)
+    _wait(bridge, lambda: bridge.hasBatch)
+    root = engine.rootObjects()[0]
+    _wait(bridge, lambda: root.findChild(QObject, "orientationDialog") is not None)
+    dialog = root.findChild(QObject, "orientationDialog")
+    QMetaObject.invokeMethod(dialog, "open")
+    _wait(bridge, lambda: dialog.property("opened"))
+    rotation = root.findChild(QObject, "orientationRotation")
+    mirror = root.findChild(QObject, "orientationMirror")
+    assert rotation.property("currentText") == "270" and mirror.property("checked") is True
+    _click(root, "orientationMirror")
+    _wait(bridge, lambda: mirror.property("checked") is False)
+    _click(root, "orientationApply")
+    _wait(bridge, lambda: (bridge.batchRotation, bridge.batchMirror) == (270, False))
+    _wait(bridge, lambda: not dialog.property("visible"))
+    assert not bridge.hasBanner and warnings == []

@@ -5,7 +5,9 @@ settings, and only its previews and flags are refreshed.
 """
 
 import dataclasses
+import os
 from collections.abc import Callable
+from pathlib import Path
 
 from opticfilm_linux.batch.flags import compute_flags
 from opticfilm_linux.batch.model import (
@@ -36,10 +38,14 @@ class RawRemoved(BatchError):
 def options_for(defaults: BatchDefaults, mode: Mode, settings: SlideSettings) -> ProcessOptions:
     """Combine the batch defaults with one slide's own settings.
 
-    Orientation composes: the effective rotation is ``(defaults.rotation + settings.rotation)
-    % 360`` and the effective mirror is ``defaults.mirror XOR settings.mirror``. The image is
-    always mirrored (left-right) FIRST, then rotated clockwise by the effective rotation.
+    An orientation is "turn clockwise by ``rotation``, THEN flip left-right if ``mirror``", so
+    both act on the image as shown. The slide's own orientation is applied after the batch's,
+    as if done by hand on the batch-oriented image. In that same normal form the result is
+    rotation ``defaults.rotation + (-1 if defaults.mirror else 1) * settings.rotation`` (mod
+    360) and mirror ``defaults.mirror XOR settings.mirror``: a turn made after a flip runs the
+    other way underneath.
     """
+    sign = -1 if defaults.mirror else 1
 
     def pick(override: float | None, default: float) -> float:
         return default if override is None else override
@@ -52,7 +58,7 @@ def options_for(defaults: BatchDefaults, mode: Mode, settings: SlideSettings) ->
         grain_strength=pick(settings.grain_strength, defaults.grain_strength),
         skip_blank=defaults.skip_blank,
         brightness_ev=settings.brightness_ev,
-        rotation=(defaults.rotation + settings.rotation) % 360,
+        rotation=(defaults.rotation + sign * settings.rotation) % 360,
         mirror=defaults.mirror != settings.mirror,
     )
 
@@ -72,6 +78,7 @@ def _merge_slide(
     flags: tuple[Flag, ...],
     blank: bool,
     defaults: BatchDefaults,
+    publish: Callable[[], None] = lambda: None,
 ) -> None:
     """Write fresh flags (and an automatic status) into the slide's *current* record.
 
@@ -79,7 +86,9 @@ def _merge_slide(
     re-scan, the tray mode or the batch defaults (orientation) changed, or the owner changed
     this slide's settings meanwhile (a newer job is queued for those). The owner's status,
     settings and export mark are never overwritten, because only flags and an automatic status
-    are written, onto the live record.
+    are written, onto the live record. ``publish`` (moving the new previews into place) runs
+    under the store's lock and only when the result is kept, so a preview of an old
+    orientation or old settings is never shown.
     """
 
     def change(manifest: BatchManifest) -> BatchManifest:
@@ -110,9 +119,14 @@ def _merge_slide(
             dataclasses.replace(t, slides=slides) if t.number == number else t
             for t in manifest.trays
         )
+        publish()
         return dataclasses.replace(manifest, trays=trays)
 
     store.update(change)
+
+
+def _pending(path: Path) -> Path:
+    return path.with_name(path.stem + ".pending.jpg")
 
 
 def _process_slide(
@@ -129,12 +143,21 @@ def _process_slide(
         _merge_slide(store, number, tray, snapshot, (), blank=True, defaults=defaults)
         return
     enhanced = enhance_slide(slide, options_for(defaults, tray.mode, snapshot.settings), sweep.dpi)
-    write_preview(
-        make_preview(slide.rgb, gamma=BEFORE_GAMMA), store.preview_path(number, position, "before")
-    )
-    write_preview(make_preview(enhanced), store.preview_path(number, position, "after"))
+    before = store.preview_path(number, position, "before")
+    after = store.preview_path(number, position, "after")
+    write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
+    write_preview(make_preview(enhanced), _pending(after))
     flags = compute_flags(enhanced, slide.ir, sweep.dpi)
-    _merge_slide(store, number, tray, snapshot, flags, blank=False, defaults=defaults)
+
+    def publish() -> None:
+        os.replace(_pending(before), before)
+        os.replace(_pending(after), after)
+
+    try:
+        _merge_slide(store, number, tray, snapshot, flags, False, defaults, publish)
+    finally:  # a result that was dropped leaves nothing behind
+        _pending(before).unlink(missing_ok=True)
+        _pending(after).unlink(missing_ok=True)
 
 
 def _existing(tray: TrayRecord, position: int) -> SlideRecord | None:

@@ -31,7 +31,7 @@ def add_orientation_options(parser: argparse.ArgumentParser) -> None:
         help="turn every slide clockwise by this many degrees",
     )
     parser.add_argument(
-        "--mirror", action="store_true", help="flip every slide left-right (before turning it)"
+        "--mirror", action="store_true", help="flip every slide left-right (after turning it)"
     )
 
 

@@ -205,3 +205,89 @@ def test_runner_reports_skipped_trays_and_leaves_them_alone(store, sweep600_dir)
     finally:
         runner.close()
     assert not any(s.preview_stale for t in store.snapshot().trays for s in t.slides)
+
+
+def test_re_applying_the_current_orientation_is_a_no_op_even_while_a_tray_is_busy(store):
+    store.update_tray(2, stage=TrayStage.ENHANCING)
+    before = store.snapshot()
+    assert set_batch_orientation(store, 0, False) == ()
+    assert store.snapshot() == before
+
+
+def _exported(store, number):
+    store.update_tray(number, stage=TrayStage.EXPORTED)
+    _mark(store, number, status=SlideStatus.ACCEPTED, exported=True)
+
+
+def test_orientation_changed_just_before_cleanup_commits_keeps_the_raw_scans(store, monkeypatch):
+    _exported(store, 1)
+    real = export_module._folder_size
+
+    def change_meanwhile(path):
+        if _tray(store, 1).stage is TrayStage.EXPORTED:
+            set_batch_orientation(store, 90, False)
+        return real(path)
+
+    monkeypatch.setattr(export_module, "_folder_size", change_meanwhile)
+    with pytest.raises(export_module.CleanupRefused):
+        export_module.cleanup_raw(store, 1)
+    tray = _tray(store, 1)
+    assert not tray.raw_removed and tray.stage is TrayStage.REVIEW
+    assert store.sweep_dir(1, tray.sweep_version).is_dir()
+
+
+def test_orientation_changed_while_raw_scans_are_deleted_skips_that_tray(store, monkeypatch):
+    _exported(store, 1)
+    real = shutil.rmtree
+    reported = []
+
+    def change_meanwhile(path, *args, **kwargs):
+        if not reported:
+            reported.append(set_batch_orientation(store, 90, False))
+        real(path, *args, **kwargs)
+
+    monkeypatch.setattr(export_module.shutil, "rmtree", change_meanwhile)
+    export_module.cleanup_raw(store, 1)
+    assert reported == [(1,)]
+    tray = _tray(store, 1)
+    assert tray.raw_removed and tray.stage is TrayStage.EXPORTED
+    assert not any(s.preview_stale for s in tray.slides)
+    assert all(s.preview_stale for s in _tray(store, 2).slides)
+
+
+def test_a_failed_deletion_keeps_the_tray_marked_removed_and_says_so(store, monkeypatch):
+    _exported(store, 1)
+
+    def broken(path, *args, **kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(export_module.shutil, "rmtree", broken)
+    with pytest.raises(BatchError, match="can no longer be used"):
+        export_module.cleanup_raw(store, 1)
+    assert _tray(store, 1).raw_removed
+
+
+def test_a_preview_rendered_for_an_old_orientation_is_never_published(store, monkeypatch):
+    path = store.preview_path(1, 1, "after")
+    _mark(store, 1, preview_stale=True)
+    published = path.read_bytes()
+    real = enhance_module.enhance_slide
+
+    def change_meanwhile(slide, options, dpi):
+        image = real(slide, dataclasses.replace(options, rotation=90), dpi)  # a different look
+        set_batch_orientation(store, 180, False)
+        return image
+
+    monkeypatch.setattr(enhance_module, "enhance_slide", change_meanwhile)
+    reenhance_slide(store, 1, 1)
+    assert path.read_bytes() == published
+    assert not list(path.parent.glob("*pending*"))
+
+
+def test_a_current_render_is_published(store, monkeypatch):
+    path = store.preview_path(1, 1, "after")
+    published = path.read_bytes()
+    apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
+    reenhance_slide(store, 1, 1)
+    assert path.read_bytes() != published and not _slide(store, 1, 1).preview_stale
+    assert not list(path.parent.glob("*pending*"))

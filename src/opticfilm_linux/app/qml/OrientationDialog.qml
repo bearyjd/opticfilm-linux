@@ -22,17 +22,21 @@ Kirigami.Dialog {
         QQC2.Label {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            text: qsTr("Turns and flips every slide of the batch, on top of each slide's own rotate and mirror. The mirror is applied first, then the turn.")
+            text: qsTr("Turns every slide of the batch clockwise, then flips it left-right if Mirror is on. Each slide's own rotate and mirror still apply on top, to the image as you see it.")
         }
         RowLayout {
             QQC2.ComboBox {
                 id: rotationBox
+
+                objectName: "orientationRotation"
 
                 model: bridge.rotationChoices
                 displayText: qsTr("%1° clockwise").arg(currentText)
             }
             QQC2.CheckBox {
                 id: mirrorBox
+
+                objectName: "orientationMirror"
 
                 text: qsTr("Mirror")
             }
@@ -44,6 +48,7 @@ Kirigami.Dialog {
         }
         QQC2.Button {
             Layout.alignment: Qt.AlignRight
+            objectName: "orientationApply"
             text: qsTr("Apply")
             icon.name: "dialog-ok-apply"
             highlighted: true

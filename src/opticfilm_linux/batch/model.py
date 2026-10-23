@@ -33,9 +33,11 @@ class Flag(StrEnum):
     DUST = "dust"
 
 
-def _check_rotation(rotation: int) -> None:
-    if rotation not in ROTATIONS:
+def _check_orientation(rotation: int, mirror: bool) -> None:
+    if type(rotation) is not int or rotation not in ROTATIONS:
         raise ValueError(f"rotation must be one of {ROTATIONS}, got {rotation!r}")
+    if type(mirror) is not bool:
+        raise ValueError(f"mirror must be true or false, got {mirror!r}")
 
 
 @dataclass(frozen=True)
@@ -47,10 +49,10 @@ class SlideSettings:
     color_strength: float | None = None
     grain_strength: float | None = None
     sharpen_amount: float | None = None
-    mirror: bool = False  # flipped left-right on top of the batch default
+    mirror: bool = False  # flipped left-right after turning, on top of the batch default
 
     def __post_init__(self) -> None:
-        _check_rotation(self.rotation)
+        _check_orientation(self.rotation, self.mirror)
         low, high = BRIGHTNESS_RANGE
         if not low <= self.brightness_ev <= high:
             raise ValueError(f"brightness_ev must be between {low} and {high}")
@@ -98,7 +100,7 @@ class BatchDefaults:
     mirror: bool = False  # whether every slide of the batch is flipped left-right
 
     def __post_init__(self) -> None:
-        _check_rotation(self.rotation)
+        _check_orientation(self.rotation, self.mirror)
 
 
 @dataclass(frozen=True)
