@@ -6,7 +6,13 @@ from pathlib import Path
 
 from opticfilm_linux.batch import review
 from opticfilm_linux.batch.export import export_batch
-from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayRecord, TrayStage
+from opticfilm_linux.batch.model import (
+    ROTATIONS,
+    BatchDefaults,
+    SlideStatus,
+    TrayRecord,
+    TrayStage,
+)
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.base import Scanner
@@ -14,6 +20,19 @@ from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.scanner.select import real_scanner
 
 EXIT_INTERRUPTED = 130
+
+
+def add_orientation_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--rotate",
+        type=int,
+        choices=ROTATIONS,
+        default=0,
+        help="turn every slide clockwise by this many degrees",
+    )
+    parser.add_argument(
+        "--mirror", action="store_true", help="flip every slide left-right (after turning it)"
+    )
 
 
 def add_batch_commands(commands: argparse._SubParsersAction) -> None:
@@ -26,6 +45,7 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     new.add_argument("--album", default="")
     new.add_argument("--date", default=None)
     new.add_argument("--dpi", type=int, default=3600)
+    add_orientation_options(new)
 
     status = sub.add_parser("status", help="list the trays")
     status.add_argument("directory", type=Path)
@@ -65,7 +85,7 @@ def _print_status(store: BatchStore, only: set[int] | None = None) -> None:
 
 
 def _new(args: argparse.Namespace) -> int:
-    defaults = BatchDefaults(dpi=args.dpi)
+    defaults = BatchDefaults(dpi=args.dpi, rotation=args.rotate, mirror=args.mirror)
     BatchStore.create(args.directory, args.name, args.album, args.date, defaults).close()
     print(f"created batch {args.name!r} in {args.directory}")
     return 0

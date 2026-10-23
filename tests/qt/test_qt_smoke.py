@@ -12,7 +12,9 @@ pytestmark = pytest.mark.qt
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication, QUrl  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QMetaObject, QObject, QPoint, QPointF, Qt, QUrl  # noqa: E402
+from PySide6.QtQuick import QQuickItem  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from opticfilm_linux.app.controller import Controller  # noqa: E402
@@ -41,15 +43,22 @@ def _wait(bridge, condition, timeout=TIMEOUT):
 
 
 @pytest.fixture
-def window(qapp, sweep600_dir):
+def loaded(qapp, sweep600_dir):
+    """The bridge, the QML engine with the window loaded, and its collected warnings."""
     controller = Controller(scanner_factory(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
     engine, warnings = create_engine(bridge, provider)
     assert engine.rootObjects(), warnings
-    yield bridge, warnings
+    yield bridge, engine, warnings
     bridge.shutdown()
     engine.deleteLater()
+
+
+@pytest.fixture
+def window(loaded):
+    bridge, _engine, warnings = loaded
+    return bridge, warnings
 
 
 def test_scan_review_and_export_on_the_fake_scanner(window, tmp_path):
@@ -135,3 +144,66 @@ def test_export_waits_for_a_pending_slider_edit(window, tmp_path):
     bridge.shutdown()
     slide = _first_slide(directory)
     assert slide.settings.brightness_ev == 1.0 and slide.exported
+
+
+def test_orientation_from_the_new_batch_form_slide_mirror_and_batch_dialog(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Turned", "", "", 600, 90, True)
+    _wait(bridge, lambda: bridge.hasBatch)
+    assert (bridge.batchRotation, bridge.batchMirror) == (90, True)
+    _wait(bridge, lambda: bridge.canScan)
+    bridge.scan()
+    _wait(bridge, lambda: bridge.selectedTray == 1 and bridge.slides.rowCount() == 4)
+    _wait(bridge, lambda: bridge.trays.rowCount() == 1 and not bridge.scanPending)
+    bridge.mirror(1, 1)
+    role = next(k for k, v in bridge.slides.roleNames().items() if bytes(v) == b"mirror")
+    _wait(bridge, lambda: bridge.slides.data(bridge.slides.index(0), role) is True)
+    root = engine.rootObjects()[0]
+    dialog = root.findChild(QObject, "orientationDialog")
+    assert dialog is not None
+    QMetaObject.invokeMethod(dialog, "open")
+    _wait(bridge, lambda: dialog.property("opened"))
+    _wait(bridge, lambda: _all_reviewed(tmp_path / "Turned"))
+    bridge.setBatchOrientation(180, False)
+    _wait(bridge, lambda: (bridge.batchRotation, bridge.batchMirror) == (180, False))
+    assert not bridge.hasBanner
+    assert warnings == []
+
+
+def _all_reviewed(directory):
+    from opticfilm_linux.batch.store import BatchStore
+
+    with BatchStore.open(directory, readonly=True) as store:
+        return all(t.stage.value == "review" for t in store.snapshot().trays)
+
+
+def _click(root, name):
+    item = root.findChild(QQuickItem, name)
+    assert item is not None and item.isVisible(), name
+    centre = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+    QTest.mouseClick(
+        root,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        QPoint(int(centre.x()), int(centre.y())),
+    )
+
+
+def test_the_batch_orientation_dialog_shows_the_current_orientation_and_applies(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Dialog", "", "", 600, 270, True)
+    _wait(bridge, lambda: bridge.hasBatch)
+    root = engine.rootObjects()[0]
+    _wait(bridge, lambda: root.findChild(QObject, "orientationDialog") is not None)
+    dialog = root.findChild(QObject, "orientationDialog")
+    QMetaObject.invokeMethod(dialog, "open")
+    _wait(bridge, lambda: dialog.property("opened"))
+    rotation = root.findChild(QObject, "orientationRotation")
+    mirror = root.findChild(QObject, "orientationMirror")
+    assert rotation.property("currentText") == "270" and mirror.property("checked") is True
+    _click(root, "orientationMirror")
+    _wait(bridge, lambda: mirror.property("checked") is False)
+    _click(root, "orientationApply")
+    _wait(bridge, lambda: (bridge.batchRotation, bridge.batchMirror) == (270, False))
+    _wait(bridge, lambda: not dialog.property("visible"))
+    assert not bridge.hasBanner and warnings == []

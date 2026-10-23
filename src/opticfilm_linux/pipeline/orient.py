@@ -1,4 +1,4 @@
-"""Quarter-turn rotation of uint16 RGB images."""
+"""Quarter-turn rotation and left-right mirroring of uint16 RGB images."""
 
 import numpy as np
 
@@ -10,3 +10,8 @@ def rotate(rgb: np.ndarray, degrees: int) -> np.ndarray:
     if degrees not in QUARTER_TURNS:
         raise ValueError(f"degrees must be one of {QUARTER_TURNS}, got {degrees}")
     return np.rot90(rgb, k=-(degrees // 90)).copy(order="C")
+
+
+def mirror(rgb: np.ndarray) -> np.ndarray:
+    """Flip left and right (a horizontal flip); always returns a new contiguous array."""
+    return np.flip(rgb, axis=1).copy(order="C")

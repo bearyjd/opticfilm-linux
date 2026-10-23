@@ -102,6 +102,8 @@ ACTIONS = {
     "set_status": lambda c: c.set_status(1, 1, SlideStatus.NEEDS_LOOK),
     "edit_slide": lambda c: c.edit_slide(1, 1, SlideSettings(brightness_ev=1.0)),
     "rotate": lambda c: c.rotate(1, 1, 1),
+    "mirror": lambda c: c.mirror(1, 1),
+    "set_batch_orientation": lambda c: c.set_batch_orientation(90, True),
     "reset_slide": lambda c: c.reset_slide(1, 1),
     "accept_all": lambda c: c.accept_all(),
     "scan": lambda c: c.scan(),

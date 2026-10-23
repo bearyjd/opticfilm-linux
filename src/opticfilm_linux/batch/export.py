@@ -15,6 +15,7 @@ from typing import Literal
 
 from opticfilm_linux.batch.enhance import options_for
 from opticfilm_linux.batch.model import (
+    BatchDefaults,
     BatchManifest,
     Mode,
     SlideSettings,
@@ -62,16 +63,20 @@ def _mark_exported(
     version: int,
     mode: Mode,
     settings: SlideSettings,
+    defaults: BatchDefaults,
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
     """Mark one slide exported, only if the file written still matches it.
 
-    A re-scan (new sweep version), a mode change, or an edit made while the slide was rendering
-    means the file on disk is obsolete: nothing is marked, so the next export redoes the slide.
+    A re-scan (new sweep version), a mode change, a new batch orientation, or an edit made while
+    the slide was rendering means the file on disk is obsolete: nothing is marked, so the next
+    export redoes the slide.
     """
     outcome: Literal["marked", "stale_slide", "stale_tray"] = "stale_tray"
 
     def change(manifest: BatchManifest) -> BatchManifest:
         nonlocal outcome
+        if manifest.defaults != defaults:
+            return manifest
         trays = []
         for tray in manifest.trays:
             if tray.number == number and tray.sweep_version == version and tray.mode == mode:
@@ -127,10 +132,16 @@ def _export_tray(
         path = write_slide(image, spec)
         report(path)
         outcome = _mark_exported(
-            store, tray.number, record.position, tray.sweep_version, tray.mode, record.settings
+            store,
+            tray.number,
+            record.position,
+            tray.sweep_version,
+            tray.mode,
+            record.settings,
+            defaults,
         )
         if outcome == "stale_tray":
-            return True  # re-scanned or mode changed meanwhile: stale, the next export redoes it
+            return True  # re-scanned, mode or orientation changed: the next export redoes it
     return True
 
 
@@ -186,11 +197,39 @@ def _checked_sweep_folders(store: BatchStore, number: int) -> list[Path]:
     return folders
 
 
+def _half_cleaned(store: BatchStore, tray: TrayRecord) -> bool:
+    """Marked removed by a cleanup that did not finish: its sweep folders are still there."""
+    return (
+        tray.stage is TrayStage.EXPORTED
+        and tray.raw_removed
+        and any(store.tray_dir(tray.number).glob("sweep-*"))
+    )
+
+
+def _delete(number: int, folders: list[Path]) -> None:
+    try:
+        for path in folders:
+            shutil.rmtree(path)
+    except OSError as exc:
+        raise BatchError(
+            f"the raw scans of tray {number} were only partly removed and can no longer be "
+            f"used; free disk space again to finish: {exc}"
+        ) from exc
+
+
 def cleanup_raw(store: BatchStore, number: int) -> int:
-    """Delete an exported tray's raw sweeps (all versions). Returns the bytes freed."""
+    """Delete an exported tray's raw sweeps (all versions). Returns the bytes freed.
+
+    A cleanup that failed after marking the tray removed is finished by calling this again.
+    """
     tray = next((t for t in store.snapshot().trays if t.number == number), None)
     if tray is None:
         raise BatchError(f"no tray {number} in this batch")
+    if _half_cleaned(store, tray):
+        folders = _checked_sweep_folders(store, number)
+        freed = sum(_folder_size(path) for path in folders)
+        _delete(number, folders)
+        return freed
     if tray.stage is not TrayStage.EXPORTED:
         raise CleanupRefused(
             f"tray {number} is {tray.stage}; only exported trays can be cleaned up"
@@ -199,17 +238,33 @@ def cleanup_raw(store: BatchStore, number: int) -> int:
         raise CleanupRefused(f"tray {number} still has a preview to update; try again shortly")
     folders = _checked_sweep_folders(store, number)
     freed = sum(_folder_size(path) for path in folders)
-    for path in folders:
-        shutil.rmtree(path)
-    store.update_tray(number, raw_removed=True)
+    # Commit first, under the store's lock: once marked removed, nothing (a new batch
+    # orientation, an edit) can send the tray back to review while its raw scans go.
+    if not store.update_tray_if(number, _still_freeable, raw_removed=True):
+        raise CleanupRefused(f"tray {number} changed meanwhile; it is no longer fully exported")
+    _delete(number, folders)
     return freed
 
 
+def _still_freeable(tray: TrayRecord) -> bool:
+    real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
+    return (
+        tray.stage is TrayStage.EXPORTED
+        and not tray.raw_removed
+        and not _stale(tray)
+        and all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
+    )
+
+
 def freeable_trays(store: BatchStore) -> tuple[FreeableTray, ...]:
-    """Fully exported trays whose raw scans are still on disk, with the space they use."""
+    """Fully exported trays whose raw scans are still on disk, with the space they use.
+
+    Includes trays whose cleanup was interrupted (marked removed, sweep folders still there).
+    """
     found = []
     for tray in store.snapshot().trays:
-        if tray.stage is TrayStage.EXPORTED and not tray.raw_removed and not _stale(tray):
+        whole = tray.stage is TrayStage.EXPORTED and not tray.raw_removed and not _stale(tray)
+        if whole or _half_cleaned(store, tray):
             size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
             found.append(FreeableTray(number=tray.number, bytes=size))
     return tuple(found)
