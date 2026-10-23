@@ -40,7 +40,7 @@ PINNED = {
     ],
 }
 FLAGS = {"positive": (), "negative": (Flag.CLIPPING,)}
-PROBE = "567277b3d55f8dae"  # _kernel_probe() on the machine the pins were taken on
+PROBE = "06cd634ee476ceeb"  # _kernel_probe() on the machine the pins were taken on
 
 
 def _digest(array: np.ndarray) -> str:
@@ -56,6 +56,8 @@ def _kernel_probe() -> str:
         cv2.GaussianBlur(x, (0, 0), 1.5),
         cv2.bilateralFilter(x, -1, 0.1, 2.5),
         np.clip((x - 0.1) / 0.8, 0, 1) ** np.float32(0.7),
+        -np.log10(np.clip(x, 1e-4, 1.0)),  # negative inversion's density
+        np.log(x.astype(np.float64)),
         cv2.medianBlur(x8[..., 0], 21),
         cv2.inpaint(x8, (x8[..., 0] > 240).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA),
         cv2.resize(x16, (20, 20), interpolation=cv2.INTER_AREA),
