@@ -68,47 +68,8 @@ Kirigami.Page {
                 enabled: bridge.canScan
                 onClicked: bridge.scan()
             }
-            QQC2.Label {
-                Layout.fillWidth: true
-                text: bridge.readonly ? qsTr("Read-only — another program has this batch open") : bridge.scannerText
-                elide: Text.ElideRight
-            }
-            QQC2.Button {
-                objectName: "loadHelpLink"
-                visible: !bridge.readonly && bridge.scannerStatus === "not_ready"
-                flat: true
-                text: qsTr("How to load the scanner")
-                icon.name: "help-contextual"
-                onClicked: loadHelpDialog.open()
-            }
-            QQC2.Button {
-                objectName: "ejectButton"
-                text: qsTr("Eject holder")
-                icon.name: "media-eject"
-                enabled: bridge.canEject
-                onClicked: bridge.ejectHolder()
-            }
             Item {
-                // a disabled button gets no hover, so the explanation hangs on this wrapper
-                implicitWidth: loadNextButton.implicitWidth
-                implicitHeight: loadNextButton.implicitHeight
-                QQC2.ToolTip.visible: loadNextHover.hovered
-                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Experimental: loading without a terminal is not yet proven on this scanner.") : qsTr("Switched off: loading without a terminal is not yet proven on this scanner. Start the app with OPTICFILM_NEXT_STRIP=1 to try it.")
-
-                HoverHandler {
-                    id: loadNextHover
-                }
-                QQC2.Button {
-                    id: loadNextButton
-
-                    objectName: "loadNextButton"
-                    anchors.fill: parent
-                    text: qsTr("Load next holder")
-                    icon.name: "go-down"
-                    enabled: bridge.canLoadNext
-                    onClicked: bridge.loadNextHolder()
-                }
+                Layout.fillWidth: true
             }
             QQC2.Button {
                 objectName: "loadHelpButton"
@@ -155,6 +116,59 @@ Kirigami.Page {
         anchors.fill: parent
         spacing: 0
 
+        RowLayout {
+            // the scanner's status and the holder controls: own row, so the text is never cut off
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            spacing: Kirigami.Units.largeSpacing
+
+            QQC2.Label {
+                objectName: "scannerStatusText"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: bridge.readonly ? qsTr("Read-only — another program has this batch open") : bridge.scannerText
+            }
+            QQC2.Button {
+                objectName: "loadHelpLink"
+                visible: !bridge.readonly && bridge.scannerStatus === "not_ready"
+                flat: true
+                text: qsTr("How to load the scanner")
+                icon.name: "help-contextual"
+                onClicked: loadHelpDialog.open()
+            }
+            QQC2.Button {
+                objectName: "ejectButton"
+                text: qsTr("Eject holder")
+                icon.name: "media-eject"
+                enabled: bridge.canEject
+                onClicked: bridge.ejectHolder()
+            }
+            Item {
+                // a disabled button gets no hover, so the explanation hangs on this wrapper
+                implicitWidth: loadNextButton.implicitWidth
+                implicitHeight: loadNextButton.implicitHeight
+                QQC2.ToolTip.visible: loadNextHover.hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Experimental: loading without a terminal is not yet proven on this scanner.") : qsTr("Switched off: loading without a terminal is not yet proven on this scanner. Start the app with OPTICFILM_NEXT_STRIP=1 to try it.")
+
+                HoverHandler {
+                    id: loadNextHover
+                }
+                QQC2.Button {
+                    id: loadNextButton
+
+                    objectName: "loadNextButton"
+                    anchors.fill: parent
+                    text: qsTr("Load next holder")
+                    icon.name: "go-down"
+                    enabled: bridge.canLoadNext
+                    onClicked: bridge.loadNextHolder()
+                }
+            }
+        }
+        Kirigami.Separator {
+            Layout.fillWidth: true
+        }
         ErrorBanner {
             Layout.fillWidth: true
         }

@@ -108,9 +108,8 @@ opticfilm --fake demo-sweep      # demo mode: runs on the fake scanner, no hardw
 
 It needs the distribution's **PySide6 and Kirigami**, not the PyPI wheel (which bundles its own Qt
 and cannot load the system Kirigami). On Fedora: `sudo dnf install python3-pyside6 kf6-kirigami`,
-and create the environment with `uv venv --system-site-packages`. `ofscan` needs neither. Real
-scanning still waits on the driver: with the real scanner the app says "status unknown" and keeps
-Scan disabled.
+and create the environment with `uv venv --system-site-packages`. `ofscan` needs neither. For the
+real scanner, see below.
 
 ### Using the app with the real scanner
 

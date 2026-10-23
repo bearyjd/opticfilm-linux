@@ -235,7 +235,16 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
     from opticfilm_linux.scanner.base import ScannerStatus
     from opticfilm_linux.scanner.fake import FakeScanner
 
-    scanner = FakeScanner(sweep600_dir, (ScannerStatus.NOT_READY,))
+    calls: list[str] = []
+
+    class Recording(FakeScanner):
+        def eject(self) -> None:
+            calls.append("eject")
+
+        def load_next_strip(self) -> None:
+            calls.append("load")
+
+    scanner = Recording(sweep600_dir, (ScannerStatus.NOT_READY,))
     controller = Controller(lambda _dpi: scanner, next_strip=True)
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600, load_command_text="of135i load now")
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
@@ -247,8 +256,16 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         _wait(bridge, lambda: _prop(root, "loadNextButton", "enabled") is True)
         assert not bridge.canScan and bridge.canEject and bridge.nextStripEnabled
         _wait(bridge, lambda: _prop(root, "loadHelpLink", "visible"))
+        _wait(bridge, lambda: "not loaded" in (_prop(root, "scannerStatusText", "text") or ""))
+        assert _prop(root, "scannerStatusText", "truncated") is False
+        for name in ("loadHelpLink", "ejectButton", "loadNextButton", "loadHelpButton"):
+            item = root.findChild(QQuickItem, name)
+            assert item.width() >= item.implicitWidth() - 0.5, name
         _click(root, "loadNextButton")
-        _wait(bridge, lambda: bridge.canLoadNext)
+        _wait(bridge, lambda: calls == ["load"])
+        _wait(bridge, lambda: _prop(root, "ejectButton", "enabled") is True)
+        _click(root, "ejectButton")
+        _wait(bridge, lambda: calls == ["load", "eject"])
         _click(root, "loadHelpLink")
         dialog = root.findChild(QObject, "loadHelpDialog")
         _wait(bridge, lambda: dialog.property("opened"))
