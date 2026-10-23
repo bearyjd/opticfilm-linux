@@ -41,12 +41,15 @@ def test_scan_holder_stitches_four_frames_into_a_splittable_sweep(scanner_for, s
     assert len(split_slides(sweep)) == 4
 
 
-def test_the_command_asks_for_four_frames_with_infrared_and_no_inversion(scanner_for, tmp_path):
+def test_the_command_asks_for_the_four_slide_openings_with_infrared_and_no_inversion(
+    scanner_for, tmp_path
+):
     log = tmp_path / "argv.json"
     scanner_for(FAKE_DRIVER_ARGV=str(log)).scan_holder(ScanSettings(dpi=3600))
     argv = json.loads(log.read_text())
     assert argv[:1] == ["scan"] and "--ir" in argv and "--positive" not in argv
-    assert argv[argv.index("--frames") + 1] == "1-4"
+    assert argv[argv.index("--slides") + 1] == "1-4" and "--frames" not in argv
+    assert argv[argv.index("--dark-fallback") + 1] == "default"
     assert argv[argv.index("--dpi") + 1] == "3600" and "--no-cal-data" not in argv
 
 

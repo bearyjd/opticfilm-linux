@@ -1,10 +1,11 @@
 """The real scanner, through the community driver's command line (``python -m of135i``).
 
-The OpticFilm 135i scans a mounted-slide holder one opening at a time: ``scan --frames 1-4``
-loads nothing and calibrates once, then writes one full-window frame per opening, with the
-slide's long side along the transport. This backend runs that command, turns each frame a
-quarter turn, and stacks the four into one sweep, so the splitting, enhancement and batch code
-work unchanged. It sends nothing to the scanner itself: every hardware command is the driver's.
+The OpticFilm 135i scans a mounted-slide holder one opening at a time. ``scan --slides 1-4`` (in
+the patched driver; see its docs/slide-scanning.md) calibrates once, then writes one full-window
+frame per opening, with the slide's long side along the transport. This backend runs that command,
+turns each frame a quarter turn, and stacks the four into one sweep, so the splitting,
+enhancement and batch code work unchanged. It sends nothing to the scanner itself: every hardware
+command is the driver's.
 
 The driver must already have *loaded* the holder (an interactive step: ``of135i load``).
 ``status()`` reads the driver's read-only ``doctor`` report to tell whether that happened.
@@ -31,7 +32,8 @@ from opticfilm_linux.scanner.base import ScanError, ScannerStatus
 
 log = logging.getLogger(__name__)
 
-FRAMES = "1-4"
+SLIDES = "1-4"  # the four openings of the mounted-slide holder
+DARK_FALLBACK = "default"  # use the vendor offset codes if the dark reading is a stale buffer
 FRAME_QUARTER_TURNS = 1  # counter-clockwise; turns a frame so the slide's long side lies along x
 DRIVER_ENV = "OPTICFILM_DRIVER_DIR"
 SCAN_TIMEOUT_S = 3600
@@ -124,8 +126,8 @@ class DriverScanner:
         work = Path(tempfile.mkdtemp(prefix="opticfilm-scan-", dir=base))
         try:
             output = work / "tray.tiff"
-            command = ["scan", "--frames", FRAMES, "--dpi", str(settings.dpi), "--ir"]
-            command += ["-o", str(output)]
+            command = ["scan", "--slides", SLIDES, "--dpi", str(settings.dpi), "--ir"]
+            command += ["--dark-fallback", DARK_FALLBACK, "-o", str(output)]
             result = self._run(command, self._config.timeout_s, keep_log=True)
             self._keep_sidecars(work, failed=_missing_frames(work))
             return _stitch(work, settings.dpi, result)
