@@ -124,3 +124,51 @@ def test_selected_tray_fills_slide_cards_with_plain_flags_and_tokens():
 def test_selected_tray_that_does_not_exist_falls_back_to_none():
     state = _build(selected=9)
     assert state.selected is None and state.slides == ()
+
+
+_FLAGS = list(itertools.product(ScannerStatus, *[(False, True)] * 5))
+
+
+@pytest.mark.parametrize(("scanner", "pending", "readonly", "control", "busy", "strip"), _FLAGS)
+def test_holder_buttons_follow_the_truth_table(scanner, pending, readonly, control, busy, strip):
+    state = _build(
+        scanner=scanner,
+        scan_pending=pending,
+        readonly=readonly,
+        holder_control=control,
+        holder_busy=busy,
+        next_strip=strip,
+    )
+    idle = not pending and not readonly and control and not busy
+    assert state.can_eject is (idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY))
+    assert state.can_load_next is (idle and strip and scanner is ScannerStatus.NOT_READY)
+    assert state.next_strip_enabled is strip
+    assert state.holder_busy is busy
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_scan_is_disabled_while_the_holder_moves(busy):
+    state = _build(holder_control=True, holder_busy=busy)
+    assert state.can_scan is not busy
+
+
+def test_holder_buttons_need_an_open_batch():
+    state = build_state(
+        None,
+        preview_tokens={},
+        scanner=ScannerStatus.NOT_READY,
+        scan_pending=False,
+        readonly=False,
+        selected=None,
+        updating=frozenset(),
+        progress={},
+        scan_started={},
+        now=0.0,
+        banner=None,
+        export=None,
+        free_space=None,
+        holder_control=True,
+        next_strip=True,
+    )
+    assert not state.can_eject and not state.can_load_next
+    assert not EMPTY_STATE.can_eject and not EMPTY_STATE.can_load_next

@@ -48,3 +48,6 @@ class FakeScanner:
 
     def eject(self) -> None:
         return None
+
+    def load_next_strip(self) -> None:
+        return None

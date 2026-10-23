@@ -81,6 +81,10 @@ class AppState:
     free_space: FreeSpaceView | None
     default_rotation: int = 0  # the batch's orientation, applied to every slide
     default_mirror: bool = False
+    can_eject: bool = False
+    can_load_next: bool = False
+    next_strip_enabled: bool = False  # the experimental non-interactive load is switched on
+    holder_busy: bool = False  # an eject or load is queued or running
 
 
 EMPTY_STATE = AppState(
@@ -153,9 +157,13 @@ def build_state(
     banner: Banner | None,
     export: ExportView | None,
     free_space: FreeSpaceView | None,
+    holder_control: bool = False,
+    holder_busy: bool = False,
+    next_strip: bool = False,
 ) -> AppState:
     trays = manifest.trays if manifest is not None else ()
     current = next((t for t in trays if t.number == selected), None)
+    idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return AppState(
         batch_name=manifest.name if manifest is not None else None,
         readonly=readonly,
@@ -164,6 +172,7 @@ def build_state(
         can_scan=manifest is not None
         and scanner is ScannerStatus.READY
         and not scan_pending
+        and not holder_busy
         and not readonly,
         scan_pending=scan_pending,
         trays=tuple(_tray_row(t, progress, scan_started, now) for t in trays),
@@ -176,4 +185,8 @@ def build_state(
         free_space=free_space,
         default_rotation=manifest.defaults.rotation if manifest is not None else 0,
         default_mirror=manifest.defaults.mirror if manifest is not None else False,
+        can_eject=idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY),
+        can_load_next=idle and next_strip and scanner is ScannerStatus.NOT_READY,
+        next_strip_enabled=next_strip,
+        holder_busy=holder_busy,
     )

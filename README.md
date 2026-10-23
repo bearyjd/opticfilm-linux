@@ -108,9 +108,28 @@ opticfilm --fake demo-sweep      # demo mode: runs on the fake scanner, no hardw
 
 It needs the distribution's **PySide6 and Kirigami**, not the PyPI wheel (which bundles its own Qt
 and cannot load the system Kirigami). On Fedora: `sudo dnf install python3-pyside6 kf6-kirigami`,
-and create the environment with `uv venv --system-site-packages`. `ofscan` needs neither. Real
-scanning still waits on the driver: with the real scanner the app says "status unknown" and keeps
-Scan disabled.
+and create the environment with `uv venv --system-site-packages`. `ofscan` needs neither. For the
+real scanner, see below.
+
+### Using the app with the real scanner
+
+The scanner has to be loaded by hand once after it is switched on; the app cannot do this step
+(the driver asks you to press Enter). **How to load the scanner** in the toolbar walks through it:
+
+1. Switch the scanner off, then on; wait for the steady light.
+2. Slide the holder in loosely.
+3. In a terminal, run the command the dialog shows (**Copy command**). By default it is
+   `distrobox enter dev -- bash -lc 'cd <driver dir> && PYTHONPATH=. python3 -m of135i load'`,
+   built from `OPTICFILM_DRIVER_DIR`; set `OPTICFILM_LOAD_COMMAND` to show a different one.
+4. When it asks, pull the holder fully out, push it back in to the stop, and press Enter.
+5. Check that it will not pull out (latched), then press **Scan**.
+
+Between trays press **Eject holder**, swap the holder and push it in, then either repeat the steps
+above or press **Load next holder**. Load next holder runs `of135i load --next-strip`, which is
+not yet proven on this scanner, so it stays disabled unless the app is started with
+`OPTICFILM_NEXT_STRIP=1`. When the driver refuses a scan the window says so in plain words:
+power-cycle the scanner (off until its lights go out, then on), load the holder again and rescan
+that tray. The driver's own message is under **Details**.
 
 ## Development
 

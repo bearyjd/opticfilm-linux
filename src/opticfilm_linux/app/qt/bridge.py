@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 
 from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
-from opticfilm_linux.app.messages import bytes_text, slide_status_text
+from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_text
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
     DPI_CHOICES,
@@ -108,10 +109,16 @@ class Bridge(QObject):
     changed = Signal()
 
     def __init__(
-        self, controller: Controller, prefs: Prefs, demo_dpi: int | None = None, parent=None
+        self,
+        controller: Controller,
+        prefs: Prefs,
+        demo_dpi: int | None = None,
+        parent=None,
+        load_command_text: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._controller = controller
+        self._load_command = load_command_text or load_command(None)
         self._prefs = prefs
         self._demo_dpi = demo_dpi or 0
         self._state: AppState = EMPTY_STATE
@@ -156,6 +163,10 @@ class Bridge(QObject):
     defaultDpi = Property(int, lambda self: self._demo_dpi or DEFAULT_DPI, constant=True)  # noqa: N815
     dpiChoices = Property("QVariantList", lambda self: list(DPI_CHOICES), constant=True)  # noqa: N815
     rotationChoices = Property("QVariantList", lambda self: list(ROTATIONS), constant=True)  # noqa: N815
+    loadCommand = Property(str, lambda self: self._load_command, constant=True)  # noqa: N815
+    nextStripEnabled = Property(  # noqa: N815
+        bool, lambda self: self._controller.next_strip_enabled, constant=True
+    )
 
     hasBatch = _p(bool, changed, lambda s, _: s.batch_name is not None)  # noqa: N815
     batchName = _p(str, changed, lambda s, _: s.batch_name or "")  # noqa: N815
@@ -164,6 +175,10 @@ class Bridge(QObject):
     batchMirror = _p(bool, changed, lambda s, _: s.default_mirror)  # noqa: N815
     scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
     canScan = _p(bool, changed, lambda s, _: s.can_scan)  # noqa: N815
+    canEject = _p(bool, changed, lambda s, _: s.can_eject)  # noqa: N815
+    canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
+    holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
+    scannerStatus = _p(str, changed, lambda s, _: s.scanner.value)  # noqa: N815
     scanPending = _p(bool, changed, lambda s, _: s.scan_pending)  # noqa: N815
     selectedTray = _p(int, changed, lambda s, _: -1 if s.selected is None else s.selected)  # noqa: N815
     hasBanner = _p(bool, changed, lambda s, _: s.banner is not None)  # noqa: N815
@@ -262,6 +277,18 @@ class Bridge(QObject):
     @Slot(int)
     def rescan(self, number: int) -> None:
         self._controller.rescan(number)
+
+    @Slot()
+    def ejectHolder(self) -> None:  # noqa: N802
+        self._controller.eject_holder()
+
+    @Slot()
+    def loadNextHolder(self) -> None:  # noqa: N802
+        self._controller.load_next_holder()
+
+    @Slot()
+    def copyLoadCommand(self) -> None:  # noqa: N802
+        QGuiApplication.clipboard().setText(self._load_command)
 
     @Slot(int)
     def selectTray(self, number: int) -> None:  # noqa: N802

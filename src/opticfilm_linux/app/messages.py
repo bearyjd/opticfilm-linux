@@ -1,7 +1,11 @@
 """Plain-words text for the window. Pure functions, so they are tested without Qt."""
 
+import shlex
+from pathlib import Path
+
 from opticfilm_linux.batch.model import Flag, SlideStatus, TrayStage
 from opticfilm_linux.scanner.base import ScannerStatus
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
 
 _FLAGS = {
     Flag.TOO_DARK: "Very dark",
@@ -23,10 +27,23 @@ _SCANNER = {
     ScannerStatus.UNKNOWN: "Scanner status unknown: scanning is not available yet",
     ScannerStatus.READY: "Scanner ready",
     ScannerStatus.BUSY: "Scanner busy",
-    ScannerStatus.NOT_READY: "Scanner not ready: load a tray",
-    ScannerStatus.NOT_CONNECTED: "Scanner not connected",
-    ScannerStatus.ERROR: "Scanner error",
+    ScannerStatus.NOT_READY: (
+        'Scanner is not loaded. Open "How to load the scanner", then press Scan.'
+    ),
+    ScannerStatus.NOT_CONNECTED: "Scanner not found. Switch it on and check the USB cable.",
+    ScannerStatus.ERROR: (
+        "The scanner reports a problem. If a scan just failed or stopped, power-cycle it "
+        "(off until the lights go out, then on), eject and load the holder again. If the app "
+        'says the scanner driver was not found, see "How to load the scanner" / the README '
+        "(OPTICFILM_DRIVER_DIR)."
+    ),
 }
+
+POWER_CYCLE_ADVICE = (
+    "The scanner stopped this scan. Power-cycle it (off until the lights go out, then on), "
+    "eject, load the holder again and rescan this tray."
+)
+DRIVER_DIR_PLACEHOLDER = "~/opticfilm135i-linux"
 
 
 def flag_text(flag: Flag) -> str:
@@ -39,6 +56,29 @@ def stage_text(stage: TrayStage) -> str:
 
 def scanner_text(status: ScannerStatus) -> str:
     return _SCANNER[status]
+
+
+def failure_text(detail: str, fallback: str) -> str:
+    """The short sentence for a failure banner; the technical ``detail`` goes in its details."""
+    return POWER_CYCLE_ADVICE if POWER_CYCLE_HINT in detail else fallback  # the backend's words
+
+
+_HOLDER_ACTIONS = {"eject": "eject the holder", "load": "load the next holder"}
+
+
+def holder_failed_text(action: str) -> str:
+    """A failed holder move: the driver then refuses everything until a power cycle."""
+    return (
+        f"Could not {_HOLDER_ACTIONS[action]}. Switch the scanner off until its lights go out, "
+        'switch it on, then follow "How to load the scanner".'
+    )
+
+
+def load_command(driver_dir: Path | None) -> str:
+    """The terminal command for the first, interactive load after the scanner is switched on."""
+    folder = shlex.quote(str(driver_dir)) if driver_dir is not None else DRIVER_DIR_PLACEHOLDER
+    inner = f"cd -- {folder} && PYTHONPATH=. python3 -m of135i load"
+    return f"distrobox enter dev -- bash -lc {shlex.quote(inner)}"
 
 
 _SLIDE_STATUS = {

@@ -5,6 +5,7 @@ frame per opening, with the slide's long side along the transport (so a frame is
 a quarter turn, with dark holder on both sides). Behaviour is chosen with FAKE_DRIVER_MODE:
 ok | coverage_fail (overscan files only, exit 1, as for a slide the strip detector rejects) |
 cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pause).
+``load --next-strip`` exits with FAKE_DRIVER_LOAD_EXIT after FAKE_DRIVER_LOAD_DELAY seconds.
 FAKE_DRIVER_SYNTH=1 makes the frames up instead (``synth``: the real frame geometry at the
 requested --dpi, written strip by strip) rather than cutting them from FAKE_DRIVER_SWEEP.
 """
@@ -135,6 +136,8 @@ def main() -> int:
     scan.add_argument("-o", "--output", required=True)
     sub.add_parser("doctor")
     sub.add_parser("eject")
+    load = sub.add_parser("load")
+    load.add_argument("--next-strip", action="store_true")
     args = parser.parse_args()
     if args.command == "doctor":
         _trace("doctor start")
@@ -149,7 +152,24 @@ def main() -> int:
         _trace("eject")
         print("ejected")
         return int(os.environ.get("FAKE_DRIVER_EJECT_EXIT", "0"))
+    if args.command == "load":
+        return _load(args)
     return _scan(args)
+
+
+def _load(args: argparse.Namespace) -> int:
+    _trace("load start")
+    argv_log = os.environ.get("FAKE_DRIVER_ARGV")
+    if argv_log:
+        Path(argv_log).write_text(json.dumps(sys.argv[1:]))
+    if not args.next_strip:  # the interactive first load: never run by the app
+        print("press Enter when the holder is in", flush=True)
+        return 2
+    time.sleep(float(os.environ.get("FAKE_DRIVER_LOAD_DELAY", "0")))
+    code = int(os.environ.get("FAKE_DRIVER_LOAD_EXIT", "0"))
+    print("loaded" if code == 0 else "ERROR of135i: no strip found", flush=True)
+    _trace("load end")
+    return code
 
 
 if __name__ == "__main__":

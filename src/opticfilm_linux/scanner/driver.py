@@ -56,6 +56,8 @@ POWER_CYCLE_HINT = (
     "The scanner refused or lost the scan. Power-cycle it (off until the lights go out, then on), "
     "eject, load the holder again and retry."
 )
+TERMINAL_LOAD_HINT = "The first load after power-on must be done in a terminal (of135i load)."
+HOLDER_TIMEOUT_S = STATUS_TIMEOUT_S * 6
 
 
 @dataclasses.dataclass(frozen=True)
@@ -122,6 +124,10 @@ def parse_doctor(text: str) -> ScannerStatus:
     return ScannerStatus.READY if loaded else ScannerStatus.NOT_READY
 
 
+# One lock for the whole process: every batch gets its own DriverScanner, but the driver allows
+# only one process on the scanner at a time, so a move still running for a closed batch must
+# also hold off the next batch's scan and status checks.
+_HW_LOCK = threading.Lock()
 _LIVE: set[subprocess.Popen] = set()
 _LIVE_LOCK = threading.Lock()
 
@@ -219,7 +225,7 @@ class DriverScanner:
         self._config = config or DriverConfig.from_env()
         self._scanning = threading.Event()
         self._status_lock = threading.Lock()
-        self._hw_lock = threading.Lock()  # the driver allows one process on the scanner at a time
+        self._hw_lock = _HW_LOCK
         self._status_cache: tuple[float, ScannerStatus] | None = None
         self._needs_power_cycle = False  # set when the driver failed; cleared by a power cycle
         self._failed_address: str | None = None  # the USB address it failed on
@@ -293,12 +299,23 @@ class DriverScanner:
             return status
 
     def eject(self) -> None:
+        self._holder_command(["eject"], "eject failed.")
+
+    def load_next_strip(self) -> None:
+        """Load the next holder without a terminal (``load --next-strip``): only after the
+        first, interactive load since power-on."""
+        self._holder_command(
+            ["load", "--next-strip"], f"loading the next holder failed. {TERMINAL_LOAD_HINT}"
+        )
+
+    def _holder_command(self, args: list[str], failure: str) -> None:
+        """Run a holder movement under the hardware lock; any failure needs a power cycle."""
         self._require_driver()
         self._status_cache = None
         try:
             with self._hw_lock:
                 try:
-                    result = self._run(["eject"], STATUS_TIMEOUT_S * 6, keep_log=True)
+                    result = self._run(args, HOLDER_TIMEOUT_S, keep_log=True)
                 finally:
                     self._status_cache = None  # whatever happened, the old answer is stale
         except ScanError:
@@ -306,7 +323,7 @@ class DriverScanner:
             raise
         if result.returncode != 0:
             self._note_failure()
-            raise ScanError(f"eject failed: {_tail(result.output)}")
+            raise ScanError(f"{failure} Driver said: {_tail(result.output)}")
 
     def _note_failure(self) -> None:
         """The driver failed or did not finish: only a power cycle recovers the scanner. A power
@@ -356,6 +373,7 @@ class DriverScanner:
             with open(sink_path, "wb") as sink:  # output goes to disk, never all into memory
                 proc = subprocess.Popen(
                     [self._config.python, "-m", "of135i", *args],
+                    stdin=subprocess.DEVNULL,  # a driver that asks for Enter fails, not hangs
                     stdout=sink,
                     stderr=subprocess.STDOUT,
                     env=env,

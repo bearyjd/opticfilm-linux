@@ -254,3 +254,15 @@ def test_signal_cleanup_installs_handlers_and_can_be_undone():
     finally:
         restore()
     assert signal.getsignal(signal.SIGTERM) is before
+
+
+def test_two_scanner_objects_share_one_hardware_lock(make, monkeypatch):
+    """Each batch gets its own DriverScanner, but the driver allows one process on the scanner."""
+    monkeypatch.setenv("FAKE_DRIVER_DOCTOR", "idle")
+    first, second = make(), make()
+    assert driver_module._HW_LOCK.acquire(blocking=False)
+    try:
+        assert second.status() is ScannerStatus.BUSY  # an operation of `first` is in progress
+    finally:
+        driver_module._HW_LOCK.release()
+    assert first.status() is ScannerStatus.READY
