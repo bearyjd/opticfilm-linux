@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from opticfilm_linux import __version__
-from opticfilm_linux.batch.cli import add_batch_commands, run_batch
+from opticfilm_linux.batch.cli import add_batch_commands, add_orientation_options, run_batch
 from opticfilm_linux.imports import process_images
 from opticfilm_linux.model import RawSweep, ScanSettings
 from opticfilm_linux.output import OutputSpec
@@ -37,6 +37,7 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="do not use the infrared plane: skip dust removal",
     )
+    add_orientation_options(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
             color_strength=args.color_strength,
             sharpen_amount=args.sharpen,
             grain_strength=args.grain,
+            rotation=args.rotate,
+            mirror=args.mirror,
         )
         if args.command == "enhance":
             options = dataclasses.replace(options, remove_dust=False)  # no infrared plane

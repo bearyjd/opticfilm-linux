@@ -1,3 +1,4 @@
+from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.cli import main
 
 
@@ -122,3 +123,20 @@ def test_status_of_an_empty_batch(tmp_path, capsys):
     _new(tmp_path / "b")
     assert main(["batch", "status", str(tmp_path / "b")]) == 0
     assert "no trays" in capsys.readouterr().out
+
+
+def _defaults(path):
+    with BatchStore.open(path, readonly=True) as store:
+        return store.snapshot().defaults
+
+
+def test_new_stores_the_batch_orientation(tmp_path):
+    assert _new(tmp_path / "b", "--rotate", "90", "--mirror") == 0
+    defaults = _defaults(tmp_path / "b")
+    assert (defaults.rotation, defaults.mirror) == (90, True)
+
+
+def test_new_defaults_to_upright_and_unmirrored(tmp_path):
+    assert _new(tmp_path / "b") == 0
+    defaults = _defaults(tmp_path / "b")
+    assert (defaults.rotation, defaults.mirror) == (0, False)
