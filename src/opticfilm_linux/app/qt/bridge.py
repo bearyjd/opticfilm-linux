@@ -22,7 +22,7 @@ from opticfilm_linux.app.prefs import (
 )
 from opticfilm_linux.app.qt.models import DictListModel
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
-from opticfilm_linux.batch.model import BatchDefaults, SlideStatus
+from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
 
 TICK_MS = 500
 DEBOUNCE_MS = 300
@@ -42,6 +42,7 @@ SLIDE_KEYS = (
     "statusText",
     "flags",
     "rotation",
+    "mirror",
     "brightness",
     "color",
     "grain",
@@ -86,6 +87,7 @@ def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
         "statusText": slide_status_text(card.status),
         "flags": list(card.flags),
         "rotation": s.rotation,
+        "mirror": s.mirror,
         "brightness": s.brightness_ev,
         "color": DEFAULTS.color_strength if s.color_strength is None else s.color_strength,
         "grain": DEFAULTS.grain_strength if s.grain_strength is None else s.grain_strength,
@@ -153,10 +155,13 @@ class Bridge(QObject):
     demoDpi = Property(int, lambda self: self._demo_dpi, constant=True)  # noqa: N815
     defaultDpi = Property(int, lambda self: self._demo_dpi or DEFAULT_DPI, constant=True)  # noqa: N815
     dpiChoices = Property("QVariantList", lambda self: list(DPI_CHOICES), constant=True)  # noqa: N815
+    rotationChoices = Property("QVariantList", lambda self: list(ROTATIONS), constant=True)  # noqa: N815
 
     hasBatch = _p(bool, changed, lambda s, _: s.batch_name is not None)  # noqa: N815
     batchName = _p(str, changed, lambda s, _: s.batch_name or "")  # noqa: N815
     readonly = _p(bool, changed, lambda s, _: s.readonly)
+    batchRotation = _p(int, changed, lambda s, _: s.default_rotation)  # noqa: N815
+    batchMirror = _p(bool, changed, lambda s, _: s.default_mirror)  # noqa: N815
     scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
     canScan = _p(bool, changed, lambda s, _: s.can_scan)  # noqa: N815
     scanPending = _p(bool, changed, lambda s, _: s.scan_pending)  # noqa: N815
@@ -209,12 +214,23 @@ class Bridge(QObject):
 
     # -- batch ---------------------------------------------------------------------------
 
-    @Slot(str, str, str, str, int)
-    def newBatch(self, parent_url: str, name: str, album: str, date: str, dpi: int) -> None:  # noqa: N802
+    @Slot(str, str, str, str, int, int, bool)
+    def newBatch(  # noqa: N802
+        self,
+        parent_url: str,
+        name: str,
+        album: str,
+        date: str,
+        dpi: int,
+        rotation: int = 0,
+        mirror: bool = False,
+    ) -> None:
         folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
         self._pending.clear()
         self._opening = self._last_attempt = folder
-        self._controller.new_batch(folder, name.strip() or folder.name, album, date or None, dpi)
+        self._controller.new_batch(
+            folder, name.strip() or folder.name, album, date or None, dpi, rotation, mirror
+        )
 
     @Slot(str, bool)
     def openBatch(self, path: str, readonly: bool) -> None:  # noqa: N802
@@ -259,6 +275,15 @@ class Bridge(QObject):
     @Slot(int, int, int)
     def rotate(self, number: int, position: int, quarter_turns: int) -> None:
         self._controller.rotate(number, position, quarter_turns)
+
+    @Slot(int, int)
+    def mirror(self, number: int, position: int) -> None:
+        self._controller.mirror(number, position)
+
+    @Slot(int, bool)
+    def setBatchOrientation(self, rotation: int, mirror: bool) -> None:  # noqa: N802
+        self._flush_now()  # a slider moved a moment ago is stored first
+        self._controller.set_batch_orientation(rotation, mirror)
 
     @Slot(int, int, str, float)
     def adjust(self, number: int, position: int, field: str, value: float) -> None:

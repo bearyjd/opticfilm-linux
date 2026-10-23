@@ -41,7 +41,8 @@ uv run ofscan devices
 ```
 
 Commands: `ofscan devices`, `ofscan scan --fake SWEEP_DIR --dpi 600 --out DIR`,
-`ofscan process SWEEP_DIR --out DIR` (options: `--album`, `--date`, `--format`, `--mode`, `--no-infrared`).
+`ofscan process SWEEP_DIR --out DIR` (options: `--album`, `--date`, `--format`, `--mode`, `--no-infrared`,
+`--rotate {0,90,180,270}`, `--mirror`).
 Exit code 2 and an `error:` line on bad input.
 
 ## Images from other scanning software
@@ -77,6 +78,16 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
   tray, never automatically. Export always recomputes slides from the raw scans.
 - Scanning the real device still waits on the driver; the batch engine is tested against the
   fake scanner.
+
+### Orientation
+
+Mounted slides can come out turned or mirrored, and nobody knows yet which way the real scanner
+delivers them. So orientation is set once per batch (`ofscan batch new --rotate 90 --mirror`, or
+"Slide orientation" in the app) and fine-tuned per slide (rotate buttons, **Mirror**, keys `[`, `]`
+and `m`). A slide is mirrored left-right first, then turned: the batch and slide rotations add up and
+the two mirror settings cancel out. Scan one tray, check it, and change the whole batch later with
+**Batch orientation…**: every slide is enhanced again and must be exported again; trays whose raw
+scans were removed keep their old orientation.
 
 ## Desktop app
 

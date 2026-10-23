@@ -79,6 +79,8 @@ class AppState:
     banner: Banner | None
     export: ExportView | None
     free_space: FreeSpaceView | None
+    default_rotation: int = 0  # the batch's orientation, applied to every slide
+    default_mirror: bool = False
 
 
 EMPTY_STATE = AppState(
@@ -172,4 +174,6 @@ def build_state(
         banner=banner,
         export=export,
         free_space=free_space,
+        default_rotation=manifest.defaults.rotation if manifest is not None else 0,
+        default_mirror=manifest.defaults.mirror if manifest is not None else False,
     )

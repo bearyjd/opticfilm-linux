@@ -113,10 +113,19 @@ class Controller:
 
     # -- batch lifecycle -----------------------------------------------------------------
 
-    def new_batch(self, directory: Path, name: str, album: str, date: str | None, dpi: int) -> None:
+    def new_batch(
+        self,
+        directory: Path,
+        name: str,
+        album: str,
+        date: str | None,
+        dpi: int,
+        rotation: int = 0,
+        mirror: bool = False,
+    ) -> None:
         def job() -> None:
             self._detach()
-            defaults = BatchDefaults(dpi=dpi)
+            defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror)
             self._attach(BatchStore.create(directory, name, album, date, defaults), False)
 
         self._run(job, "Could not create the batch", droppable=True)
@@ -180,6 +189,26 @@ class Controller:
             self._edit(runner, number, position, dataclasses.replace(current, rotation=turned))
 
         self._run_writer(job, f"Could not rotate slide {position} of tray {number}")
+
+    def mirror(self, number: int, position: int) -> None:
+        """Flip the slide left-right, or back: toggles what is stored when the job runs."""
+
+        def job(runner: BatchRunner) -> None:
+            current = self._slide_settings(number, position)
+            flipped = dataclasses.replace(current, mirror=not current.mirror)
+            self._edit(runner, number, position, flipped)
+
+        self._run_writer(job, f"Could not mirror slide {position} of tray {number}")
+
+    def set_batch_orientation(self, rotation: int, mirror: bool) -> None:
+        """Turn and flip every slide of the batch; trays that cannot follow are named."""
+
+        def job(runner: BatchRunner) -> None:
+            skipped = runner.set_batch_orientation(rotation, mirror)
+            if skipped:
+                self._set(_banner=Banner(_skipped_text(skipped)))
+
+        self._run_writer(job, "Could not change the batch orientation")
 
     def reset_slide(self, number: int, position: int) -> None:
         self.edit_slide(number, position, SlideSettings())
@@ -511,6 +540,14 @@ class Controller:
             except OSError:
                 continue
         return tokens
+
+
+def _skipped_text(numbers: tuple[int, ...]) -> str:
+    names = ", ".join(f"tray {n}" for n in numbers)
+    return (
+        f"The batch orientation was changed, but {names} kept the old one: "
+        "its raw scans were removed, so it cannot be redone."
+    )
 
 
 def _locked(exc: Exception) -> str:

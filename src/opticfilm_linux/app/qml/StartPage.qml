@@ -82,12 +82,31 @@ Kirigami.ScrollablePage {
                 enabled: bridge.demoDpi === 0
                 Component.onCompleted: currentIndex = Math.max(0, bridge.dpiChoices.indexOf(bridge.defaultDpi))
             }
+            RowLayout {
+                Kirigami.FormData.label: qsTr("Slide orientation:")
+
+                QQC2.ComboBox {
+                    id: rotationBox
+
+                    model: bridge.rotationChoices
+                    displayText: qsTr("%1° clockwise").arg(currentText)
+                }
+                QQC2.CheckBox {
+                    id: mirrorBox
+
+                    text: qsTr("Mirror")
+                }
+            }
+            QQC2.Label {
+                text: qsTr("Scan one tray first and check; you can change it later.")
+                opacity: 0.7
+            }
             QQC2.Button {
                 text: qsTr("Create batch")
                 icon.name: "document-new"
                 highlighted: true
                 enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== ""
-                onClicked: bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText))
+                onClicked: bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked)
             }
         }
 
