@@ -1,11 +1,13 @@
 """Command line entry point for ``ofscan``."""
 
 import argparse
+import dataclasses
 import sys
 from pathlib import Path
 
 from opticfilm_linux import __version__
 from opticfilm_linux.batch.cli import add_batch_commands, run_batch
+from opticfilm_linux.imports import process_images
 from opticfilm_linux.model import RawSweep, ScanSettings
 from opticfilm_linux.output import OutputSpec
 from opticfilm_linux.pipeline.run import ProcessOptions, RunResult, process_sweep
@@ -50,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--fake", type=Path, help="replay the stored sweep in this folder")
     scan.add_argument("--dpi", type=int, default=3600)
     _add_output_options(scan)
+    enhance = commands.add_parser(
+        "enhance", help="enhance finished images from other scanning software, one slide each"
+    )
+    enhance.add_argument("files", type=Path, nargs="+", help="TIFF, PNG or JPEG images")
+    enhance.add_argument("--dpi", type=int, default=3600, help="resolution the images were made at")
+    _add_output_options(enhance)
     process = commands.add_parser("process", help="process a stored sweep")
     process.add_argument("sweep", type=Path, help="folder holding a stored sweep")
     _add_output_options(process)
@@ -121,7 +129,11 @@ def main(argv: list[str] | None = None) -> int:
             sharpen_amount=args.sharpen,
             grain_strength=args.grain,
         )
-        result = process_sweep(_load_sweep(args), options, out)
+        if args.command == "enhance":
+            options = dataclasses.replace(options, remove_dust=False)  # no infrared plane
+            result = process_images(args.files, options, out, args.dpi)
+        else:
+            result = process_sweep(_load_sweep(args), options, out)
     except (SweepFormatError, ScanError, SlideSplitError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
