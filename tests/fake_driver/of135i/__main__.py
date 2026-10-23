@@ -5,6 +5,8 @@ frame per opening, with the slide's long side along the transport (so a frame is
 a quarter turn, with dark holder on both sides). Behaviour is chosen with FAKE_DRIVER_MODE:
 ok | coverage_fail (overscan files only, exit 1, as for a slide the strip detector rejects) |
 cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pause).
+FAKE_DRIVER_SYNTH=1 makes the frames up instead (``synth``: the real frame geometry at the
+requested --dpi, written strip by strip) rather than cutting them from FAKE_DRIVER_SWEEP.
 """
 
 import argparse
@@ -20,6 +22,8 @@ import tifffile
 
 from opticfilm_linux.pipeline.split import split_slides
 from opticfilm_linux.sweepstore import load_sweep
+
+from . import synth
 
 PAD = 40  # dark holder either side of the opening, in pixels
 CAL_FAIL = (
@@ -89,6 +93,8 @@ def _scan_body(args: argparse.Namespace) -> int:
     if mode == "slow":
         time.sleep(float(os.environ.get("FAKE_DRIVER_DELAY", "1.5")))
     out = Path(args.output)
+    if os.environ.get("FAKE_DRIVER_SYNTH") == "1":
+        return _write_synthetic(out, args.dpi, mode)
     for number, (rgb, ir) in enumerate(_frames(Path(os.environ["FAKE_DRIVER_SWEEP"])), start=1):
         stem = out.with_name(f"{out.stem}-f{number}")
         tifffile.imwrite(f"{stem}.overscan.tiff", rgb)
@@ -97,6 +103,23 @@ def _scan_body(args: argparse.Namespace) -> int:
         if mode != "coverage_fail":
             tifffile.imwrite(f"{stem}.tiff", rgb)
     return 1 if mode == "coverage_fail" else 0
+
+
+def _write_synthetic(out: Path, dpi: int, mode: str) -> int:
+    for number in range(1, 5):
+        stem = out.with_name(f"{out.stem}-f{number}")
+        synth.write_frame(Path(f"{stem}.overscan.tiff"), dpi, number, infrared=False)
+        synth.write_frame(Path(f"{stem}-ir.overscan.tiff"), dpi, number, infrared=True)
+        Path(f"{stem}.diag.json").write_text(json.dumps({"frame": number}))
+        if mode != "coverage_fail":
+            os.link(f"{stem}.overscan.tiff", f"{stem}.tiff")  # the same pixels, no second copy
+    print(f"FAKE_DRIVER_PEAK_KIB={_peak_kib()}", flush=True)  # read by scripts/rehearse.py
+    return 1 if mode == "coverage_fail" else 0
+
+
+def _peak_kib() -> int:
+    with open("/proc/self/status") as handle:
+        return next((int(line.split()[1]) for line in handle if line.startswith("VmHWM:")), 0)
 
 
 def main() -> int:
