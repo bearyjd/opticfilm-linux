@@ -253,8 +253,35 @@ def _missing_frames(work: Path) -> bool:
 def _read_ir(path: Path) -> np.ndarray:
     plane = tifffile.imread(path)
     if plane.ndim == 3:  # the driver stores the infrared plane in three equal channels
-        plane = plane.mean(axis=2)
-    return np.asarray(plane).astype(np.uint16)
+        plane = plane[:, :, 0]
+    return np.ascontiguousarray(plane)
+
+
+def _page(path: Path) -> tuple[tuple[int, ...], np.dtype]:
+    """Shape and pixel type of a frame, read without loading the pixels."""
+    with tifffile.TiffFile(path) as handle:
+        page = handle.pages[0]
+        return tuple(page.shape), np.dtype(page.dtype)
+
+
+def _check_frames(paths: list[tuple[Path, Path]]) -> None:
+    """Refuse a damaged or unexpected frame before anything is stitched: a wrong pixel type or
+    size would otherwise broadcast or scale silently into a plausible-looking sweep."""
+    for rgb_path, ir_path in paths:
+        try:
+            rgb_shape, rgb_type = _page(rgb_path)
+            ir_shape, ir_type = _page(ir_path)
+        except (OSError, ValueError, tifffile.TiffFileError) as exc:
+            raise ScanError(f"{rgb_path.name} or its infrared frame is unreadable: {exc}") from exc
+        if rgb_type != np.uint16 or ir_type != np.uint16:
+            raise ScanError(f"{rgb_path.name}: expected 16-bit frames, got {rgb_type}/{ir_type}")
+        if len(rgb_shape) != 3 or rgb_shape[2] != 3:
+            raise ScanError(f"{rgb_path.name}: expected 3 colour channels, got shape {rgb_shape}")
+        if tuple(ir_shape[:2]) != tuple(rgb_shape[:2]):
+            raise ScanError(
+                f"{ir_path.name}: the infrared frame {ir_shape[:2]} does not match the "
+                f"visible frame {rgb_shape[:2]}"
+            )
 
 
 def _turned_shape(path: Path) -> tuple[int, int]:
@@ -268,6 +295,7 @@ def _stitch(work: Path, dpi: int, result: _Result) -> RawSweep:
     if _missing_frames(work):
         raise ScanError(f"{POWER_CYCLE_HINT} Driver said: {_tail(result.output)}")
     paths = [_frame_files(work, n) for n in range(1, 5)]
+    _check_frames(paths)
     shapes = [_turned_shape(rgb_path) for rgb_path, _ in paths]
     rows, width = sum(h for h, _ in shapes), max(w for _, w in shapes)
     # The sweep lives in files beside the scratch folder, one frame in memory at a time: a

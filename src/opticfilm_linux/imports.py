@@ -9,13 +9,14 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from PIL import Image
+from PIL import Image, ImageOps
 
 from opticfilm_linux.model import Box, Slide
 from opticfilm_linux.output import OutputSpec, write_slide
 from opticfilm_linux.pipeline.run import ProcessOptions, RunResult, enhance_slide
 
 TIFF_SUFFIXES = (".tif", ".tiff")
+MAX_PIXELS = 400_000_000  # about a 7200 dpi slide with plenty of room
 FULL_16 = 65535
 EIGHT_TO_SIXTEEN = 257  # 255 * 257 == 65535
 
@@ -24,18 +25,34 @@ def load_image(path: Path) -> np.ndarray:
     """An RGB uint16 array from a TIFF, PNG or JPEG; 8-bit input is scaled to the full range."""
     try:
         data = _read(path)
-    except (OSError, ValueError, tifffile.TiffFileError) as exc:
+    except (OSError, ValueError, tifffile.TiffFileError, Image.DecompressionBombError) as exc:
         raise ValueError(f"cannot read {path.name}: {exc}") from exc
     return _as_rgb16(data, path)
 
 
 def _read(path: Path) -> np.ndarray:
     if path.suffix.lower() in TIFF_SUFFIXES:
-        return np.asarray(tifffile.imread(path))
+        return _read_tiff(path)
     with Image.open(path) as image:
+        _check_size(image.width * image.height)
+        image = ImageOps.exif_transpose(image)  # other software often records a turn, not pixels
         if image.mode not in ("I;16", "I;16L", "I;16B"):
             image = image.convert("RGB")
         return np.asarray(image)
+
+
+def _read_tiff(path: Path) -> np.ndarray:
+    with tifffile.TiffFile(path) as handle:
+        page = handle.pages[0]
+        _check_size(int(np.prod(page.shape[:2])))
+        if page.photometric.name not in ("RGB", "MINISBLACK"):
+            raise ValueError(f"unsupported TIFF colour model {page.photometric.name}")
+        return np.asarray(page.asarray())
+
+
+def _check_size(pixels: int) -> None:
+    if pixels > MAX_PIXELS:
+        raise ValueError(f"image is too large ({pixels} pixels)")
 
 
 def _as_rgb16(data: np.ndarray, path: Path) -> np.ndarray:

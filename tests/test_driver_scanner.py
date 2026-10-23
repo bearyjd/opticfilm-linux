@@ -156,3 +156,49 @@ def test_the_drivers_calibration_sidecars_are_kept_for_diagnosis(scanner_for, tm
     scanner_for().scan_holder(ScanSettings(dpi=600))
     kept = sorted(p.name for p in (tmp_path / "logs").glob("*.diag.json"))
     assert len(kept) == 4 and all("-f" in name for name in kept)
+
+
+def _bad_frames(scanner_for, tmp_path, monkeypatch, mutate):
+    """A scan whose driver output is damaged by ``mutate(frame, rgb, ir) -> (rgb, ir)``."""
+    import tifffile
+
+    scanner = scanner_for()
+    real = scanner._run
+
+    def damaged_run(args, timeout, keep_log):
+        result = real(args, timeout, keep_log)
+        work = Path(args[args.index("-o") + 1]).parent
+        for number in range(1, 5):
+            rgb_path = work / f"tray-f{number}.overscan.tiff"
+            ir_path = work / f"tray-f{number}-ir.overscan.tiff"
+            rgb, ir = mutate(number, tifffile.imread(rgb_path), tifffile.imread(ir_path))
+            tifffile.imwrite(rgb_path, rgb)
+            tifffile.imwrite(ir_path, ir)
+        return result
+
+    monkeypatch.setattr(scanner, "_run", damaged_run)
+    return scanner
+
+
+def test_an_8_bit_frame_is_refused_not_scaled_silently(scanner_for, tmp_path, monkeypatch):
+    scanner = _bad_frames(
+        scanner_for, tmp_path, monkeypatch, lambda n, rgb, ir: ((rgb >> 8).astype(np.uint8), ir)
+    )
+    with pytest.raises(ScanError, match="16-bit"):
+        scanner.scan_holder(ScanSettings(dpi=600))
+
+
+def test_an_infrared_frame_of_the_wrong_size_is_refused(scanner_for, tmp_path, monkeypatch):
+    scanner = _bad_frames(
+        scanner_for, tmp_path, monkeypatch, lambda n, rgb, ir: (rgb, ir[: ir.shape[0] // 2])
+    )
+    with pytest.raises(ScanError, match="infrared"):
+        scanner.scan_holder(ScanSettings(dpi=600))
+
+
+def test_a_frame_with_the_wrong_number_of_channels_is_refused(scanner_for, tmp_path, monkeypatch):
+    scanner = _bad_frames(
+        scanner_for, tmp_path, monkeypatch, lambda n, rgb, ir: (rgb[:, :, :2], ir)
+    )
+    with pytest.raises(ScanError, match="channels"):
+        scanner.scan_holder(ScanSettings(dpi=600))

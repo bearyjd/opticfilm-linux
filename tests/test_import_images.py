@@ -53,3 +53,33 @@ def test_enhance_command_reports_a_bad_file_and_exits_2(tmp_path, capsys):
     assert main(["enhance", str(tmp_path / "bad.tif"), "--out", str(tmp_path / "out")]) == 2
     err = capsys.readouterr().err
     assert err.startswith("error:") and "bad.tif" in err
+
+
+def test_a_cmyk_tiff_is_refused_not_read_as_rgb(tmp_path):
+    cmyk = np.zeros((8, 8, 4), np.uint16)
+    tifffile.imwrite(tmp_path / "c.tif", cmyk, photometric="separated")
+    with pytest.raises(ValueError, match="c.tif"):
+        load_image(tmp_path / "c.tif")
+
+
+def test_a_cmyk_jpeg_is_converted_to_rgb_by_the_decoder(tmp_path):
+    Image.fromarray(np.zeros((8, 8, 4), np.uint8), "CMYK").save(tmp_path / "c.jpg")
+    loaded = load_image(tmp_path / "c.jpg")
+    assert loaded.shape == (8, 8, 3) and int(loaded.min()) == int(loaded.max()) == 65535  # white
+
+
+def test_exif_orientation_is_applied(tmp_path):
+    picture = Image.new("RGB", (6, 3), (200, 10, 10))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 clockwise to display
+    picture.save(tmp_path / "r.jpg", exif=exif)
+    assert load_image(tmp_path / "r.jpg").shape[:2] == (6, 3)
+
+
+def test_an_absurdly_large_image_is_refused_before_it_is_decoded(tmp_path, monkeypatch):
+    from opticfilm_linux import imports
+
+    monkeypatch.setattr(imports, "MAX_PIXELS", 50)
+    tifffile.imwrite(tmp_path / "big.tif", _gradient(20, 20))
+    with pytest.raises(ValueError, match="too large"):
+        load_image(tmp_path / "big.tif")
