@@ -197,11 +197,39 @@ def _checked_sweep_folders(store: BatchStore, number: int) -> list[Path]:
     return folders
 
 
+def _half_cleaned(store: BatchStore, tray: TrayRecord) -> bool:
+    """Marked removed by a cleanup that did not finish: its sweep folders are still there."""
+    return (
+        tray.stage is TrayStage.EXPORTED
+        and tray.raw_removed
+        and any(store.tray_dir(tray.number).glob("sweep-*"))
+    )
+
+
+def _delete(number: int, folders: list[Path]) -> None:
+    try:
+        for path in folders:
+            shutil.rmtree(path)
+    except OSError as exc:
+        raise BatchError(
+            f"the raw scans of tray {number} were only partly removed and can no longer be "
+            f"used; free disk space again to finish: {exc}"
+        ) from exc
+
+
 def cleanup_raw(store: BatchStore, number: int) -> int:
-    """Delete an exported tray's raw sweeps (all versions). Returns the bytes freed."""
+    """Delete an exported tray's raw sweeps (all versions). Returns the bytes freed.
+
+    A cleanup that failed after marking the tray removed is finished by calling this again.
+    """
     tray = next((t for t in store.snapshot().trays if t.number == number), None)
     if tray is None:
         raise BatchError(f"no tray {number} in this batch")
+    if _half_cleaned(store, tray):
+        folders = _checked_sweep_folders(store, number)
+        freed = sum(_folder_size(path) for path in folders)
+        _delete(number, folders)
+        return freed
     if tray.stage is not TrayStage.EXPORTED:
         raise CleanupRefused(
             f"tray {number} is {tray.stage}; only exported trays can be cleaned up"
@@ -214,14 +242,7 @@ def cleanup_raw(store: BatchStore, number: int) -> int:
     # orientation, an edit) can send the tray back to review while its raw scans go.
     if not store.update_tray_if(number, _still_freeable, raw_removed=True):
         raise CleanupRefused(f"tray {number} changed meanwhile; it is no longer fully exported")
-    try:
-        for path in folders:
-            shutil.rmtree(path)
-    except OSError as exc:
-        raise BatchError(
-            f"the raw scans of tray {number} were only partly removed and can no longer be "
-            f"used: {exc}"
-        ) from exc
+    _delete(number, folders)
     return freed
 
 
@@ -236,10 +257,14 @@ def _still_freeable(tray: TrayRecord) -> bool:
 
 
 def freeable_trays(store: BatchStore) -> tuple[FreeableTray, ...]:
-    """Fully exported trays whose raw scans are still on disk, with the space they use."""
+    """Fully exported trays whose raw scans are still on disk, with the space they use.
+
+    Includes trays whose cleanup was interrupted (marked removed, sweep folders still there).
+    """
     found = []
     for tray in store.snapshot().trays:
-        if tray.stage is TrayStage.EXPORTED and not tray.raw_removed and not _stale(tray):
+        whole = tray.stage is TrayStage.EXPORTED and not tray.raw_removed and not _stale(tray)
+        if whole or _half_cleaned(store, tray):
             size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
             found.append(FreeableTray(number=tray.number, bytes=size))
     return tuple(found)

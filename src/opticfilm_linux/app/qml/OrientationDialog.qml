@@ -44,7 +44,7 @@ Kirigami.Dialog {
         QQC2.Label {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            text: qsTr("Every slide is enhanced again, and slides you already exported will need exporting again.")
+            text: qsTr("Slides are enhanced again and must be exported again. Trays whose raw scans were removed keep their old orientation; you will be told which. Choosing the current orientation changes nothing.")
         }
         QQC2.Button {
             Layout.alignment: Qt.AlignRight

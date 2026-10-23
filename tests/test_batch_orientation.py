@@ -291,3 +291,34 @@ def test_a_current_render_is_published(store, monkeypatch):
     reenhance_slide(store, 1, 1)
     assert path.read_bytes() != published and not _slide(store, 1, 1).preview_stale
     assert not list(path.parent.glob("*pending*"))
+
+
+def test_a_cleanup_that_failed_after_committing_can_be_finished_later(store, monkeypatch):
+    _exported(store, 1)
+    folder = store.sweep_dir(1, _tray(store, 1).sweep_version)
+    size = export_module._folder_size(folder)
+    real = shutil.rmtree
+
+    def broken(path, *args, **kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(export_module.shutil, "rmtree", broken)
+    with pytest.raises(BatchError):
+        export_module.cleanup_raw(store, 1)
+    assert _tray(store, 1).raw_removed and folder.is_dir()
+    assert [t.number for t in export_module.freeable_trays(store)] == [1]
+    monkeypatch.setattr(export_module.shutil, "rmtree", real)
+    assert export_module.free_space(store) == size
+    assert not folder.exists() and export_module.freeable_trays(store) == ()
+
+
+def test_pending_previews_are_removed_when_rendering_fails(store, monkeypatch):
+    path = store.preview_path(1, 1, "after")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("flags failed")
+
+    monkeypatch.setattr(enhance_module, "compute_flags", broken)
+    with pytest.raises(RuntimeError):
+        reenhance_slide(store, 1, 1)
+    assert not list(path.parent.glob("*pending*"))
