@@ -44,3 +44,16 @@ class Scanner(Protocol):
     def status(self) -> ScannerStatus: ...
 
     def eject(self) -> None: ...
+
+
+@runtime_checkable
+class HolderControl(Protocol):
+    """A scanner that can move the holder: eject it, and load the next one without a terminal.
+
+    Separate from ``Scanner`` so a backend without it is still a scanner; the app then simply
+    disables its holder buttons.
+    """
+
+    def eject(self) -> None: ...
+
+    def load_next_strip(self) -> None: ...

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
+from opticfilm_linux.app.messages import failure_text, holder_failed_text
 from opticfilm_linux.app.state import (
     EMPTY_STATE,
     AppState,
@@ -31,11 +32,15 @@ from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatu
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format
-from opticfilm_linux.scanner.base import Scanner, ScannerStatus
+from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner, ScannerStatus
 
 SLIDES_PER_TRAY = 4
 STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
 LOCKED_PREFIX = "LOCKED:"
+NEXT_STRIP_OFF = (
+    "Load next holder is switched off: it is not proven on this scanner yet. "
+    'Follow "How to load the scanner" instead.'
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +52,7 @@ class _Session:
     store: BatchStore
     runner: BatchRunner | None  # None for a read-only batch
     poller: StatusPoller | None
+    holder: HolderControl | None = None  # None: the scanner cannot move the holder
 
 
 class Controller:
@@ -54,8 +60,11 @@ class Controller:
         self,
         scanner_factory: Callable[[int], Scanner],
         clock: Callable[[], float] = time.monotonic,
+        next_strip: bool = False,
     ) -> None:
         self._factory = scanner_factory
+        self._next_strip = next_strip  # the experimental non-interactive load is allowed
+        self._holder_busy = False  # an eject or load is queued or running
         self._clock = clock
         self._lock = threading.Lock()
         self._command = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-command")
@@ -153,6 +162,50 @@ class Controller:
             runner.rescan_tray(number)
 
         self._run_writer(job, f"Could not re-scan tray {number}", droppable=True)
+
+    @property
+    def next_strip_enabled(self) -> bool:
+        return self._next_strip
+
+    def eject_holder(self) -> None:
+        self._move_holder("eject", lambda holder: holder.eject(), "Could not eject the holder")
+
+    def load_next_holder(self) -> None:
+        if not self._next_strip:
+            self._set(_banner=Banner(NEXT_STRIP_OFF))
+            return
+        self._move_holder(
+            "load", lambda holder: holder.load_next_strip(), "Could not load the next holder"
+        )
+
+    def _move_holder(
+        self, action: str, move: Callable[[HolderControl], None], message: str
+    ) -> None:
+        """Run one holder move on the jobs worker; a second click while it runs is ignored."""
+
+        def job(runner: BatchRunner) -> None:
+            session = self._session
+            if session is None or session.holder is None:
+                raise BatchError("this scanner cannot move the holder")
+            if runner.scan_pending():
+                raise BatchError("wait until the scan has finished")
+            try:
+                move(session.holder)
+            except ScanError as exc:
+                self._set(_banner=Banner(holder_failed_text(action), f"ScanError: {exc}"))
+            finally:
+                if session.poller is not None:
+                    session.poller.poll()  # ask again now: the holder moved, or the move failed
+
+        with self._lock:
+            if self._holder_busy:
+                return
+            self._holder_busy = True
+        future = self._run_writer(job, message, pool=self._jobs)
+        if future is None:
+            self._set(_holder_busy=False)
+        else:
+            future.add_done_callback(lambda _f: self._set(_holder_busy=False))
 
     def select_tray(self, number: int) -> None:
         self._set(_selected=number)
@@ -332,7 +385,7 @@ class Controller:
         message: str,
         pool: ThreadPoolExecutor | None = None,
         droppable: bool = False,
-    ) -> None:
+    ) -> Future | None:
         """Run ``job`` on a worker; any failure becomes a banner, never an exception.
 
         A ``droppable`` job (scan, open, close) is skipped if the window is closing by the
@@ -353,17 +406,18 @@ class Controller:
                 self._set(_banner=Banner(message, f"{type(exc).__name__}: {exc}"))
 
         if self._closing.is_set():
-            return
+            return None
         target = pool or self._command
         try:
             future = target.submit(guarded)
         except RuntimeError:  # shut down already
             log.debug("command ignored after shutdown")
-            return
+            return None
         if target is self._jobs:
             with self._lock:
                 self._job_futures.add(future)
             future.add_done_callback(self._job_done)
+        return future
 
     def _job_done(self, future: Future) -> None:
         with self._jobs_idle:  # also runs for a job cancelled before it started
@@ -376,7 +430,7 @@ class Controller:
         message: str,
         pool: ThreadPoolExecutor | None = None,
         droppable: bool = False,
-    ) -> None:
+    ) -> Future | None:
         requested = self._session  # the batch the owner meant, not whichever is open later
 
         def guarded() -> None:
@@ -389,7 +443,7 @@ class Controller:
                 raise BatchError("this batch is open read-only")  # asked while read-only: refuse
             job(current.runner)  # the same batch, possibly reopened meanwhile
 
-        self._run(guarded, message, pool, droppable)
+        return self._run(guarded, message, pool, droppable)
 
     def _set(self, **changes) -> None:
         """Replace controller fields (names start with ``_``) under the lock."""
@@ -404,12 +458,14 @@ class Controller:
     def _attach(self, store: BatchStore, readonly: bool) -> None:
         runner = None
         poller = None
+        holder = None
         try:
             if not readonly:
                 scanner = self._factory(store.snapshot().defaults.dpi)
                 poller = StatusPoller(scanner, self._clock, STATUS_TIMEOUT_S, self._scanner_problem)
                 runner = BatchRunner(store, CachedStatusScanner(scanner, poller))
                 runner.resume()
+                holder = scanner if isinstance(scanner, HolderControl) else None
         except BaseException:
             if runner is not None:
                 runner.stop()
@@ -417,7 +473,7 @@ class Controller:
             raise
         first = store.snapshot().trays[0].number if store.snapshot().trays else None
         with self._lock:
-            self._session = _Session(store, runner, poller)
+            self._session = _Session(store, runner, poller, holder)
             self._selected = first
             self._banner = None
             self._updating = frozenset()
@@ -477,7 +533,8 @@ class Controller:
                     event.number: min(event.position / SLIDES_PER_TRAY, 1.0),
                 }
         elif isinstance(event, TrayFailed):
-            self._banner = Banner(f"Tray {event.number} failed", event.message)
+            fallback = f"Tray {event.number} failed"
+            self._banner = Banner(failure_text(event.message, fallback), event.message)
             self._updating = frozenset(k for k in self._updating if k[0] != event.number)
 
     def _on_stage(self, number: int, stage: TrayStage) -> None:
@@ -525,6 +582,9 @@ class Controller:
                 banner=self._banner,
                 export=self._export,
                 free_space=self._free_space,
+                holder_control=session is not None and session.holder is not None,
+                holder_busy=self._holder_busy,
+                next_strip=self._next_strip,
             )
 
     @staticmethod

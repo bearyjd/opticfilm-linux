@@ -1,5 +1,9 @@
 """Plain-words text for the window. Pure functions, so they are tested without Qt."""
 
+import re
+import shlex
+from pathlib import Path
+
 from opticfilm_linux.batch.model import Flag, SlideStatus, TrayStage
 from opticfilm_linux.scanner.base import ScannerStatus
 
@@ -23,10 +27,22 @@ _SCANNER = {
     ScannerStatus.UNKNOWN: "Scanner status unknown: scanning is not available yet",
     ScannerStatus.READY: "Scanner ready",
     ScannerStatus.BUSY: "Scanner busy",
-    ScannerStatus.NOT_READY: "Scanner not ready: load a tray",
-    ScannerStatus.NOT_CONNECTED: "Scanner not connected",
-    ScannerStatus.ERROR: "Scanner error",
+    ScannerStatus.NOT_READY: (
+        'Scanner is not loaded. Open "How to load the scanner", then press Scan.'
+    ),
+    ScannerStatus.NOT_CONNECTED: "Scanner not found. Switch it on and check the USB cable.",
+    ScannerStatus.ERROR: (
+        "The scanner needs a power cycle: switch it off until its lights go out, "
+        "switch it on, eject, load the holder again."
+    ),
 }
+
+POWER_CYCLE_ADVICE = (
+    "The scanner stopped this scan. Power-cycle it (off until the lights go out, then on), "
+    "eject, load the holder again and rescan this tray."
+)
+_NEEDS_POWER_CYCLE = re.compile(r"power[- ]?cycle|dark_b|calibration", re.IGNORECASE)
+DRIVER_DIR_PLACEHOLDER = "~/opticfilm135i-linux"
 
 
 def flag_text(flag: Flag) -> str:
@@ -39,6 +55,29 @@ def stage_text(stage: TrayStage) -> str:
 
 def scanner_text(status: ScannerStatus) -> str:
     return _SCANNER[status]
+
+
+def failure_text(detail: str, fallback: str) -> str:
+    """The short sentence for a failure banner; the technical ``detail`` goes in its details."""
+    return POWER_CYCLE_ADVICE if _NEEDS_POWER_CYCLE.search(detail) else fallback
+
+
+_HOLDER_ACTIONS = {"eject": "eject the holder", "load": "load the next holder"}
+
+
+def holder_failed_text(action: str) -> str:
+    """A failed holder move: the driver then refuses everything until a power cycle."""
+    return (
+        f"Could not {_HOLDER_ACTIONS[action]}. Switch the scanner off until its lights go out, "
+        'switch it on, then follow "How to load the scanner".'
+    )
+
+
+def load_command(driver_dir: Path | None) -> str:
+    """The terminal command for the first, interactive load after the scanner is switched on."""
+    folder = shlex.quote(str(driver_dir)) if driver_dir is not None else DRIVER_DIR_PLACEHOLDER
+    inner = f"cd {folder} && PYTHONPATH=. python3 -m of135i load"
+    return f"distrobox enter dev -- bash -lc {shlex.quote(inner)}"
 
 
 _SLIDE_STATUS = {

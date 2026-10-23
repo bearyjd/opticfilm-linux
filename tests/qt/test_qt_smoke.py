@@ -207,3 +207,62 @@ def test_the_batch_orientation_dialog_shows_the_current_orientation_and_applies(
     _wait(bridge, lambda: (bridge.batchRotation, bridge.batchMirror) == (270, False))
     _wait(bridge, lambda: not dialog.property("visible"))
     assert not bridge.hasBanner and warnings == []
+
+
+def _prop(root, name, prop):
+    """Looked up each time: the page holding the toolbar may be rebuilt meanwhile."""
+    item = root.findChild(QQuickItem, name)
+    return (
+        None if item is None else (item.isVisible() if prop == "visible" else item.property(prop))
+    )
+
+
+def test_holder_buttons_follow_the_flags_on_a_ready_scanner(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Holder", "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch and bridge.canScan)
+    root = engine.rootObjects()[0]
+    _wait(bridge, lambda: _prop(root, "ejectButton", "enabled") is True)
+    assert bridge.canEject and not bridge.canLoadNext and not bridge.nextStripEnabled
+    assert _prop(root, "loadNextButton", "enabled") is False
+    assert _prop(root, "loadHelpButton", "visible") and not _prop(root, "loadHelpLink", "visible")
+    _click(root, "ejectButton")
+    _wait(bridge, lambda: bridge.canEject)
+    assert not bridge.hasBanner and warnings == []
+
+
+def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_dir, tmp_path):
+    from opticfilm_linux.scanner.base import ScannerStatus
+    from opticfilm_linux.scanner.fake import FakeScanner
+
+    scanner = FakeScanner(sweep600_dir, (ScannerStatus.NOT_READY,))
+    controller = Controller(lambda _dpi: scanner, next_strip=True)
+    bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600, load_command_text="of135i load now")
+    provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
+    engine, warnings = create_engine(bridge, provider)
+    try:
+        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Loose", "", "", 600)
+        _wait(bridge, lambda: bridge.hasBatch and bridge.canLoadNext)
+        root = engine.rootObjects()[0]
+        _wait(bridge, lambda: _prop(root, "loadNextButton", "enabled") is True)
+        assert not bridge.canScan and bridge.canEject and bridge.nextStripEnabled
+        _wait(bridge, lambda: _prop(root, "loadHelpLink", "visible"))
+        _click(root, "loadNextButton")
+        _wait(bridge, lambda: bridge.canLoadNext)
+        _click(root, "loadHelpLink")
+        dialog = root.findChild(QObject, "loadHelpDialog")
+        _wait(bridge, lambda: dialog.property("opened"))
+        field = root.findChild(QObject, "loadCommandField")
+        assert field.property("text") == "of135i load now" == bridge.loadCommand
+        _click(root, "copyLoadCommand")
+        _wait(bridge, lambda: QApplication.clipboard().text() == "of135i load now")
+        assert not bridge.hasBanner and warnings == []
+    finally:
+        bridge.shutdown()
+        engine.deleteLater()
+
+
+def test_the_default_command_is_the_distrobox_load(window):
+    bridge, warnings = window
+    assert "of135i load" in bridge.loadCommand and "distrobox enter dev" in bridge.loadCommand
+    assert warnings == []

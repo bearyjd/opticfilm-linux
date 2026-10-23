@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from opticfilm_linux.app.qt.app import scanner_factory
+from opticfilm_linux.app.qt.app import load_command_text, next_strip_enabled, scanner_factory
 from opticfilm_linux.cli import main
 from opticfilm_linux.scanner.base import ScanError
 from opticfilm_linux.scanner.driver import DriverScanner
@@ -51,3 +51,20 @@ def test_batch_scan_runs_on_the_real_scanner(fake_driver_env, tmp_path, capsys):
 
 def test_the_app_uses_the_real_scanner_unless_demo_mode(fake_driver_env, sweep600_dir):
     assert isinstance(scanner_factory(None)(600), DriverScanner)
+
+
+def test_next_strip_is_off_unless_switched_on(monkeypatch):
+    monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
+    assert next_strip_enabled() is False
+    monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "yes")
+    assert next_strip_enabled() is False
+    monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "1")
+    assert next_strip_enabled() is True
+
+
+def test_the_load_command_follows_the_driver_folder_or_an_override(monkeypatch):
+    monkeypatch.delenv("OPTICFILM_LOAD_COMMAND", raising=False)
+    monkeypatch.setenv("OPTICFILM_DRIVER_DIR", "/opt/of135i-driver")
+    assert "cd /opt/of135i-driver && PYTHONPATH=. python3 -m of135i load" in load_command_text()
+    monkeypatch.setenv("OPTICFILM_LOAD_COMMAND", "  my own command ")
+    assert load_command_text() == "my own command"

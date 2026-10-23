@@ -8,8 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from opticfilm_linux.app.controller import Controller
+from opticfilm_linux.app.messages import load_command
 from opticfilm_linux.scanner.base import Scanner
-from opticfilm_linux.scanner.driver import DriverConfig, DriverScanner, install_signal_cleanup
+from opticfilm_linux.scanner.driver import (
+    DRIVER_ENV,
+    DriverConfig,
+    DriverScanner,
+    install_signal_cleanup,
+)
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.sweepstore import SweepFormatError, sweep_dpi
 
@@ -20,6 +26,8 @@ APP_NAME = "opticfilm"
 DISPLAY_NAME = "OpticFilm Linux"
 STYLE = "org.kde.desktop"
 STYLE_ENV_VAR = "QT_QUICK_CONTROLS_STYLE"
+NEXT_STRIP_ENV = "OPTICFILM_NEXT_STRIP"  # "1" allows the hardware-unproven ``load --next-strip``
+LOAD_COMMAND_ENV = "OPTICFILM_LOAD_COMMAND"  # replaces the shown first-load terminal command
 MISSING_QT_MESSAGE = (
     "opticfilm: the desktop app needs the distribution's PySide6 and Kirigami (the PyPI PySide6 "
     "wheel bundles its own Qt and cannot load Kirigami).\n"
@@ -41,6 +49,19 @@ def scanner_factory(fake_sweep: Path | None):
         return DriverScanner(DriverConfig.from_env())
 
     return build
+
+
+def next_strip_enabled() -> bool:
+    return os.environ.get(NEXT_STRIP_ENV) == "1"
+
+
+def load_command_text() -> str:
+    """The first-load command the help dialog shows; set ``OPTICFILM_LOAD_COMMAND`` to fix it."""
+    custom = os.environ.get(LOAD_COMMAND_ENV, "").strip()
+    if custom:
+        return custom
+    directory = os.environ.get(DRIVER_ENV)
+    return load_command(Path(directory) if directory else None)
 
 
 def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
@@ -101,8 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     QGuiApplication.setDesktopFileName(APP_ID)
     configure_style()
     install_signal_cleanup()  # the driver runs in its own session: stop it if the app is killed
-    controller = Controller(scanner_factory(args.fake))
-    bridge = Bridge(controller, QSettingsPrefs(), demo_dpi)
+    controller = Controller(scanner_factory(args.fake), next_strip=next_strip_enabled())
+    bridge = Bridge(controller, QSettingsPrefs(), demo_dpi, load_command_text=load_command_text())
     provider = PreviewProvider(lambda n, p, kind: controller.preview_path(n, p, kind))
     engine, warnings = create_engine(bridge, provider)
     if not engine.rootObjects():
