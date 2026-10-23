@@ -21,6 +21,8 @@ Kirigami.Page {
             bridge.rotate(bridge.selectedTray, currentSlide, -1);
         else if (event.key === Qt.Key_BracketRight)
             bridge.rotate(bridge.selectedTray, currentSlide, 1);
+        else if (event.key === Qt.Key_M && !bridge.readonly && bridge.selectedTray >= 0)
+            bridge.mirror(bridge.selectedTray, currentSlide);
     }
     focus: true
 
@@ -47,6 +49,9 @@ Kirigami.Page {
     FreeSpaceDialog {
         id: freeSpaceDialog
     }
+    OrientationDialog {
+        id: orientationDialog
+    }
 
     header: QQC2.ToolBar {
         RowLayout {
@@ -70,6 +75,12 @@ Kirigami.Page {
                 icon.name: "dialog-ok-apply"
                 enabled: !bridge.readonly && bridge.trays.rowCount() > 0
                 onClicked: bridge.acceptAll()
+            }
+            QQC2.Button {
+                text: qsTr("Batch orientation…")
+                icon.name: "object-rotate-right"
+                enabled: !bridge.readonly
+                onClicked: orientationDialog.open()
             }
             QQC2.Button {
                 text: qsTr("Export…")

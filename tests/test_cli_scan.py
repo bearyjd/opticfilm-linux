@@ -121,3 +121,42 @@ def test_out_of_range_strength_is_rejected(synthetic_sweep_dir, tmp_path, flag, 
     with pytest.raises(SystemExit) as excinfo:
         main(args)
     assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["process", "scan"])
+def test_orientation_flags_reach_process_options(
+    command, synthetic_sweep_dir, tmp_path, monkeypatch
+):
+    seen = {}
+    real = cli_module.process_sweep
+
+    def spy(sweep, options, out):
+        seen["options"] = options
+        return real(sweep, options, out)
+
+    monkeypatch.setattr(cli_module, "process_sweep", spy)
+    fake = ["--fake", str(synthetic_sweep_dir), "--dpi", "600"]
+    source = [str(synthetic_sweep_dir)] if command == "process" else fake
+    args = [command, *source, "--out", str(tmp_path / "out"), "--rotate", "270", "--mirror"]
+    assert main(args) == 0
+    assert (seen["options"].rotation, seen["options"].mirror) == (270, True)
+
+
+def test_orientation_defaults_to_upright_and_unmirrored(synthetic_sweep_dir, tmp_path, monkeypatch):
+    seen = {}
+    real = cli_module.process_sweep
+
+    def spy(sweep, options, out):
+        seen["options"] = options
+        return real(sweep, options, out)
+
+    monkeypatch.setattr(cli_module, "process_sweep", spy)
+    assert main(["process", str(synthetic_sweep_dir), "--out", str(tmp_path / "out")]) == 0
+    assert (seen["options"].rotation, seen["options"].mirror) == (0, False)
+
+
+def test_other_rotations_are_rejected(synthetic_sweep_dir, tmp_path):
+    args = ["process", str(synthetic_sweep_dir), "--out", str(tmp_path / "out"), "--rotate", "45"]
+    with pytest.raises(SystemExit) as excinfo:
+        main(args)
+    assert excinfo.value.code == 2

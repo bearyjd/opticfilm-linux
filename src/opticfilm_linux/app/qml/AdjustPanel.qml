@@ -9,6 +9,7 @@ Kirigami.FormLayout {
     required property int tray
     required property int position
     required property string status
+    required property bool mirror
     required property real brightness
     required property real color
     required property real grain
@@ -38,6 +39,18 @@ Kirigami.FormLayout {
             QQC2.ToolTip.text: qsTr("Rotate right ( ] )")
             QQC2.ToolTip.visible: hovered
             onClicked: bridge.rotate(panel.tray, panel.position, 1)
+        }
+        QQC2.Button {
+            text: qsTr("Mirror")
+            icon.name: "object-flip-horizontal"
+            checkable: true
+            checked: panel.mirror
+            QQC2.ToolTip.text: qsTr("Flip left-right ( m )")
+            QQC2.ToolTip.visible: hovered
+            onToggled: {
+                bridge.mirror(panel.tray, panel.position);
+                checked = Qt.binding(() => panel.mirror);
+            }
         }
     }
 
