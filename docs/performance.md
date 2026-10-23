@@ -33,11 +33,13 @@ afterwards unless `--keep` is given. A 7200 dpi run needs about 9 GB of free dis
   includes the driver's frame TIFFs. It does not include the stitch's unlinked memmap, which
   needs rows x width x 8 bytes more until the sweep is saved: 0.87 GB at 3600 dpi, 3.5 GB at
   7200 dpi.
+- **load + split (tray)** (added after the first runs): `load_sweep` plus `split_slides` on the
+  saved sweep, which is the fixed per-tray cost before any slide.
 
 ## Results
 
 The machine has 22 cores and 62 GB of RAM, and other work was running on it (load average
-9 to 20), so expect about ±30 % noise in the times. The scan stages time the fake driver, which
+9 to 23), so expect about ±30 % noise in the times. The scan stages time the fake driver, which
 only generates frames. Real scan time is set by the scanner.
 
 ### After the fixes in this change
@@ -56,10 +58,24 @@ only generates frames. Real scan time is set by the scanner.
 | 3600 | 106 s | 4.4 s | 19 to 32 s | 19 to 25 s | 0.51 GB | 1.6 GB |
 | 7200 | 371 s | 29 s | 96 s | 82 s | 1.8 GB | 5.4 GB |
 
-The budgets were 6 GB of peak memory at 3600 dpi, 14 GB at 7200 dpi, minutes per tray, and at
-most about 4x one slide for a tray's enhancement. All of them were already met before this
-change, and are met with a wider margin after it. Peak anonymous memory went up slightly, by
-0.1 to 0.2 GB, because a few strips are now processed at once.
+The budgets:
+
+| Budget | Before | After |
+|---|---|---|
+| Peak memory at 3600 dpi: 6 GB or less | 0.51 GB anon (1.6 GB RSS) | 0.74 GB anon (1.7 GB RSS) |
+| Peak memory at 7200 dpi: 14 GB or less | 1.8 GB anon (5.4 GB RSS) | 1.9 GB anon (5.8 GB RSS) |
+| A 3600 dpi tray (scan + enhance + export) takes minutes | 1.8 min | 1.0 min |
+| A tray's enhancement takes at most about 4x one slide | 3600: 4.1x to 7.2x. 7200: 3.3x | 3600: 4.5x. 7200: 4.0x to 4.9x |
+
+- **Memory** was never close to either budget. It went up by 0.1 to 0.25 GB because a few strips
+  are now processed at once.
+- **The 4x ratio is borderline, and these runs cannot settle it.** It compares the batch's four
+  slides with one slide's batch work (enhance, both previews, flags) timed on its own. Fixed
+  per-tray costs are small: mapping the sweep and `split_slides` take 0.2 s at 7200 dpi. The
+  machine was fully loaded during the runs (load average up to 23 on 22 cores), so the
+  ratio's precondition, "if cores are free", did not hold. Repeated runs swing by ±25 %.
+  With per-slide work now about 4x faster, the same absolute noise shows up as a larger ratio.
+  The absolute times are what matter on Saturday, and they halved.
 
 ## What was slow, and what changed
 

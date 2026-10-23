@@ -96,3 +96,14 @@ def test_overlapping_patches_are_written_back_in_contour_order(monkeypatch):
     monkeypatch.setattr(dust, "INPAINT_WORKERS", 4)
     assert np.array_equal(remove_dust(rgb, ir, dpi=600), serial)
     assert len(set(order)) == 2 and len(np.unique(serial[100:110, 100:110])) == 1
+
+
+@pytest.mark.parametrize("step", STEPS, ids=lambda s: s.__name__)
+def test_threaded_strips_keep_peak_memory_near_the_input_size(step):
+    image = _dusty(rows=3100, cols=600)[0]  # 25 strips: 3 in flight at once
+    assert arrays.strip_workers(25) == 3
+    tracemalloc.start()
+    step(image)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert peak < 3.0 * image.nbytes

@@ -201,6 +201,8 @@ def _batch(r: Rehearsal, scanner: object) -> None:
         if tray.stage is not TrayStage.REVIEW:
             raise SystemExit(f"tray ended {tray.stage}: {tray.error}")
         runner.accept_all()
+        version = tray.sweep_version
+        r.stage("load + split (tray)", lambda: _load_split(store.sweep_dir(1, version)))
         r.stage("export tiff16 (4)", lambda: export_batch(store, r.work / "export", "tiff16"))
     finally:
         runner.close()
@@ -218,6 +220,14 @@ def run(dpi: int, work: Path) -> list[StageResult]:
         shutil.rmtree(work / "sweep")
         _batch(r, scanner)
     return r.results
+
+
+def _load_split(directory: Path) -> object:
+    """The per-tray cost the batch pays before any slide: map the sweep and find the slides."""
+    from opticfilm_linux.pipeline.split import split_slides
+    from opticfilm_linux.sweepstore import load_sweep
+
+    return split_slides(load_sweep(directory))
 
 
 def _batch_work(slide: object, dpi: int) -> None:

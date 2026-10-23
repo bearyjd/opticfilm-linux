@@ -12,6 +12,7 @@ import pytest
 from opticfilm_linux.batch.flags import compute_flags
 from opticfilm_linux.batch.model import Flag
 from opticfilm_linux.batch.previews import make_preview
+from opticfilm_linux.pipeline import arrays, dust
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
 from synthetic import make_sweep
@@ -45,8 +46,17 @@ def slides():
     return split_slides(make_sweep(dpi=600, dust=12))
 
 
+@pytest.mark.parametrize("threads", [False, True], ids=["serial", "threaded"])
 @pytest.mark.parametrize("name, options", [("positive", POSITIVE), ("negative", NEGATIVE)])
-def test_outputs_are_pixel_identical_to_the_pinned_ones(slides, name, options):
+def test_outputs_are_pixel_identical_to_the_pinned_ones(
+    slides, name, options, threads, monkeypatch
+):
+    if threads:  # force the threaded strip and inpaint paths, which 600 dpi slides never take
+        monkeypatch.setattr(arrays, "STRIPS_PER_WORKER", 1)
+        monkeypatch.setattr(arrays, "MAX_WORKERS", 4)
+        monkeypatch.setattr(dust, "INPAINT_WORKERS", 4)
+    else:
+        monkeypatch.setattr(dust, "INPAINT_WORKERS", 1)
     for slide, (enhanced_hash, after_hash, before_hash) in zip(slides, PINNED[name], strict=True):
         enhanced = enhance_slide(slide, options, 600)
         assert _digest(enhanced) == enhanced_hash

@@ -7,7 +7,7 @@ strip, so even a 7200 dpi frame (11124 x 10512 px) never sits in memory whole. E
 deterministic: the same dpi and frame number always give the same pixels.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -95,7 +95,10 @@ def _ir_strip(g: FrameGeometry, dpi: int, frame: int, y0: int, y1: int) -> np.nd
     return np.repeat(plane[:, :, None], 3, axis=2)  # the driver's three equal IR channels
 
 
-def _strips(dpi: int, frame: int, make) -> Iterator[np.ndarray]:
+StripMaker = Callable[[FrameGeometry, int, int, int, int], np.ndarray]
+
+
+def _strips(dpi: int, frame: int, make: StripMaker) -> Iterator[np.ndarray]:
     geometry = FrameGeometry.at(dpi)
     for y0 in range(0, geometry.lines, STRIP_LINES):
         yield make(geometry, dpi, frame, y0, min(y0 + STRIP_LINES, geometry.lines))
