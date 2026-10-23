@@ -56,5 +56,6 @@ select = ["E", "F", "I", "B", "UP", "T20"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/qt/**" = ["E402"]
+"tests/fake_driver/**" = ["T201"]
 "src/opticfilm_linux/cli.py" = ["T201"]
 "src/opticfilm_linux/batch/cli.py" = ["T201"]
