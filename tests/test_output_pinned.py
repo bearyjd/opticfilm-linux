@@ -1,11 +1,16 @@
 """Pins the pipeline's 600 dpi outputs byte for byte, so performance work cannot change pixels.
 
-The hashes were taken before any optimisation (numpy 2.5, OpenCV 5.0 from the lockfile). If a
-dependency update changes them, check the images by eye before re-pinning.
+The hashes were taken before any optimisation (numpy 2.5, OpenCV 5.0 from the lockfile) on the
+development machine. numpy and OpenCV pick SIMD code paths per CPU, so a different CPU (a CI
+runner) can round float filters differently: the absolute pins are enforced only where a probe of
+those library kernels, independent of this project's code, gives the development machine's
+result. The serial and threaded paths are compared with each other everywhere. If a dependency
+update changes the pins, check the images by eye before re-pinning.
 """
 
 import hashlib
 
+import cv2
 import numpy as np
 import pytest
 
@@ -35,10 +40,31 @@ PINNED = {
     ],
 }
 FLAGS = {"positive": (), "negative": (Flag.CLIPPING,)}
+PROBE = "567277b3d55f8dae"  # _kernel_probe() on the machine the pins were taken on
 
 
 def _digest(array: np.ndarray) -> str:
     return hashlib.sha256(np.ascontiguousarray(array).tobytes()).hexdigest()[:16]
+
+
+def _kernel_probe() -> str:
+    """The library kernels the pipeline relies on, on a fixed input: no project code involved."""
+    x = np.random.default_rng(7).random((64, 64, 3), dtype=np.float32)
+    x8 = (x * 255).astype(np.uint8)
+    x16 = (x * 65535).astype(np.uint16)
+    parts = [
+        cv2.GaussianBlur(x, (0, 0), 1.5),
+        cv2.bilateralFilter(x, -1, 0.1, 2.5),
+        np.clip((x - 0.1) / 0.8, 0, 1) ** np.float32(0.7),
+        cv2.medianBlur(x8[..., 0], 21),
+        cv2.inpaint(x8, (x8[..., 0] > 240).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA),
+        cv2.resize(x16, (20, 20), interpolation=cv2.INTER_AREA),
+        np.percentile(x, [0.1, 50, 99.9]),
+    ]
+    return _digest(np.concatenate([np.ascontiguousarray(p).view(np.uint8).ravel() for p in parts]))
+
+
+PINNED_ON_THIS_CPU = _kernel_probe() == PROBE
 
 
 @pytest.fixture(scope="module")
@@ -46,20 +72,35 @@ def slides():
     return split_slides(make_sweep(dpi=600, dust=12))
 
 
-@pytest.mark.parametrize("threads", [False, True], ids=["serial", "threaded"])
-@pytest.mark.parametrize("name, options", [("positive", POSITIVE), ("negative", NEGATIVE)])
-def test_outputs_are_pixel_identical_to_the_pinned_ones(
-    slides, name, options, threads, monkeypatch
-):
+def _outputs(slides, options, threads: bool, monkeypatch) -> list[tuple]:
     if threads:  # force the threaded strip and inpaint paths, which 600 dpi slides never take
         monkeypatch.setattr(arrays, "STRIPS_PER_WORKER", 1)
         monkeypatch.setattr(arrays, "MAX_WORKERS", 4)
         monkeypatch.setattr(dust, "INPAINT_WORKERS", 4)
     else:
+        monkeypatch.setattr(arrays, "MAX_WORKERS", 1)
         monkeypatch.setattr(dust, "INPAINT_WORKERS", 1)
-    for slide, (enhanced_hash, after_hash, before_hash) in zip(slides, PINNED[name], strict=True):
+    results = []
+    for slide in slides:
         enhanced = enhance_slide(slide, options, 600)
-        assert _digest(enhanced) == enhanced_hash
-        assert _digest(make_preview(enhanced)) == after_hash
-        assert _digest(make_preview(slide.rgb, gamma=2.2)) == before_hash
-        assert compute_flags(enhanced, slide.ir, 600) == FLAGS[name]
+        digests = (_digest(enhanced), _digest(make_preview(enhanced)))
+        before = _digest(make_preview(slide.rgb, gamma=2.2))
+        results.append((*digests, before, compute_flags(enhanced, slide.ir, 600)))
+    return results
+
+
+@pytest.mark.parametrize("name, options", [("positive", POSITIVE), ("negative", NEGATIVE)])
+def test_threaded_outputs_are_byte_identical_to_serial_ones(slides, name, options, monkeypatch):
+    serial = _outputs(slides, options, False, monkeypatch)
+    assert _outputs(slides, options, True, monkeypatch) == serial
+    assert [flags for *_, flags in serial] == [FLAGS[name]] * 4
+
+
+@pytest.mark.skipif(not PINNED_ON_THIS_CPU, reason="library kernels round differently on this CPU")
+@pytest.mark.parametrize("threads", [False, True], ids=["serial", "threaded"])
+@pytest.mark.parametrize("name, options", [("positive", POSITIVE), ("negative", NEGATIVE)])
+def test_outputs_are_pixel_identical_to_the_pinned_ones(
+    slides, name, options, threads, monkeypatch
+):
+    expected = [(*hashes, FLAGS[name]) for hashes in PINNED[name]]
+    assert _outputs(slides, options, threads, monkeypatch) == expected
