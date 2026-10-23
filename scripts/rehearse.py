@@ -12,6 +12,7 @@ RSS, and the disk used. Big temporary data is deleted unless --keep. Not part of
 
 import argparse
 import os
+import queue
 import resource
 import shutil
 import sys
@@ -134,11 +135,14 @@ class Rehearsal:
         self.batch_dir = work / "batch"
         self.results: list[StageResult] = []
 
-    def stage(self, name: str, action: Callable[[], object]) -> object:
+    def stage(
+        self, name: str, action: Callable[[], object], timer: Callable[[], float] | None = None
+    ) -> object:
+        """Run ``action`` and record it; ``timer`` overrides the wall time with its own figure."""
         self.sampler.reset()
         start = time.perf_counter()
         value = action()
-        seconds = time.perf_counter() - start
+        seconds = time.perf_counter() - start if timer is None else timer()
         anon, rss, disk = self.sampler.peaks()
         result = StageResult(
             name,
@@ -185,8 +189,40 @@ def _standalone(r: Rehearsal, scanner: object) -> None:
     r.stage("slide batch work (1)", lambda: _batch_work(one, r.dpi))
 
 
+class EventClock:
+    """Timestamps the runner's events as they arrive, so a background job's own start and end
+    can be timed (enhancement starts before the scan job reports that it has finished)."""
+
+    def __init__(self, events: "queue.Queue[object]") -> None:
+        self._events = events
+        self._seen: list[tuple[float, object]] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                event = self._events.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            self._seen.append((time.perf_counter(), event))
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join()
+
+    def first(self, wanted: object) -> float:
+        time.sleep(0.2)  # let the drain thread catch up with events already queued
+        for stamp, event in self._seen:
+            if event == wanted:
+                return stamp
+        raise SystemExit(f"the runner never reported {wanted}")
+
+
 def _batch(r: Rehearsal, scanner: object) -> None:
     """A tray through the batch engine: scan, background enhance, accept, export."""
+    from opticfilm_linux.batch.events import TrayStageChanged
     from opticfilm_linux.batch.export import export_batch
     from opticfilm_linux.batch.model import BatchDefaults, TrayStage
     from opticfilm_linux.batch.runner import BatchRunner
@@ -194,9 +230,15 @@ def _batch(r: Rehearsal, scanner: object) -> None:
 
     store = BatchStore.create(r.batch_dir, "Rehearsal", defaults=BatchDefaults(dpi=r.dpi))
     runner = BatchRunner(store, scanner)
+    clock = EventClock(runner.events)
     try:
         r.stage("batch scan + save", lambda: (runner.scan_tray(), runner.wait_scans_idle()))
-        r.stage("batch enhance (4)", runner.wait_idle)
+
+        def enhance_seconds() -> float:  # from the enhance job's start to the tray in review
+            start = clock.first(TrayStageChanged(1, TrayStage.ENHANCING))
+            return clock.first(TrayStageChanged(1, TrayStage.REVIEW)) - start
+
+        r.stage("batch enhance (4)", runner.wait_idle, timer=enhance_seconds)
         tray = store.snapshot().trays[0]
         if tray.stage is not TrayStage.REVIEW:
             raise SystemExit(f"tray ended {tray.stage}: {tray.error}")
@@ -205,6 +247,7 @@ def _batch(r: Rehearsal, scanner: object) -> None:
         r.stage("load + split (tray)", lambda: _load_split(store.sweep_dir(1, version)))
         r.stage("export tiff16 (4)", lambda: export_batch(store, r.work / "export", "tiff16"))
     finally:
+        clock.stop()
         runner.close()
         store.close()
 

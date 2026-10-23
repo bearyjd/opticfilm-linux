@@ -4,6 +4,7 @@ import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
+import cv2
 import numpy as np
 
 FULL_SCALE = 65535.0
@@ -47,7 +48,8 @@ def map_strips(
         out[y0:y1] = to_uint16(result[y0 - p0 : y1 - p0])
 
     starts = range(0, height, STRIP_ROWS)
-    workers = strip_workers(len(starts))
+    # cv2.setUseOptimized is per thread: a worker would not honour the caller's choice
+    workers = strip_workers(len(starts)) if cv2.useOptimized() else 1
     if workers == 1:
         for y0 in starts:
             strip(y0)

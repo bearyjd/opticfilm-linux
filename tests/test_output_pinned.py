@@ -4,7 +4,8 @@ The hashes were taken before any optimisation (numpy 2.5, OpenCV 5.0 from the lo
 development machine. numpy and OpenCV pick SIMD code paths per CPU, so a different CPU (a CI
 runner) can round float filters differently: the absolute pins are enforced only where a probe of
 those library kernels, independent of this project's code, gives the development machine's
-result. The serial and threaded paths are compared with each other everywhere. If a dependency
+result. Everywhere, the current code (serial and threaded) is compared with frozen copies of the
+pre-change implementations (tests/reference_pipeline.py) in the same environment. If a dependency
 update changes the pins, check the images by eye before re-pinning.
 """
 
@@ -14,6 +15,7 @@ import cv2
 import numpy as np
 import pytest
 
+import reference_pipeline
 from opticfilm_linux.batch.flags import compute_flags
 from opticfilm_linux.batch.model import Flag
 from opticfilm_linux.batch.previews import make_preview
@@ -91,11 +93,22 @@ def _outputs(slides, options, threads: bool, monkeypatch) -> list[tuple]:
     return results
 
 
-@pytest.mark.parametrize("name, options", [("positive", POSITIVE), ("negative", NEGATIVE)])
-def test_threaded_outputs_are_byte_identical_to_serial_ones(slides, name, options, monkeypatch):
-    serial = _outputs(slides, options, False, monkeypatch)
-    assert _outputs(slides, options, True, monkeypatch) == serial
-    assert [flags for *_, flags in serial] == [FLAGS[name]] * 4
+MIRRORED = ProcessOptions(mirror=True, rotation=270, sharpen_amount=1.0, grain_strength=0.6)
+
+
+@pytest.mark.parametrize(
+    "name, options",
+    [("positive", POSITIVE), ("negative", NEGATIVE), ("mirrored", MIRRORED)],
+)
+def test_outputs_match_the_frozen_pre_change_implementation(slides, name, options, monkeypatch):
+    """Runs on every CPU: old serial code and new code, side by side in this environment."""
+    with monkeypatch.context() as frozen:
+        reference_pipeline.use_reference(frozen)
+        reference = _outputs(slides, options, False, frozen)
+    assert _outputs(slides, options, False, monkeypatch) == reference
+    assert _outputs(slides, options, True, monkeypatch) == reference
+    if name in FLAGS:
+        assert [flags for *_, flags in reference] == [FLAGS[name]] * 4
 
 
 @pytest.mark.skipif(not PINNED_ON_THIS_CPU, reason="library kernels round differently on this CPU")

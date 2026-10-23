@@ -3,9 +3,11 @@
 import time
 import tracemalloc
 
+import cv2
 import numpy as np
 import pytest
 
+import reference_pipeline
 from opticfilm_linux.pipeline import arrays, dust
 from opticfilm_linux.pipeline.detail import reduce_grain, sharpen
 from opticfilm_linux.pipeline.dust import remove_dust
@@ -46,7 +48,8 @@ def test_strips_in_parallel_give_byte_identical_results(step, monkeypatch):
     assert np.array_equal(step(image), serial)
 
 
-def test_parallel_strips_keep_float_temporaries_below_the_image_size():
+def test_parallel_strips_keep_float_temporaries_below_the_image_size(monkeypatch):
+    monkeypatch.setattr(arrays, "MAX_WORKERS", 8)  # as on a machine with 8 or more cores
     assert arrays.strip_workers(1) == 1  # a small image runs in the caller's thread
     assert arrays.strip_workers(12) == 1
     assert arrays.strip_workers(28) == 3  # a 3600 dpi slide: 3615 rows in 128-row strips
@@ -54,6 +57,7 @@ def test_parallel_strips_keep_float_temporaries_below_the_image_size():
 
 
 def test_a_failing_strip_raises_in_the_caller(monkeypatch):
+    monkeypatch.setattr(arrays, "MAX_WORKERS", 4)
     monkeypatch.setattr(arrays, "STRIPS_PER_WORKER", 1)
 
     def boom(x: np.ndarray) -> np.ndarray:
@@ -94,12 +98,14 @@ def test_overlapping_patches_are_written_back_in_contour_order(monkeypatch):
     monkeypatch.setattr(dust, "INPAINT_WORKERS", 1)
     serial = remove_dust(rgb, ir, dpi=600)
     monkeypatch.setattr(dust, "INPAINT_WORKERS", 4)
+    monkeypatch.setattr(dust, "PATCH_BUDGET_BYTES", 1 << 30)  # all patches in flight at once
     assert np.array_equal(remove_dust(rgb, ir, dpi=600), serial)
     assert len(set(order)) == 2 and len(np.unique(serial[100:110, 100:110])) == 1
 
 
 @pytest.mark.parametrize("step", STEPS, ids=lambda s: s.__name__)
-def test_threaded_strips_keep_peak_memory_near_the_input_size(step):
+def test_threaded_strips_keep_peak_memory_near_the_input_size(step, monkeypatch):
+    monkeypatch.setattr(arrays, "MAX_WORKERS", 8)
     image = _dusty(rows=3100, cols=600)[0]  # 25 strips: 3 in flight at once
     assert arrays.strip_workers(25) == 3
     tracemalloc.start()
@@ -107,3 +113,53 @@ def test_threaded_strips_keep_peak_memory_near_the_input_size(step):
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert peak < 3.0 * image.nbytes
+
+
+@pytest.mark.parametrize("step", [sharpen, reduce_grain], ids=lambda s: s.__name__)
+def test_threads_follow_opencv_s_optimisation_switch(step, monkeypatch):
+    """cv2.setUseOptimized is per thread: worker threads would ignore the caller's choice."""
+    image = _dusty(rows=1100, cols=300)[0]
+    monkeypatch.setattr(arrays, "STRIPS_PER_WORKER", 1)
+    monkeypatch.setattr(arrays, "MAX_WORKERS", 4)
+    was = cv2.useOptimized()
+    cv2.setUseOptimized(False)
+    try:
+        with monkeypatch.context() as frozen:
+            reference_pipeline.use_reference(frozen)
+            from opticfilm_linux.pipeline import detail
+
+            serial = getattr(detail, step.__name__)(image)
+        assert np.array_equal(step(image), serial)
+    finally:
+        cv2.setUseOptimized(was)
+
+
+def _scratched(size: int = 1000) -> tuple[np.ndarray, np.ndarray]:
+    """Eight separate diagonal scratches: eight nearly full-image bounding boxes."""
+    rng = np.random.default_rng(9)
+    rgb = rng.integers(0, 65_535, (size, size, 3), dtype=np.uint16)
+    ir = np.full((size, size), 58_000, np.uint16)
+    for k in range(8):
+        offset = (k - 4) * 40
+        for i in range(size):
+            j = i + offset
+            if 0 <= j < size:
+                ir[i, j] = 15_000
+    return rgb, ir
+
+
+def _peak(func, *args, **kwargs) -> tuple[np.ndarray, int]:
+    tracemalloc.start()
+    out = func(*args, **kwargs)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return out, peak
+
+
+def test_concurrent_patches_are_bounded_by_bytes_not_by_count(monkeypatch):
+    monkeypatch.setattr(dust, "INPAINT_WORKERS", 8)
+    rgb, ir = _scratched()
+    old, old_peak = _peak(reference_pipeline.remove_dust, rgb, ir, dpi=600)
+    new, new_peak = _peak(remove_dust, rgb, ir, dpi=600)
+    assert np.array_equal(new, old)
+    assert new_peak < 1.5 * old_peak
