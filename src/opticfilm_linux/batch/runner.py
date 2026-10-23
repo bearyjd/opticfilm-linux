@@ -100,13 +100,16 @@ class BatchRunner:
         """Apply crash recovery and queue enhancement for every tray still waiting for it."""
         for number in self._store.recover_interrupted():
             self._submit(self._enhance_pool, self._enhance_job, number)
-        for tray in self._store.snapshot().trays:  # edits whose preview was never redone
-            if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED) and not tray.raw_removed:
-                for slide in tray.slides:
-                    if slide.preview_stale:
-                        self._submit(
-                            self._enhance_pool, self._reenhance_job, tray.number, slide.position
-                        )
+        self._queue_stale_previews()  # edits whose preview was never redone
+
+    def set_batch_orientation(self, rotation: int, mirror: bool) -> tuple[int, ...]:
+        """Turn and flip the whole batch; every affected slide is re-enhanced in the background.
+
+        Returns the trays left as they were because their raw scans were removed.
+        """
+        skipped = review.set_batch_orientation(self._store, rotation, mirror)
+        self._queue_stale_previews()
+        return skipped
 
     def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
         """Apply per-slide settings now; the slide is re-enhanced in the background."""
@@ -199,6 +202,15 @@ class BatchRunner:
         self._emit(SlideUpdated(number, position))
 
     # -- helpers -------------------------------------------------------------------------
+
+    def _queue_stale_previews(self) -> None:
+        for tray in self._store.snapshot().trays:
+            if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED) and not tray.raw_removed:
+                for slide in tray.slides:
+                    if slide.preview_stale:
+                        self._submit(
+                            self._enhance_pool, self._reenhance_job, tray.number, slide.position
+                        )
 
     def _require_ready(self) -> None:
         status = self._scanner.status()

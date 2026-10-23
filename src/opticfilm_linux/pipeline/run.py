@@ -10,7 +10,7 @@ from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.output import OutputSpec, write_slide
 from opticfilm_linux.pipeline.detail import reduce_grain, sharpen
 from opticfilm_linux.pipeline.dust import remove_dust
-from opticfilm_linux.pipeline.orient import rotate
+from opticfilm_linux.pipeline.orient import mirror, rotate
 from opticfilm_linux.pipeline.split import is_blank, split_slides
 from opticfilm_linux.pipeline.tone import (
     adjust_brightness,
@@ -30,6 +30,7 @@ class ProcessOptions:
     skip_blank: bool = True
     brightness_ev: float = 0.0
     rotation: int = 0
+    mirror: bool = False  # left-right flip, applied before the rotation
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ class RunResult:
 
 
 def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray:
-    """Dust, negative, exposure, colour, brightness, grain, sharpening, then rotation."""
+    """Dust, negative, exposure, colour, brightness, grain, sharpening, mirror, then rotation."""
     image = slide.rgb
     if options.remove_dust:
         image = remove_dust(image, slide.ir, dpi=dpi)
@@ -56,6 +57,8 @@ def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray
         image = adjust_brightness(image, options.brightness_ev)
     image = reduce_grain(image, strength=options.grain_strength)
     image = sharpen(image, amount=options.sharpen_amount)
+    if options.mirror:
+        image = mirror(image)
     return rotate(image, options.rotation) if options.rotation else image
 
 

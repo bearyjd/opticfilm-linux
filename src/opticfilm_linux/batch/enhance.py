@@ -34,6 +34,13 @@ class RawRemoved(BatchError):
 
 
 def options_for(defaults: BatchDefaults, mode: Mode, settings: SlideSettings) -> ProcessOptions:
+    """Combine the batch defaults with one slide's own settings.
+
+    Orientation composes: the effective rotation is ``(defaults.rotation + settings.rotation)
+    % 360`` and the effective mirror is ``defaults.mirror XOR settings.mirror``. The image is
+    always mirrored (left-right) FIRST, then rotated clockwise by the effective rotation.
+    """
+
     def pick(override: float | None, default: float) -> float:
         return default if override is None else override
 
@@ -45,7 +52,8 @@ def options_for(defaults: BatchDefaults, mode: Mode, settings: SlideSettings) ->
         grain_strength=pick(settings.grain_strength, defaults.grain_strength),
         skip_blank=defaults.skip_blank,
         brightness_ev=settings.brightness_ev,
-        rotation=settings.rotation,
+        rotation=(defaults.rotation + settings.rotation) % 360,
+        mirror=defaults.mirror != settings.mirror,
     )
 
 
@@ -63,18 +71,22 @@ def _merge_slide(
     snapshot: SlideRecord,
     flags: tuple[Flag, ...],
     blank: bool,
+    defaults: BatchDefaults,
 ) -> None:
     """Write fresh flags (and an automatic status) into the slide's *current* record.
 
     Results computed from an out-of-date snapshot are dropped: the sweep was replaced by a
-    re-scan, the tray mode changed, or the owner changed this slide's settings meanwhile (a
-    newer job is queued for those). The owner's status, settings and export mark are never
-    overwritten, because only flags and an automatic status are written, onto the live record.
+    re-scan, the tray mode or the batch defaults (orientation) changed, or the owner changed
+    this slide's settings meanwhile (a newer job is queued for those). The owner's status,
+    settings and export mark are never overwritten, because only flags and an automatic status
+    are written, onto the live record.
     """
 
     def change(manifest: BatchManifest) -> BatchManifest:
         now = _tray(manifest, number)
         if now.sweep_version != tray.sweep_version or now.mode != tray.mode:
+            return manifest
+        if manifest.defaults != defaults:
             return manifest
         current = next((s for s in now.slides if s.position == snapshot.position), None)
         if current is not None and current.settings != snapshot.settings:
@@ -114,7 +126,7 @@ def _process_slide(
     defaults = store.snapshot().defaults
     position = slide.index + 1
     if defaults.skip_blank and is_blank(slide):
-        _merge_slide(store, number, tray, snapshot, (), blank=True)
+        _merge_slide(store, number, tray, snapshot, (), blank=True, defaults=defaults)
         return
     enhanced = enhance_slide(slide, options_for(defaults, tray.mode, snapshot.settings), sweep.dpi)
     write_preview(
@@ -122,7 +134,7 @@ def _process_slide(
     )
     write_preview(make_preview(enhanced), store.preview_path(number, position, "after"))
     flags = compute_flags(enhanced, slide.ir, sweep.dpi)
-    _merge_slide(store, number, tray, snapshot, flags, blank=False)
+    _merge_slide(store, number, tray, snapshot, flags, blank=False, defaults=defaults)
 
 
 def _existing(tray: TrayRecord, position: int) -> SlideRecord | None:

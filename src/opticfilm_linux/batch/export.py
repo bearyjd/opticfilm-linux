@@ -15,6 +15,7 @@ from typing import Literal
 
 from opticfilm_linux.batch.enhance import options_for
 from opticfilm_linux.batch.model import (
+    BatchDefaults,
     BatchManifest,
     Mode,
     SlideSettings,
@@ -62,16 +63,20 @@ def _mark_exported(
     version: int,
     mode: Mode,
     settings: SlideSettings,
+    defaults: BatchDefaults,
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
     """Mark one slide exported, only if the file written still matches it.
 
-    A re-scan (new sweep version), a mode change, or an edit made while the slide was rendering
-    means the file on disk is obsolete: nothing is marked, so the next export redoes the slide.
+    A re-scan (new sweep version), a mode change, a new batch orientation, or an edit made while
+    the slide was rendering means the file on disk is obsolete: nothing is marked, so the next
+    export redoes the slide.
     """
     outcome: Literal["marked", "stale_slide", "stale_tray"] = "stale_tray"
 
     def change(manifest: BatchManifest) -> BatchManifest:
         nonlocal outcome
+        if manifest.defaults != defaults:
+            return manifest
         trays = []
         for tray in manifest.trays:
             if tray.number == number and tray.sweep_version == version and tray.mode == mode:
@@ -127,10 +132,16 @@ def _export_tray(
         path = write_slide(image, spec)
         report(path)
         outcome = _mark_exported(
-            store, tray.number, record.position, tray.sweep_version, tray.mode, record.settings
+            store,
+            tray.number,
+            record.position,
+            tray.sweep_version,
+            tray.mode,
+            record.settings,
+            defaults,
         )
         if outcome == "stale_tray":
-            return True  # re-scanned or mode changed meanwhile: stale, the next export redoes it
+            return True  # re-scanned, mode or orientation changed: the next export redoes it
     return True
 
 

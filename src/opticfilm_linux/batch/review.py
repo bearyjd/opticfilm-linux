@@ -135,3 +135,49 @@ def set_tray_mode(store: BatchStore, number: int, mode: Mode) -> None:
         return dataclasses.replace(manifest, trays=tuple(renewed(t) for t in manifest.trays))
 
     store.update(change)
+
+
+BUSY_STAGES = (TrayStage.SCANNING, TrayStage.ENHANCING)
+
+
+def _reoriented(tray: TrayRecord) -> TrayRecord:
+    """Every non-blank slide needs a new preview and a new export; owner choices are kept."""
+    slides = tuple(
+        s
+        if s.status is SlideStatus.BLANK
+        else dataclasses.replace(s, preview_stale=True, exported=False)
+        for s in tray.slides
+    )
+    # an exported tray now has slides to export again, so it is back in review
+    stage = TrayStage.REVIEW if tray.stage is TrayStage.EXPORTED else tray.stage
+    return dataclasses.replace(tray, slides=slides, stage=stage)
+
+
+def set_batch_orientation(store: BatchStore, rotation: int, mirror: bool) -> tuple[int, ...]:
+    """Change how every slide of the batch is turned and flipped (see ``options_for``).
+
+    Every non-blank slide of a tray whose raw scans are kept gets ``preview_stale`` (it must be
+    enhanced again) and loses its export mark; an exported tray goes back to review. Trays whose
+    raw scans were removed cannot be re-rendered: they are left untouched and their numbers are
+    returned. Refused while any tray is scanning or enhancing. Setting the current value again
+    changes nothing.
+    """
+    skipped: tuple[int, ...] = ()
+
+    def change(manifest: BatchManifest) -> BatchManifest:
+        nonlocal skipped
+        busy = [t.number for t in manifest.trays if t.stage in BUSY_STAGES]
+        if busy:
+            raise BatchError(
+                f"tray {busy[0]} is still being scanned or enhanced; change the batch "
+                "orientation once it has finished"
+            )
+        defaults = dataclasses.replace(manifest.defaults, rotation=rotation, mirror=mirror)
+        skipped = tuple(t.number for t in manifest.trays if t.raw_removed)
+        if defaults == manifest.defaults:
+            return manifest
+        trays = tuple(t if t.raw_removed else _reoriented(t) for t in manifest.trays)
+        return dataclasses.replace(manifest, defaults=defaults, trays=trays)
+
+    store.update(change)
+    return skipped
