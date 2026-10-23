@@ -57,6 +57,10 @@ def _trace(event: str) -> None:
 
 def _scan(args: argparse.Namespace) -> int:
     _trace("scan start")
+    print(
+        f"INFO of135i: opened device bus=3 addr={os.environ.get('FAKE_DRIVER_ADDR', '18')}",
+        flush=True,
+    )
     try:
         return _scan_body(args)
     finally:
@@ -112,7 +116,10 @@ def main() -> int:
     if args.command == "doctor":
         _trace("doctor start")
         time.sleep(float(os.environ.get("FAKE_DRIVER_DOCTOR_DELAY", "0")))
+        addr = os.environ.get("FAKE_DRIVER_ADDR", "18")
+        print(f"INFO of135i: opened device bus=3 addr={addr} (read-only session)")
         print(DOCTOR[os.environ.get("FAKE_DRIVER_DOCTOR", "idle")], end="")
+        print("x" * int(os.environ.get("FAKE_DRIVER_DOCTOR_PAD", "0")))
         _trace("doctor end")
         return int(os.environ.get("FAKE_DRIVER_DOCTOR_EXIT", "0"))
     if args.command == "eject":

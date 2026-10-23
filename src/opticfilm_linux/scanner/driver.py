@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +44,9 @@ STATUS_MAX_AGE_S = 3.0  # the status poll must stay cheap: each answer costs a p
 LOG_TAIL_CHARS = 1500
 OUTPUT_TAIL_BYTES = 64 * 1024  # all that is kept in memory of a driver run; the rest is in the log
 KEEP_LOGS = 30
+PROTECT_LOG_S = 3600  # a log this recent may belong to a scan still running: never pruned
+DOCTOR_TAIL_BYTES = 1 << 20
+HEAD_BYTES = 8192  # the driver prints the USB address it opened on its first lines
 STOP_GRACE_S = 10.0  # how long a driver that was interrupted gets before it is killed
 PROBE_TIMEOUT_S = 10
 SPACE_MARGIN = 1.25  # the sweep needs this much free disk, beside the driver's own frames
@@ -154,21 +157,61 @@ def _register(text: str) -> int | None:
     return int(match.group(1), 16) if match else None
 
 
-def _read_tail(path: Path) -> str:
+def _read_tail(path: Path, limit: int = OUTPUT_TAIL_BYTES) -> str:
     with open(path, "rb") as handle:
         handle.seek(0, os.SEEK_END)
-        handle.seek(max(0, handle.tell() - OUTPUT_TAIL_BYTES))
+        handle.seek(max(0, handle.tell() - limit))
         return handle.read().decode("utf-8", errors="replace")
 
 
 def _prune_logs(directory: Path) -> None:
+    """Keep the newest logs; older ones go, but nothing recent (it may still be written to)."""
+    now = time.time()
     logs = sorted(directory.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in logs[KEEP_LOGS:]:
-        old.unlink(missing_ok=True)
-    stems = {p.name.split("-", 2)[0] + "-" + p.name.split("-", 2)[1] for p in logs[:KEEP_LOGS]}
+        if now - old.stat().st_mtime > PROTECT_LOG_S:
+            old.unlink(missing_ok=True)
+    if len(logs) <= KEEP_LOGS:
+        return
+    cutoff = logs[KEEP_LOGS - 1].stat().st_mtime - PROTECT_LOG_S
     for sidecar in [*directory.glob("*.diag.json"), *directory.glob("*.cal.npz")]:
-        if "-".join(sidecar.name.split("-", 2)[:2]) not in stems:
+        if sidecar.stat().st_mtime < cutoff:
             sidecar.unlink(missing_ok=True)
+
+
+def _address_in(path: Path) -> str | None:
+    """The USB address the driver opened: it changes when the scanner is power-cycled."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(HEAD_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"addr=(\d+)", head)
+    return match.group(1) if match else None
+
+
+def install_signal_cleanup() -> "Callable[[], None]":
+    """On SIGTERM / SIGHUP stop any running driver first (it runs in its own session, so it
+    would otherwise outlive the app and keep the scanner), then die of the signal as usual.
+    Returns a function that restores the previous handlers. Main thread only."""
+    previous: dict[int, object] = {}
+
+    def handler(signum: int, _frame: object) -> None:
+        _stop_all_drivers()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            previous[number] = signal.signal(number, handler)
+        except ValueError:  # not the main thread
+            continue
+
+    def restore() -> None:
+        for number, old in previous.items():
+            signal.signal(number, old)  # type: ignore[arg-type]
+
+    return restore
 
 
 class DriverScanner:
@@ -179,6 +222,8 @@ class DriverScanner:
         self._hw_lock = threading.Lock()  # the driver allows one process on the scanner at a time
         self._status_cache: tuple[float, ScannerStatus] | None = None
         self._needs_power_cycle = False  # set when the driver failed; cleared by a power cycle
+        self._failed_address: str | None = None  # the USB address it failed on
+        self._last_address: str | None = None
 
     # -- Scanner protocol ----------------------------------------------------------------
 
@@ -203,11 +248,12 @@ class DriverScanner:
             try:
                 result = self._run(command, self._config.timeout_s, keep_log=True)
             except ScanError:
-                self._needs_power_cycle = True  # a driver that did not finish: state unknown
+                self._note_failure()  # a driver that did not finish: state unknown
                 self._keep_sidecars(work, failed=True)
                 raise
             failed = _missing_frames(work)
-            self._needs_power_cycle = self._needs_power_cycle or failed
+            if failed:
+                self._note_failure()
             self._keep_sidecars(work, failed=failed)
             return _stitch(work, settings.dpi, result)
         finally:
@@ -241,9 +287,9 @@ class DriverScanner:
                 return ScannerStatus.BUSY  # a scan or eject holds the driver
             try:
                 status = self._read_status()
+                self._status_cache = (time.monotonic(), status)  # before the lock is released
             finally:
                 self._hw_lock.release()
-            self._status_cache = (time.monotonic(), status)
             return status
 
     def eject(self) -> None:
@@ -251,15 +297,22 @@ class DriverScanner:
         self._status_cache = None
         try:
             with self._hw_lock:
-                result = self._run(["eject"], STATUS_TIMEOUT_S * 6, keep_log=True)
+                try:
+                    result = self._run(["eject"], STATUS_TIMEOUT_S * 6, keep_log=True)
+                finally:
+                    self._status_cache = None  # whatever happened, the old answer is stale
         except ScanError:
-            self._needs_power_cycle = True
+            self._note_failure()
             raise
-        finally:
-            self._status_cache = None  # whatever happened, the old answer is stale
         if result.returncode != 0:
-            self._needs_power_cycle = True
+            self._note_failure()
             raise ScanError(f"eject failed: {_tail(result.output)}")
+
+    def _note_failure(self) -> None:
+        """The driver failed or did not finish: only a power cycle recovers the scanner. A power
+        cycle shows as a new USB address, or as the cold register state."""
+        self._needs_power_cycle = True
+        self._failed_address = self._last_address
 
     # -- internals -----------------------------------------------------------------------
 
@@ -274,20 +327,26 @@ class DriverScanner:
     def _read_status(self) -> ScannerStatus:
         try:
             self._require_driver()
-            result = self._run(["doctor"], STATUS_TIMEOUT_S, keep_log=False)
+            result = self._run(["doctor"], STATUS_TIMEOUT_S, keep_log=False, tail=DOCTOR_TAIL_BYTES)
         except ScanError:
             return ScannerStatus.ERROR
         status = parse_doctor(result.output)
         if result.returncode != 0 and status is ScannerStatus.READY:
             return ScannerStatus.ERROR  # a report that ends in failure is not a ready scanner
         if self._needs_power_cycle:
-            if _register(result.output) == 0x00:  # cold: the scanner was power-cycled
+            address = re.search(r"addr=(\d+)", result.output)
+            moved = bool(
+                self._failed_address and address and address.group(1) != self._failed_address
+            )
+            if _register(result.output) == 0x00 or moved:  # cold, or re-enumerated on USB
                 self._needs_power_cycle = False
-                return ScannerStatus.NOT_READY
-            return ScannerStatus.ERROR  # the driver said only a power cycle recovers it
+            else:
+                return ScannerStatus.ERROR  # the driver said only a power cycle recovers it
         return status
 
-    def _run(self, args: Sequence[str], timeout: int, keep_log: bool) -> "_Result":
+    def _run(
+        self, args: Sequence[str], timeout: int, keep_log: bool, tail: int = OUTPUT_TAIL_BYTES
+    ) -> "_Result":
         env = dict(os.environ)
         if self._config.driver_dir is not None:
             extra = str(self._config.driver_dir)
@@ -308,21 +367,27 @@ class DriverScanner:
                     returncode = proc.wait(timeout=timeout)
                 except subprocess.TimeoutExpired as exc:
                     _stop_group(proc)
+                    where = sink_path if not temporary else _tail(_read_tail(sink_path, tail))
                     raise ScanError(
-                        f"the driver did not finish within {timeout} s. {POWER_CYCLE_HINT}"
+                        f"the driver did not finish within {timeout} s. {POWER_CYCLE_HINT} "
+                        f"Log: {where}"
                     ) from exc
+                except BaseException:  # Ctrl-C, SystemExit: never leave the driver running
+                    _stop_group(proc)
+                    raise
                 finally:
                     with _LIVE_LOCK:
                         _LIVE.discard(proc)
-            return _Result(returncode, _read_tail(sink_path))
+            return _Result(returncode, _read_tail(sink_path, tail))
         finally:
+            self._last_address = _address_in(sink_path) or self._last_address
             if temporary:
                 sink_path.unlink(missing_ok=True)
             elif self._config.log_dir is not None:
                 try:
                     _prune_logs(self._config.log_dir)
-                except OSError:
-                    log.warning("could not prune the driver logs")
+                except Exception:  # noqa: BLE001 - housekeeping must never lose a finished scan
+                    log.warning("could not prune the driver logs", exc_info=True)
 
     def _output_file(self, name: str, keep_log: bool) -> tuple[Path, bool]:
         """Where a run's output goes: a kept log, or a temporary file for a short query."""

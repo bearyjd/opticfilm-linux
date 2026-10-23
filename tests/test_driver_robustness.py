@@ -76,7 +76,9 @@ def test_old_logs_are_pruned(make, monkeypatch, tmp_path):
     logs = tmp_path / "logs"
     logs.mkdir()
     for i in range(60):
-        (logs / f"scan-2020010{i % 10}-{i:06d}.log").write_text("old")
+        old = logs / f"scan-2020010{i % 10}-{i:06d}.log"
+        old.write_text("old")
+        os.utime(old, (time.time() - 7200 - i, time.time() - 7200 - i))  # two hours old
     make().scan_holder(ScanSettings(dpi=600))
     assert len(list(logs.glob("scan-*.log"))) <= driver_module.KEEP_LOGS
 
@@ -160,3 +162,95 @@ def test_the_interpreter_is_not_confused_by_a_driver_path_with_spaces(
     shutil.copytree(FAKE_DRIVER, spaced)
     scanner = DriverScanner(DriverConfig(driver_dir=spaced, python=sys.executable))
     assert scanner.scan_holder(ScanSettings(dpi=600)).rgb.shape[0] > 0
+
+
+def test_an_unexpected_file_in_the_log_folder_cannot_discard_a_finished_scan(make, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "debug.log").write_text("someone else's file")
+    (logs / "a-b.diag.json").write_text("{}")
+    assert make().scan_holder(ScanSettings(dpi=600)).rgb.shape[0] > 0
+
+
+def test_a_recent_log_is_never_pruned_even_beyond_the_keep_limit(make, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    for i in range(driver_module.KEEP_LOGS + 5):
+        (logs / f"scan-20200101-{i:06d}.log").write_text("another instance, still running")
+    make().scan_holder(ScanSettings(dpi=600))
+    assert len(list(logs.glob("scan-2020*.log"))) == driver_module.KEEP_LOGS + 5
+
+
+def test_ctrl_c_during_a_scan_stops_the_driver_and_its_children(make, tmp_path, monkeypatch):
+    import ctypes
+    import threading
+
+    pids_file = tmp_path / "pids.json"
+    monkeypatch.setenv("FAKE_DRIVER_MODE", "hang")
+    monkeypatch.setenv("FAKE_DRIVER_PIDS", str(pids_file))
+    monkeypatch.setattr(driver_module, "STOP_GRACE_S", 1.0)
+    outcome: list[BaseException] = []
+
+    def scan():
+        try:
+            make().scan_holder(ScanSettings(dpi=600))
+        except BaseException as exc:  # noqa: BLE001 - the interrupt is the thing under test
+            outcome.append(exc)
+
+    thread = threading.Thread(target=scan)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not pids_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.5)
+    ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_ulong(thread.ident), ctypes.py_object(KeyboardInterrupt)
+    )
+    thread.join(20)
+    parent, child = json.loads(pids_file.read_text())
+    end = time.monotonic() + 5
+    while (_alive(parent) or _alive(child)) and time.monotonic() < end:
+        time.sleep(0.05)
+    assert outcome and isinstance(outcome[0], KeyboardInterrupt)
+    assert not _alive(parent) and not _alive(child)
+
+
+def test_a_real_power_cycle_clears_the_error_even_if_the_scanner_looks_loaded_again(
+    make, monkeypatch
+):
+    scanner = make()
+    monkeypatch.setenv("FAKE_DRIVER_ADDR", "20")
+    monkeypatch.setenv("FAKE_DRIVER_MODE", "cal_fail")
+    with pytest.raises(ScanError):
+        scanner.scan_holder(ScanSettings(dpi=600))
+    monkeypatch.setenv("FAKE_DRIVER_DOCTOR", "idle")
+    assert scanner.status() is ScannerStatus.ERROR  # same device address: not power-cycled
+    monkeypatch.setenv("FAKE_DRIVER_ADDR", "21")  # re-enumerated on USB after the power cycle
+    scanner._status_cache = None
+    assert scanner.status() is ScannerStatus.READY
+
+
+def test_a_long_doctor_report_is_still_parsed(make, monkeypatch):
+    monkeypatch.setenv("FAKE_DRIVER_DOCTOR", "idle")
+    monkeypatch.setenv("FAKE_DRIVER_DOCTOR_PAD", str(200_000))
+    assert make().status() is ScannerStatus.READY
+
+
+def test_a_timeout_message_points_at_the_log(make, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_DRIVER_MODE", "hang")
+    monkeypatch.setattr(driver_module, "STOP_GRACE_S", 1.0)
+    with pytest.raises(ScanError) as info:
+        make(timeout_s=1).scan_holder(ScanSettings(dpi=600))
+    assert str(tmp_path / "logs") in str(info.value)
+
+
+def test_signal_cleanup_installs_handlers_and_can_be_undone():
+    import signal
+
+    before = signal.getsignal(signal.SIGTERM)
+    restore = driver_module.install_signal_cleanup()
+    try:
+        assert signal.getsignal(signal.SIGTERM) is not before
+    finally:
+        restore()
+    assert signal.getsignal(signal.SIGTERM) is before

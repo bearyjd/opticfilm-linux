@@ -9,7 +9,7 @@ from typing import Any
 
 from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.scanner.base import Scanner
-from opticfilm_linux.scanner.driver import DriverConfig, DriverScanner
+from opticfilm_linux.scanner.driver import DriverConfig, DriverScanner, install_signal_cleanup
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.sweepstore import SweepFormatError, sweep_dpi
 
@@ -100,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     QGuiApplication.setApplicationDisplayName(DISPLAY_NAME)
     QGuiApplication.setDesktopFileName(APP_ID)
     configure_style()
+    install_signal_cleanup()  # the driver runs in its own session: stop it if the app is killed
     controller = Controller(scanner_factory(args.fake))
     bridge = Bridge(controller, QSettingsPrefs(), demo_dpi)
     provider = PreviewProvider(lambda n, p, kind: controller.preview_path(n, p, kind))

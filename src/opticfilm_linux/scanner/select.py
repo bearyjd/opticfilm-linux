@@ -1,7 +1,12 @@
 """Pick the real scanner backend."""
 
 from opticfilm_linux.scanner.base import ScanError
-from opticfilm_linux.scanner.driver import DRIVER_ENV, DriverConfig, DriverScanner
+from opticfilm_linux.scanner.driver import (
+    DRIVER_ENV,
+    DriverConfig,
+    DriverScanner,
+    install_signal_cleanup,
+)
 
 
 def real_scanner() -> DriverScanner:
@@ -13,4 +18,5 @@ def real_scanner() -> DriverScanner:
             f"the scanner driver (of135i) was not found in {where}; "
             f"set {DRIVER_ENV} to a checkout of opticfilm135i-linux"
         )
+    install_signal_cleanup()  # a killed app must not leave the driver holding the scanner
     return DriverScanner(config)
