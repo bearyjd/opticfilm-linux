@@ -283,3 +283,38 @@ def test_the_default_command_is_the_distrobox_load(window):
     bridge, warnings = window
     assert "of135i load" in bridge.loadCommand and "distrobox enter dev" in bridge.loadCommand
     assert warnings == []
+
+
+def test_the_help_dialog_hides_the_power_steps_while_a_scan_runs(qapp, sweep600_dir, tmp_path):
+    import threading
+
+    from opticfilm_linux.scanner.fake import FakeScanner
+
+    gate = threading.Event()
+    scanner = FakeScanner(sweep600_dir, before_scan=lambda: gate.wait(30))
+    controller = Controller(lambda _dpi: scanner)
+    bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
+    provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
+    engine, warnings = create_engine(bridge, provider)
+    try:
+        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Busy", "", "", 600)
+        _wait(bridge, lambda: bridge.hasBatch and bridge.canScan)
+        root = engine.rootObjects()[0]
+        _wait(bridge, lambda: root.findChild(QObject, "loadHelpDialog") is not None)
+        dialog = root.findChild(QObject, "loadHelpDialog")
+        QMetaObject.invokeMethod(dialog, "open")
+        _wait(bridge, lambda: dialog.property("opened"))
+        assert _prop(root, "loadSteps", "visible") and not _prop(root, "loadBusyWarning", "visible")
+        bridge.scan()
+        _wait(bridge, lambda: bridge.scanPending)
+        _wait(bridge, lambda: _prop(root, "loadBusyWarning", "visible") is True)
+        assert not _prop(root, "loadSteps", "visible")
+        assert _prop(root, "copyLoadCommand", "enabled") is False
+        gate.set()
+        _wait(bridge, lambda: not bridge.scanPending)
+        _wait(bridge, lambda: _prop(root, "loadSteps", "visible") is True)
+        assert not _prop(root, "loadBusyWarning", "visible") and warnings == []
+    finally:
+        gate.set()
+        bridge.shutdown()
+        engine.deleteLater()

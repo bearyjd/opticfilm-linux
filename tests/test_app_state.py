@@ -143,6 +143,13 @@ def test_holder_buttons_follow_the_truth_table(scanner, pending, readonly, contr
     assert state.can_eject is (idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY))
     assert state.can_load_next is (idle and strip and scanner is ScannerStatus.NOT_READY)
     assert state.next_strip_enabled is strip
+    assert state.holder_busy is busy
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_scan_is_disabled_while_the_holder_moves(busy):
+    state = _build(holder_control=True, holder_busy=busy)
+    assert state.can_scan is not busy
 
 
 def test_holder_buttons_need_an_open_batch():

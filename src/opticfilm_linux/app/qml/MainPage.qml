@@ -149,7 +149,7 @@ Kirigami.Page {
                 implicitHeight: loadNextButton.implicitHeight
                 QQC2.ToolTip.visible: loadNextHover.hovered
                 QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Experimental: loading without a terminal is not yet proven on this scanner.") : qsTr("Switched off: loading without a terminal is not yet proven on this scanner. Start the app with OPTICFILM_NEXT_STRIP=1 to try it.")
+                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Experimental: loading without a terminal is not yet proven on this scanner.") : qsTr("Switched off: loading without a terminal is not yet proven on this scanner. Start the app with OPTICFILM_NEXT_STRIP=1 to try it.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
 
                 HoverHandler {
                     id: loadNextHover

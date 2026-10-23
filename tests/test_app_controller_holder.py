@@ -9,9 +9,10 @@ from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.messages import POWER_CYCLE_ADVICE, holder_failed_text
 from opticfilm_linux.model import ScanSettings
 from opticfilm_linux.scanner.base import ScanError, ScannerStatus
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
 from opticfilm_linux.scanner.fake import FakeScanner
 
-CAL_FAIL = "phase cal_dark_b: CalibrationError: dark_b is residual. Power the scanner OFF."
+CAL_FAIL = f"{POWER_CYCLE_HINT} Driver said: phase cal_dark_b: CalibrationError: dark_b residual"
 
 
 class RecordingScanner(FakeScanner):

@@ -65,6 +65,6 @@ def test_next_strip_is_off_unless_switched_on(monkeypatch):
 def test_the_load_command_follows_the_driver_folder_or_an_override(monkeypatch):
     monkeypatch.delenv("OPTICFILM_LOAD_COMMAND", raising=False)
     monkeypatch.setenv("OPTICFILM_DRIVER_DIR", "/opt/of135i-driver")
-    assert "cd /opt/of135i-driver && PYTHONPATH=. python3 -m of135i load" in load_command_text()
+    assert "cd -- /opt/of135i-driver && PYTHONPATH=. python3 -m of135i load" in load_command_text()
     monkeypatch.setenv("OPTICFILM_LOAD_COMMAND", "  my own command ")
     assert load_command_text() == "my own command"

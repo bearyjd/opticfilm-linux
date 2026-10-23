@@ -16,6 +16,7 @@ from opticfilm_linux.app.messages import (
 )
 from opticfilm_linux.batch.model import Flag, SlideStatus, TrayStage
 from opticfilm_linux.scanner.base import ScannerStatus
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
 
 
 @pytest.mark.parametrize(
@@ -47,8 +48,10 @@ def test_flag_sentences(flag, text):
         ),
         (
             ScannerStatus.ERROR,
-            "The scanner needs a power cycle: switch it off until its lights go out, "
-            "switch it on, eject, load the holder again.",
+            "The scanner reports a problem. If a scan just failed or stopped, power-cycle it "
+            "(off until the lights go out, then on), eject and load the holder again. If the app "
+            'says the scanner driver was not found, see "How to load the scanner" / the README '
+            "(OPTICFILM_DRIVER_DIR).",
         ),
     ],
 )
@@ -100,11 +103,8 @@ CAL_FAIL = (
 @pytest.mark.parametrize(
     "detail",
     [
-        CAL_FAIL,
-        "The scanner refused or lost the scan. Power-cycle it (off until the lights go out)",
-        "please power cycle the device",
-        "dark_b residual",
-        "Calibration failed",
+        f"ScanError: {POWER_CYCLE_HINT} Driver said: {CAL_FAIL}",
+        f"the driver did not finish within 3600 s. {POWER_CYCLE_HINT} Log: /x.log",
     ],
 )
 def test_a_driver_refusal_becomes_the_plain_power_cycle_advice(detail):
@@ -115,7 +115,17 @@ def test_a_driver_refusal_becomes_the_plain_power_cycle_advice(detail):
     )
 
 
-@pytest.mark.parametrize("detail", ["", "disk full", "ValueError: bad slide"])
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "",
+        "disk full",
+        "ValueError: bad slide",
+        CAL_FAIL,  # the driver's own words, without the backend's hint: not matched loosely
+        "OSError: [Errno 5] Input/output error: '/photos/calibration/x.tif'",
+        "dark_b.npz missing; please power cycle later",
+    ],
+)
 def test_any_other_failure_keeps_the_short_fallback(detail):
     assert failure_text(detail, "Tray 3 failed") == "Tray 3 failed"
 
@@ -123,14 +133,14 @@ def test_any_other_failure_keeps_the_short_fallback(detail):
 def test_the_load_command_defaults_to_the_distrobox_launcher():
     assert load_command(Path("/home/me/opticfilm135i-linux")) == (
         "distrobox enter dev -- bash -lc "
-        "'cd /home/me/opticfilm135i-linux && PYTHONPATH=. python3 -m of135i load'"
+        "'cd -- /home/me/opticfilm135i-linux && PYTHONPATH=. python3 -m of135i load'"
     )
 
 
 def test_the_load_command_survives_a_driver_folder_with_spaces():
     command = load_command(Path("/home/me/my driver"))
     inner = shlex.split(command)[-1]
-    assert shlex.split(inner)[:2] == ["cd", "/home/me/my driver"]
+    assert shlex.split(inner)[:3] == ["cd", "--", "/home/me/my driver"]
 
 
 def test_the_load_command_without_a_driver_folder_names_a_placeholder():
@@ -143,3 +153,9 @@ def test_the_load_command_without_a_driver_folder_names_a_placeholder():
 def test_a_failed_holder_move_says_to_power_cycle_and_reload(action, words):
     text = holder_failed_text(action)
     assert words in text and "lights go out" in text and "How to load the scanner" in text
+
+
+@pytest.mark.parametrize("folder", ["-", "-x y"])
+def test_the_load_command_cannot_mistake_a_dash_folder_for_an_option(folder):
+    inner = shlex.split(shlex.split(load_command(Path(folder)))[-1])
+    assert inner[:3] == ["cd", "--", folder]

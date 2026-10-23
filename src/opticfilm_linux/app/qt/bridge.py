@@ -177,6 +177,7 @@ class Bridge(QObject):
     canScan = _p(bool, changed, lambda s, _: s.can_scan)  # noqa: N815
     canEject = _p(bool, changed, lambda s, _: s.can_eject)  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
+    holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
     scannerStatus = _p(str, changed, lambda s, _: s.scanner.value)  # noqa: N815
     scanPending = _p(bool, changed, lambda s, _: s.scan_pending)  # noqa: N815
     selectedTray = _p(int, changed, lambda s, _: -1 if s.selected is None else s.selected)  # noqa: N815

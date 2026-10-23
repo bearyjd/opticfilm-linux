@@ -15,8 +15,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+from opticfilm_linux.app.holder import HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
-from opticfilm_linux.app.messages import failure_text, holder_failed_text
+from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.state import (
     EMPTY_STATE,
     AppState,
@@ -32,15 +33,11 @@ from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatu
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format
-from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner, ScannerStatus
+from opticfilm_linux.scanner.base import HolderControl, Scanner, ScannerStatus
 
 SLIDES_PER_TRAY = 4
 STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
 LOCKED_PREFIX = "LOCKED:"
-NEXT_STRIP_OFF = (
-    "Load next holder is switched off: it is not proven on this scanner yet. "
-    'Follow "How to load the scanner" instead.'
-)
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +52,7 @@ class _Session:
     holder: HolderControl | None = None  # None: the scanner cannot move the holder
 
 
-class Controller:
+class Controller(HolderCommands):
     def __init__(
         self,
         scanner_factory: Callable[[int], Scanner],
@@ -65,6 +62,10 @@ class Controller:
         self._factory = scanner_factory
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
         self._holder_busy = False  # an eject or load is queued or running
+        self._holder_future: Future | None = None  # that eject or load, while it may not start
+        self._holder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-holder")
+        self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
+        self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker
         self._clock = clock
         self._lock = threading.Lock()
         self._command = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-command")
@@ -137,6 +138,7 @@ class Controller:
             defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror)
             self._attach(BatchStore.create(directory, name, album, date, defaults), False)
 
+        self._cancel_queued_holder()
         self._run(job, "Could not create the batch", droppable=True)
 
     def open_batch(self, directory: Path, readonly: bool = False) -> None:
@@ -144,68 +146,24 @@ class Controller:
             self._detach()
             self._attach(BatchStore.open(directory, readonly=readonly), readonly)
 
+        self._cancel_queued_holder()
         self._run(job, "Could not open the batch", droppable=True)
 
     def close_batch(self) -> None:
+        self._cancel_queued_holder()
         self._run(self._detach, "Could not close the batch", droppable=True)
 
     # -- scanning ------------------------------------------------------------------------
 
     def scan(self) -> None:
-        self._run_writer(
-            lambda runner: runner.scan_tray(), "Could not start a scan", droppable=True
-        )
+        self._reserved_scan(lambda runner: runner.scan_tray(), "Could not start a scan")
 
     def rescan(self, number: int) -> None:
         def job(runner: BatchRunner) -> None:
             self._drop_progress(number)
             runner.rescan_tray(number)
 
-        self._run_writer(job, f"Could not re-scan tray {number}", droppable=True)
-
-    @property
-    def next_strip_enabled(self) -> bool:
-        return self._next_strip
-
-    def eject_holder(self) -> None:
-        self._move_holder("eject", lambda holder: holder.eject(), "Could not eject the holder")
-
-    def load_next_holder(self) -> None:
-        if not self._next_strip:
-            self._set(_banner=Banner(NEXT_STRIP_OFF))
-            return
-        self._move_holder(
-            "load", lambda holder: holder.load_next_strip(), "Could not load the next holder"
-        )
-
-    def _move_holder(
-        self, action: str, move: Callable[[HolderControl], None], message: str
-    ) -> None:
-        """Run one holder move on the jobs worker; a second click while it runs is ignored."""
-
-        def job(runner: BatchRunner) -> None:
-            session = self._session
-            if session is None or session.holder is None:
-                raise BatchError("this scanner cannot move the holder")
-            if runner.scan_pending():
-                raise BatchError("wait until the scan has finished")
-            try:
-                move(session.holder)
-            except ScanError as exc:
-                self._set(_banner=Banner(holder_failed_text(action), f"ScanError: {exc}"))
-            finally:
-                if session.poller is not None:
-                    session.poller.poll()  # ask again now: the holder moved, or the move failed
-
-        with self._lock:
-            if self._holder_busy:
-                return
-            self._holder_busy = True
-        future = self._run_writer(job, message, pool=self._jobs)
-        if future is None:
-            self._set(_holder_busy=False)
-        else:
-            future.add_done_callback(lambda _f: self._set(_holder_busy=False))
+        self._reserved_scan(job, f"Could not re-scan tray {number}")
 
     def select_tray(self, number: int) -> None:
         self._set(_selected=number)
@@ -345,7 +303,16 @@ class Controller:
     def _after_pending_commands(self, job: Callable[[BatchRunner], None], message: str) -> None:
         """Queue a long job behind every command already submitted (an edit made a moment
         ago must be stored before an export reads the slides), then run it on the jobs worker."""
-        self._run_writer(lambda _runner: self._run_writer(job, message, pool=self._jobs), message)
+        with self._lock:
+            self._long_jobs += 1  # until it reaches the jobs worker: no holder move meanwhile
+        future = self._run_writer(
+            lambda _runner: self._run_writer(job, message, pool=self._jobs), message
+        )
+        self._track(future, self._long_job_handed_over)
+
+    def _long_job_handed_over(self) -> None:
+        with self._lock:
+            self._long_jobs -= 1
 
     def cancel_free_space(self) -> None:
         self._cancel_free.set()
@@ -372,6 +339,7 @@ class Controller:
         self._closing.set()
         self._cancel_export.set()
         self._cancel_free.set()
+        self._holder_pool.shutdown(wait=True, cancel_futures=True)  # a running move completes
         self._jobs.shutdown(wait=True, cancel_futures=True)
         self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
         self._detach()
