@@ -11,11 +11,13 @@ The driver must already have *loaded* the holder (an interactive step: ``of135i 
 ``status()`` reads the driver's read-only ``doctor`` report to tell whether that happened.
 """
 
+import atexit
 import dataclasses
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,11 @@ SCAN_TIMEOUT_S = 3600
 STATUS_TIMEOUT_S = 20
 STATUS_MAX_AGE_S = 3.0  # the status poll must stay cheap: each answer costs a process start
 LOG_TAIL_CHARS = 1500
+OUTPUT_TAIL_BYTES = 64 * 1024  # all that is kept in memory of a driver run; the rest is in the log
+KEEP_LOGS = 30
+STOP_GRACE_S = 10.0  # how long a driver that was interrupted gets before it is killed
+PROBE_TIMEOUT_S = 10
+SPACE_MARGIN = 1.25  # the sweep needs this much free disk, beside the driver's own frames
 IDLE_HOMED = 0x22
 LOADED_STATUS_HIGH_BYTE = 0xDC  # status word 0xdc55 after a completed load (hardware-observed)
 POWER_CYCLE_HINT = (
@@ -70,10 +77,23 @@ class DriverConfig:
     def available(self) -> bool:
         if self.driver_dir is not None:
             return (self.driver_dir / "of135i").is_dir()
-        probe = subprocess.run(
-            [self.python, "-c", "import of135i"], capture_output=True, check=False
-        )
+        try:
+            probe = subprocess.run(
+                [self.python, "-c", "import of135i"],
+                capture_output=True,
+                check=False,
+                timeout=PROBE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return False
         return probe.returncode == 0
+
+    def scratch_dir(self) -> Path:
+        """Where scans are assembled: configured, else the user's cache (a disk, not /tmp)."""
+        if self.work_dir is not None:
+            return self.work_dir
+        cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        return cache / "opticfilm-linux" / "work"
 
 
 def parse_doctor(text: str) -> ScannerStatus:
@@ -99,6 +119,58 @@ def parse_doctor(text: str) -> ScannerStatus:
     return ScannerStatus.READY if loaded else ScannerStatus.NOT_READY
 
 
+_LIVE: set[subprocess.Popen] = set()
+_LIVE_LOCK = threading.Lock()
+
+
+def _stop_group(proc: subprocess.Popen) -> None:
+    """Stop the driver and any helper it started: interrupt first (the driver handles Ctrl-C and
+    fails closed), kill after a grace period, then sweep up stragglers in the process group."""
+    try:
+        os.killpg(proc.pid, signal.SIGINT)
+        try:
+            proc.wait(timeout=STOP_GRACE_S)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)  # a helper that outlived the driver itself
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+@atexit.register
+def _stop_all_drivers() -> None:
+    with _LIVE_LOCK:
+        running = list(_LIVE)
+    for proc in running:
+        _stop_group(proc)
+
+
+def _register(text: str) -> int | None:
+    match = re.search(r"reg 0x01 = 0x([0-9a-fA-F]{2})", text)
+    return int(match.group(1), 16) if match else None
+
+
+def _read_tail(path: Path) -> str:
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, handle.tell() - OUTPUT_TAIL_BYTES))
+        return handle.read().decode("utf-8", errors="replace")
+
+
+def _prune_logs(directory: Path) -> None:
+    logs = sorted(directory.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in logs[KEEP_LOGS:]:
+        old.unlink(missing_ok=True)
+    stems = {p.name.split("-", 2)[0] + "-" + p.name.split("-", 2)[1] for p in logs[:KEEP_LOGS]}
+    for sidecar in [*directory.glob("*.diag.json"), *directory.glob("*.cal.npz")]:
+        if "-".join(sidecar.name.split("-", 2)[:2]) not in stems:
+            sidecar.unlink(missing_ok=True)
+
+
 class DriverScanner:
     def __init__(self, config: DriverConfig | None = None) -> None:
         self._config = config or DriverConfig.from_env()
@@ -106,6 +178,7 @@ class DriverScanner:
         self._status_lock = threading.Lock()
         self._hw_lock = threading.Lock()  # the driver allows one process on the scanner at a time
         self._status_cache: tuple[float, ScannerStatus] | None = None
+        self._needs_power_cycle = False  # set when the driver failed; cleared by a power cycle
 
     # -- Scanner protocol ----------------------------------------------------------------
 
@@ -120,16 +193,22 @@ class DriverScanner:
             self._status_cache = None
 
     def _scan_locked(self, settings: ScanSettings) -> RawSweep:
-        base = self._config.work_dir
-        if base is not None:
-            base.mkdir(parents=True, exist_ok=True)
+        base = self._config.scratch_dir()
+        base.mkdir(parents=True, exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="opticfilm-scan-", dir=base))
         try:
             output = work / "tray.tiff"
             command = ["scan", "--slides", SLIDES, "--dpi", str(settings.dpi), "--ir"]
             command += ["--dark-fallback", DARK_FALLBACK, "-o", str(output)]
-            result = self._run(command, self._config.timeout_s, keep_log=True)
-            self._keep_sidecars(work, failed=_missing_frames(work))
+            try:
+                result = self._run(command, self._config.timeout_s, keep_log=True)
+            except ScanError:
+                self._needs_power_cycle = True  # a driver that did not finish: state unknown
+                self._keep_sidecars(work, failed=True)
+                raise
+            failed = _missing_frames(work)
+            self._needs_power_cycle = self._needs_power_cycle or failed
+            self._keep_sidecars(work, failed=failed)
             return _stitch(work, settings.dpi, result)
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -153,6 +232,8 @@ class DriverScanner:
         if self._scanning.is_set():
             return ScannerStatus.BUSY
         with self._status_lock:
+            if self._scanning.is_set():  # a scan began while this call waited for the lock
+                return ScannerStatus.BUSY
             cached = self._status_cache
             if cached is not None and time.monotonic() - cached[0] < STATUS_MAX_AGE_S:
                 return cached[1]
@@ -167,10 +248,17 @@ class DriverScanner:
 
     def eject(self) -> None:
         self._require_driver()
-        with self._hw_lock:
-            result = self._run(["eject"], STATUS_TIMEOUT_S * 6, keep_log=True)
-            self._status_cache = None
+        self._status_cache = None
+        try:
+            with self._hw_lock:
+                result = self._run(["eject"], STATUS_TIMEOUT_S * 6, keep_log=True)
+        except ScanError:
+            self._needs_power_cycle = True
+            raise
+        finally:
+            self._status_cache = None  # whatever happened, the old answer is stale
         if result.returncode != 0:
+            self._needs_power_cycle = True
             raise ScanError(f"eject failed: {_tail(result.output)}")
 
     # -- internals -----------------------------------------------------------------------
@@ -189,46 +277,65 @@ class DriverScanner:
             result = self._run(["doctor"], STATUS_TIMEOUT_S, keep_log=False)
         except ScanError:
             return ScannerStatus.ERROR
-        except subprocess.TimeoutExpired:
-            return ScannerStatus.ERROR
-        return parse_doctor(result.output)
+        status = parse_doctor(result.output)
+        if result.returncode != 0 and status is ScannerStatus.READY:
+            return ScannerStatus.ERROR  # a report that ends in failure is not a ready scanner
+        if self._needs_power_cycle:
+            if _register(result.output) == 0x00:  # cold: the scanner was power-cycled
+                self._needs_power_cycle = False
+                return ScannerStatus.NOT_READY
+            return ScannerStatus.ERROR  # the driver said only a power cycle recovers it
+        return status
 
     def _run(self, args: Sequence[str], timeout: int, keep_log: bool) -> "_Result":
         env = dict(os.environ)
         if self._config.driver_dir is not None:
             extra = str(self._config.driver_dir)
             env["PYTHONPATH"] = extra + os.pathsep + env.get("PYTHONPATH", "")
-        started = time.strftime("%Y%m%d-%H%M%S")
+        sink_path, temporary = self._output_file(args[0], keep_log)
         try:
-            done = subprocess.run(
-                [self._config.python, "-m", "of135i", *args],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ScanError(
-                f"the driver did not finish within {timeout} s. {POWER_CYCLE_HINT}"
-            ) from exc
-        output = (done.stdout or "") + (done.stderr or "")
-        if keep_log:
-            self._write_log(f"{args[0]}-{started}", output)
-        return _Result(done.returncode, output)
+            with open(sink_path, "wb") as sink:  # output goes to disk, never all into memory
+                proc = subprocess.Popen(
+                    [self._config.python, "-m", "of135i", *args],
+                    stdout=sink,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    start_new_session=True,  # its own process group, so helpers can be stopped
+                )
+                with _LIVE_LOCK:
+                    _LIVE.add(proc)
+                try:
+                    returncode = proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    _stop_group(proc)
+                    raise ScanError(
+                        f"the driver did not finish within {timeout} s. {POWER_CYCLE_HINT}"
+                    ) from exc
+                finally:
+                    with _LIVE_LOCK:
+                        _LIVE.discard(proc)
+            return _Result(returncode, _read_tail(sink_path))
+        finally:
+            if temporary:
+                sink_path.unlink(missing_ok=True)
+            elif self._config.log_dir is not None:
+                try:
+                    _prune_logs(self._config.log_dir)
+                except OSError:
+                    log.warning("could not prune the driver logs")
 
-    def _write_log(self, name: str, output: str) -> None:
+    def _output_file(self, name: str, keep_log: bool) -> tuple[Path, bool]:
+        """Where a run's output goes: a kept log, or a temporary file for a short query."""
         directory = self._config.log_dir
-        if directory is None:
-            return
-        try:
-            directory.mkdir(parents=True, exist_ok=True)
-            (
-                directory
-                / f"{name.replace('scan-', 'scan-', 1) if name.startswith('scan') else name}.log"
-            ).write_text(output)
-        except OSError:
-            log.warning("could not write the driver log to %s", directory)
+        if keep_log and directory is not None:
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                return directory / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}.log", False
+            except OSError:
+                log.warning("could not write the driver log to %s", directory)
+        handle, path = tempfile.mkstemp(prefix="opticfilm-driver-", suffix=".log")
+        os.close(handle)
+        return Path(path), True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -298,6 +405,13 @@ def _stitch(work: Path, dpi: int, result: _Result) -> RawSweep:
     _check_frames(paths)
     shapes = [_turned_shape(rgb_path) for rgb_path, _ in paths]
     rows, width = sum(h for h, _ in shapes), max(w for _, w in shapes)
+    needed = rows * width * (3 * 2 + 2)  # visible 3 x 16-bit + infrared 16-bit
+    free = shutil.disk_usage(work.parent).free
+    if free < needed * SPACE_MARGIN:  # a full disk would otherwise end in SIGBUS, not an error
+        raise ScanError(
+            f"not enough disk space to assemble the tray: about {needed / 1e9:.1f} GB needed, "
+            f"{free / 1e9:.1f} GB free in {work.parent}"
+        )
     # The sweep lives in files beside the scratch folder, one frame in memory at a time: a
     # 7200 dpi tray is several gigabytes. The files are unlinked once mapped.
     stack = Path(tempfile.mkdtemp(prefix="opticfilm-sweep-", dir=work.parent))

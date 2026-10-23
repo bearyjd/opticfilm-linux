@@ -10,6 +10,7 @@ cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pa
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -70,6 +71,17 @@ def _scan_body(args: argparse.Namespace) -> int:
     if mode == "cal_fail":
         print(CAL_FAIL, file=sys.stderr)
         return 1
+    if mode == "hang":  # a driver stuck mid-scan, with a helper child of its own
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        pids = os.environ.get("FAKE_DRIVER_PIDS")
+        if pids:
+            Path(pids).write_text(json.dumps([os.getpid(), child.pid]))
+        print("scanning frame 1 ...", flush=True)
+        time.sleep(120)
+    if mode == "noisy":  # bytes that are not valid text, and a lot of them
+        sys.stdout.buffer.write(b"\xff\xfe not text \x80\n")
+        sys.stdout.buffer.write(b"poll timed out\n" * 400_000)
+        sys.stdout.flush()
     if mode == "slow":
         time.sleep(float(os.environ.get("FAKE_DRIVER_DELAY", "1.5")))
     out = Path(args.output)
@@ -95,13 +107,18 @@ def main() -> int:
     scan.add_argument("--slides")
     scan.add_argument("-o", "--output", required=True)
     sub.add_parser("doctor")
+    sub.add_parser("eject")
     args = parser.parse_args()
     if args.command == "doctor":
         _trace("doctor start")
         time.sleep(float(os.environ.get("FAKE_DRIVER_DOCTOR_DELAY", "0")))
         print(DOCTOR[os.environ.get("FAKE_DRIVER_DOCTOR", "idle")], end="")
         _trace("doctor end")
-        return 0
+        return int(os.environ.get("FAKE_DRIVER_DOCTOR_EXIT", "0"))
+    if args.command == "eject":
+        _trace("eject")
+        print("ejected")
+        return int(os.environ.get("FAKE_DRIVER_EJECT_EXIT", "0"))
     return _scan(args)
 
 
