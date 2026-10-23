@@ -124,6 +124,10 @@ def parse_doctor(text: str) -> ScannerStatus:
     return ScannerStatus.READY if loaded else ScannerStatus.NOT_READY
 
 
+# One lock for the whole process: every batch gets its own DriverScanner, but the driver allows
+# only one process on the scanner at a time, so a move still running for a closed batch must
+# also hold off the next batch's scan and status checks.
+_HW_LOCK = threading.Lock()
 _LIVE: set[subprocess.Popen] = set()
 _LIVE_LOCK = threading.Lock()
 
@@ -221,7 +225,7 @@ class DriverScanner:
         self._config = config or DriverConfig.from_env()
         self._scanning = threading.Event()
         self._status_lock = threading.Lock()
-        self._hw_lock = threading.Lock()  # the driver allows one process on the scanner at a time
+        self._hw_lock = _HW_LOCK
         self._status_cache: tuple[float, ScannerStatus] | None = None
         self._needs_power_cycle = False  # set when the driver failed; cleared by a power cycle
         self._failed_address: str | None = None  # the USB address it failed on

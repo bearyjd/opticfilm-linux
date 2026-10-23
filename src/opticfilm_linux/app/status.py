@@ -38,8 +38,8 @@ class StatusPoller:
     def poll(self) -> None:
         """Ask the scanner in the background, unless an earlier request is still out."""
         with self._lock:
-            if self._started is not None:
-                return
+            if self._closed or self._started is not None:
+                return  # closed: the batch is gone, its scanner must not be asked again
             self._started = self._clock()
         threading.Thread(target=self._ask, name="app-scanner-status", daemon=True).start()
 

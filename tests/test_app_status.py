@@ -82,3 +82,21 @@ def test_close_waits_for_a_report_in_progress_and_blocks_later_ones():
     poller._report("Scanner error", "again")  # after close: never reaches the callback
     time.sleep(0.1)
     assert calls == ["Scanner error"]
+
+
+def test_a_closed_poller_never_asks_the_scanner_again():
+    asked: list[int] = []
+
+    class Counting(FakeScanner):
+        def __init__(self) -> None:
+            pass
+
+        def status(self):
+            asked.append(1)
+            return ScannerStatus.READY
+
+    poller = StatusPoller(Counting(), time.monotonic, 5.0, lambda *_: None)
+    poller.close()
+    poller.poll()  # the batch is gone: a late poll must not touch the scanner
+    time.sleep(0.2)
+    assert asked == []
