@@ -11,8 +11,8 @@ from opticfilm_linux.output import OutputSpec
 from opticfilm_linux.pipeline.run import ProcessOptions, RunResult, process_sweep
 from opticfilm_linux.pipeline.split import SlideSplitError
 from opticfilm_linux.scanner.base import ScanError
-from opticfilm_linux.scanner.community import CommunityDriverScanner
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.select import real_scanner
 from opticfilm_linux.scanner.usb import find_devices
 from opticfilm_linux.sweepstore import SweepFormatError, load_sweep
 
@@ -62,10 +62,7 @@ def _load_sweep(args: argparse.Namespace) -> RawSweep:
     settings = ScanSettings(dpi=args.dpi, mode=args.mode, infrared=not args.no_infrared)
     if args.fake is not None:
         return FakeScanner(args.fake).scan_holder(settings)
-    devices = find_devices()
-    if not devices:
-        raise ScanError("no supported scanner found; plug it in or use --fake SWEEP_DIR")
-    return CommunityDriverScanner(devices[0]).scan_holder(settings)
+    return real_scanner().scan_holder(settings)
 
 
 def _list_devices() -> int:

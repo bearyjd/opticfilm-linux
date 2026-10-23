@@ -9,8 +9,9 @@ from opticfilm_linux.batch.export import export_batch
 from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayRecord, TrayStage
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
-from opticfilm_linux.scanner.base import NotSupportedYet
+from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.select import real_scanner
 
 EXIT_INTERRUPTED = 130
 
@@ -71,11 +72,10 @@ def _new(args: argparse.Namespace) -> int:
 
 
 def _scan(args: argparse.Namespace) -> int:
-    if args.fake is None:
-        raise NotSupportedYet("scanning the real device is not supported yet; use --fake SWEEP_DIR")
+    scanner: Scanner = FakeScanner(args.fake) if args.fake is not None else real_scanner()
     numbers: list[int] = []
     with BatchStore.open(args.directory) as store:
-        runner = BatchRunner(store, FakeScanner(args.fake))
+        runner = BatchRunner(store, scanner)
         try:
             runner.resume()
             for _ in range(args.count):
