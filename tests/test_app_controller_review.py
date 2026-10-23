@@ -174,3 +174,27 @@ def test_a_command_queued_before_reopening_the_same_batch_still_applies(reviewed
             c.position == 1 and c.settings.brightness_ev == 1.25 for c in reviewed.state().slides
         ),
     )
+
+
+def test_a_command_from_a_readonly_session_never_writes_after_a_writable_reopen(
+    sweep600_dir, tmp_path
+):
+    writer = make_controller(sweep600_dir)
+    open_new(writer, tmp_path / "b")
+    scan_when_ready(writer)
+    wait_all_in_review(writer, 1)
+    writer.shutdown()
+    c = make_controller(sweep600_dir)
+    try:
+        c.open_batch(tmp_path / "b", readonly=True)
+        wait_until(c, lambda: c.state().readonly and len(c.state().slides) == 4)
+        gate = threading.Event()
+        c._command.submit(lambda: gate.wait(30))
+        c.open_batch(tmp_path / "b")  # reopened for writing while the command waits
+        c.set_status(1, 1, SlideStatus.NEEDS_LOOK)  # requested while read-only
+        gate.set()
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "read-only" in c.state().banner.message
+        assert not c.state().readonly  # it did reopen for writing; the old command still refused
+    finally:
+        c.shutdown()

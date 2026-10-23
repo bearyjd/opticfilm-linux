@@ -354,8 +354,8 @@ class Controller:
             current = self._session
             if current is None or current.store.directory != requested.store.directory:
                 return  # a different batch is open now: drop, never retarget
-            if current.runner is None:
-                raise BatchError("this batch is open read-only")
+            if requested.runner is None or current.runner is None:
+                raise BatchError("this batch is open read-only")  # asked while read-only: refuse
             job(current.runner)  # the same batch, possibly reopened meanwhile
 
         self._run(guarded, message, pool, droppable)
