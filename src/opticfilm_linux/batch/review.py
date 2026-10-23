@@ -82,7 +82,17 @@ def apply_slide_settings(
         _require_editable(tray)
         if slide.status is SlideStatus.BLANK:
             raise BatchError(f"slide {position} of tray {number} is blank")
-        return _replace_slide(manifest, tray, slide, settings=settings, owner_decided=True)
+        changed = settings != slide.settings
+        return _replace_slide(
+            manifest,
+            tray,
+            slide,
+            settings=settings,
+            owner_decided=True,
+            # new settings make the exported file and the preview obsolete
+            exported=slide.exported and not changed,
+            preview_stale=slide.preview_stale or changed,
+        )
 
     store.update(change)
 
@@ -109,9 +119,19 @@ def set_tray_mode(store: BatchStore, number: int, mode: Mode) -> None:
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, _ = _find(manifest, number)
         _require_editable(tray)
-        trays = tuple(
-            dataclasses.replace(t, mode=mode) if t.number == number else t for t in manifest.trays
-        )
-        return dataclasses.replace(manifest, trays=trays)
+        changed = tray.mode != mode
+
+        def renewed(t: TrayRecord) -> TrayRecord:
+            if t.number != number:
+                return t
+            # files exported in the old mode are obsolete
+            slides = (
+                tuple(dataclasses.replace(s, exported=False) for s in t.slides)
+                if changed
+                else t.slides
+            )
+            return dataclasses.replace(t, mode=mode, slides=slides)
+
+        return dataclasses.replace(manifest, trays=tuple(renewed(t) for t in manifest.trays))
 
     store.update(change)

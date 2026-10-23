@@ -65,6 +65,7 @@ class SlideRecord:
     settings: SlideSettings = field(default_factory=SlideSettings)
     owner_decided: bool = False
     exported: bool = False
+    preview_stale: bool = False  # settings changed but the preview was not redone yet
 
 
 @dataclass(frozen=True)

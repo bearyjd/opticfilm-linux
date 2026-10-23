@@ -40,6 +40,13 @@ def _load_meta(directory: Path) -> tuple[int, HolderKind]:
         raise SweepFormatError(f"cannot read {META_FILE} in {directory}: {exc}") from exc
 
 
+def sweep_dpi(directory: Path) -> int:
+    """The resolution of a stored sweep, read from its metadata only."""
+    if not directory.is_dir():
+        raise SweepFormatError(f"sweep directory not found: {directory}")
+    return _load_meta(directory)[0]
+
+
 def load_sweep(directory: Path) -> RawSweep:
     if not directory.is_dir():
         raise SweepFormatError(f"sweep directory not found: {directory}")

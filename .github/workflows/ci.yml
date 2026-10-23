@@ -14,3 +14,15 @@ jobs:
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run pytest --cov=opticfilm_linux --cov-fail-under=80
+
+  # Optional: the desktop app's Qt layer needs the distribution's PySide6 and Kirigami, so it
+  # runs in a Fedora container. It is not part of the required checks.
+  qt:
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - run: dnf install -y git python3 python3-pyside6 kf6-kirigami qt6-qtdeclarative uv
+      - uses: actions/checkout@v4
+      - run: uv venv --system-site-packages --python /usr/bin/python3 .venv-qt
+      - run: UV_PROJECT_ENVIRONMENT=.venv-qt uv sync --python /usr/bin/python3
+      - run: QT_QPA_PLATFORM=offscreen .venv-qt/bin/python -m pytest -m qt tests/qt -q

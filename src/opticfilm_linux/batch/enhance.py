@@ -81,11 +81,16 @@ def _merge_slide(
             return manifest
         base = current or snapshot
         if blank:
-            record = dataclasses.replace(base, status=SlideStatus.BLANK, flags=())
+            record = dataclasses.replace(
+                base, status=SlideStatus.BLANK, flags=(), preview_stale=False
+            )
         else:
             auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
             record = dataclasses.replace(
-                base, status=base.status if base.owner_decided else auto, flags=flags
+                base,
+                status=base.status if base.owner_decided else auto,
+                flags=flags,
+                preview_stale=False,
             )
         others = tuple(s for s in now.slides if s.position != snapshot.position)
         slides = tuple(sorted(others + (record,), key=lambda s: s.position))

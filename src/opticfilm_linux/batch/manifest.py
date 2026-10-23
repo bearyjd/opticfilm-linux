@@ -38,6 +38,7 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         settings=_settings(data["settings"]),
         owner_decided=data["owner_decided"],
         exported=data["exported"],
+        preview_stale=data.get("preview_stale", False),
     )
 
 

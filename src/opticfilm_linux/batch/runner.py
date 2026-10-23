@@ -100,6 +100,13 @@ class BatchRunner:
         """Apply crash recovery and queue enhancement for every tray still waiting for it."""
         for number in self._store.recover_interrupted():
             self._submit(self._enhance_pool, self._enhance_job, number)
+        for tray in self._store.snapshot().trays:  # edits whose preview was never redone
+            if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED) and not tray.raw_removed:
+                for slide in tray.slides:
+                    if slide.preview_stale:
+                        self._submit(
+                            self._enhance_pool, self._reenhance_job, tray.number, slide.position
+                        )
 
     def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
         """Apply per-slide settings now; the slide is re-enhanced in the background."""
@@ -129,6 +136,18 @@ class BatchRunner:
     def wait_scans_idle(self, timeout: float | None = None) -> bool:
         """Block until no scan is pending (enhancement may still be running)."""
         return self._wait_for(self._scans, timeout)
+
+    def scan_pending(self) -> bool:
+        with self._lock:
+            return bool(self._scans)
+
+    def stop(self) -> None:
+        """Stop soon: drop jobs that have not started, finish the one running now.
+
+        Trays left half-done are picked up by ``resume()`` the next time the batch is opened.
+        """
+        self._scan_pool.shutdown(wait=True, cancel_futures=True)
+        self._enhance_pool.shutdown(wait=True, cancel_futures=True)
 
     def close(self) -> None:
         """Finish running work, then stop both workers. Queued enhancement still runs."""
@@ -229,7 +248,7 @@ class BatchRunner:
         # Report a crash BEFORE leaving the pending sets, so wait_idle() never returns while a
         # failure is still unreported.
         try:
-            error = future.exception()
+            error = None if future.cancelled() else future.exception()
             if error is not None:
                 self._report_crash(number, error)
         finally:

@@ -64,7 +64,30 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
   change without re-scanning. They are removed only by the explicit raw cleanup of an exported
   tray, never automatically. Export always recomputes slides from the raw scans.
 - Scanning the real device still waits on the driver; the batch engine is tested against the
-  fake scanner. A window is the next project.
+  fake scanner.
+
+## Desktop app
+
+`opticfilm` is one live window over the same batches: press **Scan** whenever the scanner says it
+is ready, keep loading trays, and review the results as they arrive or all at the end.
+
+- A queue of trays on the left (scanning, enhancing, ready to review, exported); the selected
+  tray's four slides on the right with a before/after toggle, plain-words flags, and per-slide
+  rotate, brightness, colour, grain and sharpening with "reset to auto".
+- **Accept all**, **Export** (16-bit TIFF, 8-bit PNG or JPEG, with progress and cancel) and an
+  explicit **Free disk space** dialog that says what it removes before it does.
+- Nothing is lost on a crash or a closed window, and a second window on the same batch opens it
+  read-only.
+
+```sh
+opticfilm --fake demo-sweep      # demo mode: runs on the fake scanner, no hardware needed
+```
+
+It needs the distribution's **PySide6 and Kirigami**, not the PyPI wheel (which bundles its own Qt
+and cannot load the system Kirigami). On Fedora: `sudo dnf install python3-pyside6 kf6-kirigami`,
+and create the environment with `uv venv --system-site-packages`. `ofscan` needs neither. Real
+scanning still waits on the driver: with the real scanner the app says "status unknown" and keeps
+Scan disabled.
 
 ## Development
 

@@ -26,6 +26,10 @@ class BatchError(ValueError):
     """A batch operation was refused or the batch is missing."""
 
 
+class BatchLocked(BatchError):
+    """Another program or window holds this batch open for writing."""
+
+
 class BatchStore:
     """One batch folder. A writer holds an exclusive lock on the folder for as long as it is open,
     so two programs can never both change the manifest; readers open it ``readonly`` and always
@@ -191,7 +195,7 @@ def _acquire_lock(directory: Path):
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
         handle.close()
-        raise BatchError(
+        raise BatchLocked(
             f"this batch is in use by another program or window; close it first ({directory})"
         ) from exc
     return handle

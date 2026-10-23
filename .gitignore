@@ -12,3 +12,4 @@ __pycache__/
 graft/
 .ignore
 .omc/
+.venv-qt/
