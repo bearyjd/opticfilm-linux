@@ -75,10 +75,13 @@ def test_missing_batch_gives_exit_2(tmp_path, capsys):
     assert "not found" in capsys.readouterr().err
 
 
-def test_scan_without_fake_reports_not_supported(tmp_path, capsys):
+def test_scan_without_fake_and_without_the_driver_says_what_is_missing(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("OPTICFILM_DRIVER_DIR", str(tmp_path / "nowhere"))
     _new(tmp_path / "b")
     assert main(["batch", "scan", str(tmp_path / "b")]) == 2
-    assert "not supported" in capsys.readouterr().err.lower()
+    assert "OPTICFILM_DRIVER_DIR" in capsys.readouterr().err
 
 
 def test_scan_exit_code_is_2_when_a_tray_failed(tmp_path, synthetic_sweep_dir, capsys):

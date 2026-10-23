@@ -44,6 +44,18 @@ Commands: `ofscan devices`, `ofscan scan --fake SWEEP_DIR --dpi 600 --out DIR`,
 `ofscan process SWEEP_DIR --out DIR` (options: `--album`, `--date`, `--format`, `--mode`, `--no-infrared`).
 Exit code 2 and an `error:` line on bad input.
 
+## Images from other scanning software
+
+`ofscan enhance` runs the same enhancement and export on finished images from any other scanner
+software (for example the vendor app in a Windows VM), one slide per image:
+
+```sh
+ofscan enhance scans/*.tif --out ~/Pictures/scans --album "Family Trips" --dpi 3600
+```
+
+TIFF, PNG and JPEG are read (8-bit is scaled to 16-bit); there is no infrared plane, so dust
+removal is off.
+
 ## Batch scanning
 
 `ofscan batch` keeps a whole session in one folder, so a crash or a closed terminal loses at most

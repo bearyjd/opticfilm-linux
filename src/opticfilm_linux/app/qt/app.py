@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from opticfilm_linux.app.controller import Controller
-from opticfilm_linux.scanner.base import DeviceInfo, Scanner
-from opticfilm_linux.scanner.community import CommunityDriverScanner
+from opticfilm_linux.scanner.base import Scanner
+from opticfilm_linux.scanner.driver import DriverConfig, DriverScanner, install_signal_cleanup
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.sweepstore import SweepFormatError, sweep_dpi
 
@@ -20,7 +20,6 @@ APP_NAME = "opticfilm"
 DISPLAY_NAME = "OpticFilm Linux"
 STYLE = "org.kde.desktop"
 STYLE_ENV_VAR = "QT_QUICK_CONTROLS_STYLE"
-PLUSTEK_DEVICE = DeviceInfo(0x07B3, 0x1436, "Plustek OpticFilm 135i", 0, 0)
 MISSING_QT_MESSAGE = (
     "opticfilm: the desktop app needs the distribution's PySide6 and Kirigami (the PyPI PySide6 "
     "wheel bundles its own Qt and cannot load Kirigami).\n"
@@ -39,7 +38,7 @@ def scanner_factory(fake_sweep: Path | None):
     def build(_dpi: int) -> Scanner:
         if fake_sweep is not None:
             return FakeScanner(fake_sweep)
-        return CommunityDriverScanner(PLUSTEK_DEVICE)
+        return DriverScanner(DriverConfig.from_env())
 
     return build
 
@@ -101,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     QGuiApplication.setApplicationDisplayName(DISPLAY_NAME)
     QGuiApplication.setDesktopFileName(APP_ID)
     configure_style()
+    install_signal_cleanup()  # the driver runs in its own session: stop it if the app is killed
     controller = Controller(scanner_factory(args.fake))
     bridge = Bridge(controller, QSettingsPrefs(), demo_dpi)
     provider = PreviewProvider(lambda n, p, kind: controller.preview_path(n, p, kind))

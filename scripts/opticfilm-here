@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Start the desktop app from this checkout, inside the dev container, on the real scanner.
+# The driver is a checkout of opticfilm135i-linux (default: the local research clone); override
+# with OPTICFILM_DRIVER_DIR. Needs the container's PySide6 and Kirigami: see docs/CONTRIBUTING.md.
+set -euo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd)
+export OPTICFILM_DRIVER_DIR="${OPTICFILM_DRIVER_DIR:-$here/.local-research/ref/opticfilm135i-linux}"
+if [ ! -x "$here/.venv-qt/bin/python" ]; then
+  echo "missing .venv-qt: uv venv --system-site-packages --python /usr/bin/python3 .venv-qt &&" >&2
+  echo "  UV_PROJECT_ENVIRONMENT=.venv-qt uv sync --python /usr/bin/python3" >&2
+  exit 1
+fi
+exec "$here/.venv-qt/bin/python" -c \
+  "import sys; from opticfilm_linux.app.qt.app import main; sys.exit(main(sys.argv[1:]))" "$@"
