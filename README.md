@@ -73,7 +73,7 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
 - **Enhancement runs in the background** while the next tray scans. Slides with no review flag are
   accepted automatically; flagged ones (very dark, very bright, clipped, dusty) wait for you.
   A choice you make on a slide is never overwritten later.
-- **Raw scans are kept** in the batch folder (about 1.3 GB per tray at 3600 dpi), so settings can
+- **Raw scans are kept** in the batch folder (about 0.9 GB per tray at 3600 dpi, 3.5 GB at 7200; see [performance](docs/performance.md)), so settings can
   change without re-scanning. They are removed only by the explicit raw cleanup of an exported
   tray, never automatically. Export always recomputes slides from the raw scans.
 - Scanning the real device still waits on the driver; the batch engine is tested against the

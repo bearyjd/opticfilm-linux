@@ -1,11 +1,23 @@
 """Conversions between uint16 images and float32 values in [0, 1], and strip-wise processing."""
 
+import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
+import cv2
 import numpy as np
 
 FULL_SCALE = 65535.0
 STRIP_ROWS = 128
+MAX_WORKERS = min(8, os.cpu_count() or 1)  # OpenCV already threads inside each call
+# Each strip in flight holds several float32 copies of itself (about 8x its uint16 size), so one
+# worker per this many strips keeps all float temporaries below the size of the image itself.
+STRIPS_PER_WORKER = 8
+
+
+def strip_workers(strips: int) -> int:
+    """How many strips run at once: 1 (the caller's thread) for small images."""
+    return max(1, min(MAX_WORKERS, strips // STRIPS_PER_WORKER))
 
 
 def to_float(image: np.ndarray) -> np.ndarray:
@@ -22,13 +34,26 @@ def map_strips(
     """Apply ``func`` (float32 in [0, 1] to float) to horizontal strips; returns a new uint16 image.
 
     Each strip is padded with ``margin`` rows of context on both sides, so neighbourhood filters
-    give the same result as a single pass while only a strip of float temporaries is alive.
+    give the same result as a single pass while only a few strips of float temporaries are alive.
+    Strips are independent and each writes only its own rows, so on a large image they run on a
+    few threads (numpy and OpenCV release the GIL) with byte-identical results.
     """
     height = image.shape[0]
     out = np.empty(image.shape, dtype=np.uint16)
-    for y0 in range(0, height, STRIP_ROWS):
+
+    def strip(y0: int) -> None:
         y1 = min(y0 + STRIP_ROWS, height)
         p0, p1 = max(0, y0 - margin), min(height, y1 + margin)
         result = func(to_float(image[p0:p1]))
         out[y0:y1] = to_uint16(result[y0 - p0 : y1 - p0])
+
+    starts = range(0, height, STRIP_ROWS)
+    # cv2.setUseOptimized is per thread: a worker would not honour the caller's choice
+    workers = strip_workers(len(starts)) if cv2.useOptimized() else 1
+    if workers == 1:
+        for y0 in starts:
+            strip(y0)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="strips") as pool:
+            list(pool.map(strip, starts))  # re-raises a strip's error here
     return out
