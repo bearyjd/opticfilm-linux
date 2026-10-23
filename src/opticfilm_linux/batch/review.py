@@ -173,9 +173,9 @@ def set_batch_orientation(store: BatchStore, rotation: int, mirror: bool) -> tup
                 "orientation once it has finished"
             )
         defaults = dataclasses.replace(manifest.defaults, rotation=rotation, mirror=mirror)
-        skipped = tuple(t.number for t in manifest.trays if t.raw_removed)
         if defaults == manifest.defaults:
             return manifest
+        skipped = tuple(t.number for t in manifest.trays if t.raw_removed)
         trays = tuple(t if t.raw_removed else _reoriented(t) for t in manifest.trays)
         return dataclasses.replace(manifest, defaults=defaults, trays=trays)
 

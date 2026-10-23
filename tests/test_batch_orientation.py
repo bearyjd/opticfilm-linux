@@ -95,6 +95,11 @@ def test_set_batch_orientation_to_the_current_value_changes_nothing(store):
     assert store.snapshot() == before
 
 
+def test_setting_the_current_orientation_again_reports_no_skipped_trays(store):
+    store.update_tray(1, stage=TrayStage.EXPORTED, raw_removed=True)
+    assert set_batch_orientation(store, 0, False) == ()
+
+
 def test_blank_slides_are_not_marked_stale(store):
     _mark(store, 1, status=SlideStatus.BLANK)
     set_batch_orientation(store, 180, False)
