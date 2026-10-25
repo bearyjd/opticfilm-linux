@@ -16,7 +16,7 @@ from opticfilm_linux.batch.model import (
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner
-from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT, ScannerInUse
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.scanner.select import NEXT_STRIP_ENV, next_strip_enabled, real_scanner
 
@@ -142,6 +142,8 @@ def _holder(args: argparse.Namespace) -> int:
         else:
             scanner.load_next_strip()
             print("load finished; check the holder is seated before you scan")
+    except ScannerInUse:
+        raise  # nothing failed: no power-cycle advice
     except ScanError as exc:
         if POWER_CYCLE_HINT in str(exc):
             raise

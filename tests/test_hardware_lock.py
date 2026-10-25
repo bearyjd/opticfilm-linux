@@ -15,6 +15,7 @@ FAKE_DRIVER = Path(__file__).parent / "fake_driver"
 
 @pytest.fixture
 def scanner(sweep600_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(driver_module, "LOCK_WAIT_S", 0.3)  # a refusal need not take 22 s here
     monkeypatch.setenv("FAKE_DRIVER_SWEEP", str(sweep600_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("FAKE_DRIVER_TRACE", str(tmp_path / "trace.log"))
@@ -105,3 +106,21 @@ def test_a_second_ctrl_c_while_stopping_the_driver_still_ends_it(monkeypatch):
     driver_module._stop_group(proc)  # type: ignore[arg-type]
     assert proc.finished  # kept waiting for the driver to fail closed
     assert sent[0] == signal.SIGINT and sent[-1] == signal.SIGKILL
+
+
+def test_a_short_status_check_by_another_program_is_waited_out(scanner, other_program):
+    import threading
+
+    threading.Timer(0.1, other_program.close).start()  # the other program lets go
+    scanner.eject()  # waits for it, then runs
+
+
+def test_a_refusal_is_not_given_power_cycle_advice_by_the_cli(
+    scanner, other_program, monkeypatch, capsys
+):
+    from opticfilm_linux.cli import main
+
+    monkeypatch.setattr("opticfilm_linux.batch.cli.real_scanner", lambda: scanner)
+    assert main(["batch", "eject"]) == 2
+    err = capsys.readouterr().err
+    assert "another program" in err and "power-cycle" not in err.lower()

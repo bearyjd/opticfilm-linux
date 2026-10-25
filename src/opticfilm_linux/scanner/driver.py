@@ -49,6 +49,8 @@ KEEP_LOGS = 30
 PROTECT_LOG_S = 3600  # a log this recent may belong to a scan still running: never pruned
 DOCTOR_TAIL_BYTES = 1 << 20
 HEAD_BYTES = 8192  # the driver prints the USB address it opened on its first lines
+LOCK_POLL_S = 0.2
+LOCK_WAIT_S = STATUS_TIMEOUT_S + 2  # outlasts one status check by the app, never a scan
 STOP_GRACE_S = 10.0  # how long a driver that was interrupted gets before it is killed
 PROBE_TIMEOUT_S = 10
 SPACE_MARGIN = 1.25  # the sweep needs this much free disk, beside the driver's own frames
@@ -136,7 +138,7 @@ class ScannerInUse(ScanError):
 
 
 def _lock_path() -> Path:
-    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return state / "opticfilm-linux" / "scanner.lock"
 
 
@@ -153,17 +155,22 @@ class _HardwareLock:
     def __init__(self) -> None:
         self._thread = threading.Lock()
         self._handle: IO[str] | None = None
+        self._warned = False
 
     def acquire(self, blocking: bool = True) -> bool:
         if not self._thread.acquire(blocking):
             return False
         try:
-            owned = self._take_file()
+            deadline = time.monotonic() + (LOCK_WAIT_S if blocking else 0.0)
+            while not self._take_file():
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(LOCK_POLL_S)  # the other program may only be checking the status
+            else:
+                return True
         except BaseException:
             self._thread.release()
             raise
-        if owned:
-            return True
         self._thread.release()
         if blocking:
             raise ScannerInUse(
@@ -179,7 +186,7 @@ class _HardwareLock:
             path.parent.mkdir(parents=True, exist_ok=True)
             handle = open(path, "w")  # noqa: SIM115 - held until release()
         except OSError:
-            log.warning("cannot open %s: other programs are not kept off the scanner", path)
+            self._warn_unlocked(path)
             return True
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -188,10 +195,15 @@ class _HardwareLock:
             return False
         except OSError:
             handle.close()
-            log.warning("cannot lock %s: other programs are not kept off the scanner", path)
+            self._warn_unlocked(path)
             return True
         self._handle = handle
         return True
+
+    def _warn_unlocked(self, path: Path) -> None:
+        if not self._warned:  # status polls come every few seconds: say it once
+            self._warned = True
+            log.warning("cannot lock %s: other programs are not kept off the scanner", path)
 
     def release(self) -> None:
         handle, self._handle = self._handle, None

@@ -14,7 +14,9 @@ from opticfilm_linux.app.state import Banner
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError
 from opticfilm_linux.scanner.base import HolderControl, ScanError
+from opticfilm_linux.scanner.driver import ScannerInUse
 
+ANOTHER_PROGRAM = "Another program is using the scanner. Close it or wait for it to finish."
 WAIT_SCAN = "Wait for the scan to finish"
 WAIT_HOLDER = "Wait for the eject/load to finish"
 WAIT_EXPORT = "Wait for the export to finish, then press Eject again"
@@ -51,6 +53,8 @@ class HolderCommands:
                 raise BatchError("this scanner cannot move the holder")
             try:
                 move(session.holder)
+            except ScannerInUse as exc:
+                self._set(_banner=Banner(ANOTHER_PROGRAM, f"ScannerInUse: {exc}"))
             except ScanError as exc:
                 self._set(_banner=Banner(holder_failed_text(action), f"ScanError: {exc}"))
             finally:
