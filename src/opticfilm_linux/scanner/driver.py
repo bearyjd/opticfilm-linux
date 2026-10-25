@@ -13,6 +13,7 @@ The driver must already have *loaded* the holder (an interactive step: ``of135i 
 
 import atexit
 import dataclasses
+import fcntl
 import logging
 import os
 import re
@@ -25,6 +26,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import IO
 
 import numpy as np
 import tifffile
@@ -127,21 +129,106 @@ def parse_doctor(text: str) -> ScannerStatus:
 # One lock for the whole process: every batch gets its own DriverScanner, but the driver allows
 # only one process on the scanner at a time, so a move still running for a closed batch must
 # also hold off the next batch's scan and status checks.
-_HW_LOCK = threading.Lock()
+
+
+class ScannerInUse(ScanError):
+    """Another program holds the scanner. The driver was never started, so nothing failed."""
+
+
+def _lock_path() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state / "opticfilm-linux" / "scanner.lock"
+
+
+class _HardwareLock:
+    """One program, and within it one thread, on the scanner at a time.
+
+    The thread lock serialises this process; an advisory file lock keeps a second ``ofscan``
+    or the app out. A blocking ``acquire`` refuses at once rather than queue behind another
+    program: an eject that ran after someone else's scan finished would surprise them.
+    ``acquire(blocking=False)`` just says no. If the lock file cannot be used the process
+    still has its own lock, and a warning says the other programs are not excluded.
+    """
+
+    def __init__(self) -> None:
+        self._thread = threading.Lock()
+        self._handle: IO[str] | None = None
+
+    def acquire(self, blocking: bool = True) -> bool:
+        if not self._thread.acquire(blocking):
+            return False
+        try:
+            owned = self._take_file()
+        except BaseException:
+            self._thread.release()
+            raise
+        if owned:
+            return True
+        self._thread.release()
+        if blocking:
+            raise ScannerInUse(
+                "another program is using the scanner; wait for it to finish "
+                "or close it, then try again"
+            )
+        return False
+
+    def _take_file(self) -> bool:
+        """True once this process owns the file lock; False when another program does."""
+        path = _lock_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(path, "w")  # noqa: SIM115 - held until release()
+        except OSError:
+            log.warning("cannot open %s: other programs are not kept off the scanner", path)
+            return True
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return False
+        except OSError:
+            handle.close()
+            log.warning("cannot lock %s: other programs are not kept off the scanner", path)
+            return True
+        self._handle = handle
+        return True
+
+    def release(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            handle.close()  # closing drops the flock
+        self._thread.release()
+
+    def __enter__(self) -> "_HardwareLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release()
+
+
+_HW_LOCK = _HardwareLock()
 _LIVE: set[subprocess.Popen] = set()
 _LIVE_LOCK = threading.Lock()
 
 
 def _stop_group(proc: subprocess.Popen) -> None:
     """Stop the driver and any helper it started: interrupt first (the driver handles Ctrl-C and
-    fails closed), kill after a grace period, then sweep up stragglers in the process group."""
+    fails closed), kill after a grace period, then sweep up stragglers in the process group.
+    A further Ctrl-C while waiting is ignored: the driver is given its time to fail closed."""
+    deadline = time.monotonic() + STOP_GRACE_S
     try:
         os.killpg(proc.pid, signal.SIGINT)
-        try:
-            proc.wait(timeout=STOP_GRACE_S)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait()
+        while True:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+                break
+            except KeyboardInterrupt:
+                continue
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+                break
     except (ProcessLookupError, PermissionError):
         pass
     try:
@@ -318,6 +405,8 @@ class DriverScanner:
                     result = self._run(args, HOLDER_TIMEOUT_S, keep_log=True)
                 finally:
                     self._status_cache = None  # whatever happened, the old answer is stale
+        except ScannerInUse:
+            raise  # the driver never ran: nothing to recover from
         except ScanError:
             self._note_failure()
             raise

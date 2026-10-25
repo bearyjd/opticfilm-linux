@@ -4,6 +4,12 @@ from opticfilm_linux.sweepstore import save_sweep
 from synthetic import make_sweep
 
 
+@pytest.fixture(autouse=True)
+def isolated_scanner_lock(tmp_path, monkeypatch):
+    """No test takes the scanner lock file in the real home folder."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+
 @pytest.fixture
 def synthetic_sweep_dir(tmp_path):
     """A stored 600 dpi four-slide sweep with a few dust specks."""

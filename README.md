@@ -75,8 +75,9 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
 
 - **On the real scanner, scan one tray per command.** `--count` above 1 scans the same holder
   again with no exchange in between; swap the holder with `eject` / `load`, then run `scan` again.
-- **One program on the scanner at a time.** `eject` and `load` do not check whether another
-  `ofscan` or the app is scanning; do not run them while a tray is scanning.
+- **One program on the scanner at a time.** A lock file in `~/.local/state/opticfilm-linux/`
+  keeps a second `ofscan` or the app out: `scan`, `eject` and `load` stop with "another program
+  is using the scanner" instead of queueing, and the app's status shows busy.
 - **Enhancement runs in the background** while the next tray scans. Slides with no review flag are
   accepted automatically; flagged ones (very dark, very bright, clipped, dusty) wait for you.
   A choice you make on a slide is never overwritten later.
