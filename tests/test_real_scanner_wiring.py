@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from opticfilm_linux.app.qt.app import load_command_text, next_strip_enabled, scanner_factory
+from opticfilm_linux.app.qt.app import load_command_text, scanner_factory
 from opticfilm_linux.cli import main
 from opticfilm_linux.scanner.base import ScanError
 from opticfilm_linux.scanner.driver import DriverScanner
-from opticfilm_linux.scanner.select import real_scanner
+from opticfilm_linux.scanner.select import next_strip_enabled, real_scanner
 
 FAKE_DRIVER = Path(__file__).parent / "fake_driver"
 

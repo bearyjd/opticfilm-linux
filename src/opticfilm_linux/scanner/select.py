@@ -1,5 +1,7 @@
 """Pick the real scanner backend."""
 
+import os
+
 from opticfilm_linux.scanner.base import ScanError
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -7,6 +9,12 @@ from opticfilm_linux.scanner.driver import (
     DriverScanner,
     install_signal_cleanup,
 )
+
+NEXT_STRIP_ENV = "OPTICFILM_NEXT_STRIP"  # "1" allows the hardware-unproven ``load --next-strip``
+
+
+def next_strip_enabled() -> bool:
+    return os.environ.get(NEXT_STRIP_ENV) == "1"
 
 
 def real_scanner() -> DriverScanner:

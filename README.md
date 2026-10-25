@@ -64,12 +64,16 @@ the tray being scanned:
 
 ```sh
 ofscan batch new ~/slides/trips --name "Trips" --album "Family Trips" --dpi 600
-ofscan batch scan ~/slides/trips --fake demo-sweep --count 3   # real scanning: not yet
+ofscan batch scan ~/slides/trips --fake demo-sweep --count 3   # drop --fake to scan on the real scanner
+ofscan batch eject                       # between trays: eject the holder
+ofscan batch load                        # load the next holder (needs OPTICFILM_NEXT_STRIP=1)
 ofscan batch status ~/slides/trips
 ofscan batch accept-all ~/slides/trips
 ofscan batch export ~/slides/trips --out ~/Pictures/scans
 ```
 
+- **One program on the scanner at a time.** `eject` and `load` do not check whether another
+  `ofscan` or the app is scanning; do not run them while a tray is scanning.
 - **Enhancement runs in the background** while the next tray scans. Slides with no review flag are
   accepted automatically; flagged ones (very dark, very bright, clipped, dusty) wait for you.
   A choice you make on a slide is never overwritten later.

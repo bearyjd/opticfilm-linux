@@ -17,6 +17,7 @@ from opticfilm_linux.scanner.driver import (
     install_signal_cleanup,
 )
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.select import next_strip_enabled
 from opticfilm_linux.sweepstore import SweepFormatError, sweep_dpi
 
 EXIT_MISSING_QT = 3
@@ -26,7 +27,6 @@ APP_NAME = "opticfilm"
 DISPLAY_NAME = "OpticFilm Linux"
 STYLE = "org.kde.desktop"
 STYLE_ENV_VAR = "QT_QUICK_CONTROLS_STYLE"
-NEXT_STRIP_ENV = "OPTICFILM_NEXT_STRIP"  # "1" allows the hardware-unproven ``load --next-strip``
 LOAD_COMMAND_ENV = "OPTICFILM_LOAD_COMMAND"  # replaces the shown first-load terminal command
 MISSING_QT_MESSAGE = (
     "opticfilm: the desktop app needs the distribution's PySide6 and Kirigami (the PyPI PySide6 "
@@ -49,10 +49,6 @@ def scanner_factory(fake_sweep: Path | None):
         return DriverScanner(DriverConfig.from_env())
 
     return build
-
-
-def next_strip_enabled() -> bool:
-    return os.environ.get(NEXT_STRIP_ENV) == "1"
 
 
 def load_command_text() -> str:
