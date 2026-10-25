@@ -25,20 +25,24 @@ def test_batch_eject_asks_the_driver_to_eject(driver_env, capsys):
     assert main(["batch", "eject"]) == 0
     trace = driver_env.parent / "trace.log"
     assert trace.read_text().split()[1:] == ["eject"]  # first field is a timestamp
-    assert "holder ejected" in capsys.readouterr().out
+    assert "eject finished" in capsys.readouterr().out
 
 
-def test_batch_load_is_refused_until_next_strip_is_switched_on(driver_env, capsys):
+def test_batch_load_is_refused_until_next_strip_is_switched_on(driver_env, monkeypatch, capsys):
+    def no_backend():
+        raise AssertionError("the gate must refuse before any scanner is built")
+
+    monkeypatch.setattr("opticfilm_linux.batch.cli.real_scanner", no_backend)
     assert main(["batch", "load"]) == 2
     assert "OPTICFILM_NEXT_STRIP" in capsys.readouterr().err
-    assert not driver_env.exists()  # the driver was never started
+    assert not (driver_env.parent / "trace.log").exists()  # no driver command of any kind
 
 
 def test_batch_load_runs_next_strip_when_switched_on(driver_env, monkeypatch, capsys):
     monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "1")
     assert main(["batch", "load"]) == 0
     assert json.loads(driver_env.read_text()) == ["load", "--next-strip"]
-    assert "holder loaded" in capsys.readouterr().out
+    assert "load finished" in capsys.readouterr().out
 
 
 def test_batch_load_failure_is_reported_not_raised(driver_env, monkeypatch, capsys):
@@ -84,3 +88,28 @@ def test_batch_eject_refuses_a_scanner_that_cannot_move_the_holder(monkeypatch, 
     monkeypatch.setattr("opticfilm_linux.batch.cli.real_scanner", object)
     assert main(["batch", "eject"]) == 2
     assert "cannot move the holder" in capsys.readouterr().err
+
+
+def test_batch_eject_ctrl_c_while_finding_the_scanner_exits_130(monkeypatch, capsys):
+    def interrupted():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("opticfilm_linux.batch.cli.real_scanner", interrupted)
+    assert main(["batch", "eject"]) == 130
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_batch_eject_failure_says_to_power_cycle(driver_env, monkeypatch, capsys):
+    from opticfilm_linux.scanner.base import ScanError
+
+    class Failing:
+        def eject(self) -> None:
+            raise ScanError("eject failed. Driver said: usb timeout")
+
+        def load_next_strip(self) -> None:
+            raise ScanError("unused")
+
+    monkeypatch.setattr("opticfilm_linux.batch.cli.real_scanner", Failing)
+    assert main(["batch", "eject"]) == 2
+    err = capsys.readouterr().err
+    assert "usb timeout" in err and "power-cycle" in err.lower()

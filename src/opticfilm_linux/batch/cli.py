@@ -16,6 +16,7 @@ from opticfilm_linux.batch.model import (
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.scanner.select import NEXT_STRIP_ENV, next_strip_enabled, real_scanner
 
@@ -131,16 +132,20 @@ def _holder(args: argparse.Namespace) -> int:
             "loading the next holder is not proven on this scanner yet; "
             f"set {NEXT_STRIP_ENV}=1 to allow it, or load the holder by hand"
         )
-    scanner: Scanner = FakeScanner(args.fake) if args.fake is not None else real_scanner()
-    if not isinstance(scanner, HolderControl):
-        raise ScanError("this scanner cannot move the holder")
     try:
+        scanner: Scanner = FakeScanner(args.fake) if args.fake is not None else real_scanner()
+        if not isinstance(scanner, HolderControl):
+            raise ScanError("this scanner cannot move the holder")
         if command == "eject":
             scanner.eject()
-            print("holder ejected")
+            print("eject finished; check the holder has come out before you pull it")
         else:
             scanner.load_next_strip()
-            print("holder loaded")
+            print("load finished; check the holder is seated before you scan")
+    except ScanError as exc:
+        if POWER_CYCLE_HINT in str(exc):
+            raise
+        raise ScanError(f"{exc} {POWER_CYCLE_HINT}") from exc
     except KeyboardInterrupt:  # the driver is already stopped; its state is unknown
         print("interrupted: the holder may be half-moved; check the scanner", file=sys.stderr)
         return EXIT_INTERRUPTED
