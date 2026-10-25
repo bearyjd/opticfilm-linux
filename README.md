@@ -64,12 +64,20 @@ the tray being scanned:
 
 ```sh
 ofscan batch new ~/slides/trips --name "Trips" --album "Family Trips" --dpi 600
-ofscan batch scan ~/slides/trips --fake demo-sweep --count 3   # real scanning: not yet
+ofscan batch scan ~/slides/trips --fake demo-sweep --count 3   # demo: replays a stored sweep
+ofscan batch scan ~/slides/trips                               # real scanner: one tray; use --count 1
+ofscan batch eject                       # between trays: eject the holder
+ofscan batch load                        # load the next holder (needs OPTICFILM_NEXT_STRIP=1)
 ofscan batch status ~/slides/trips
 ofscan batch accept-all ~/slides/trips
 ofscan batch export ~/slides/trips --out ~/Pictures/scans
 ```
 
+- **On the real scanner, scan one tray per command.** `--count` above 1 scans the same holder
+  again with no exchange in between; swap the holder with `eject` / `load`, then run `scan` again.
+- **One program on the scanner at a time.** A lock file in `~/.local/state/opticfilm-linux/`
+  keeps a second `ofscan` or the app out: `scan`, `eject` and `load` stop with "another program
+  is using the scanner" instead of queueing, and the app's status shows busy.
 - **Enhancement runs in the background** while the next tray scans. Slides with no review flag are
   accepted automatically; flagged ones (very dark, very bright, clipped, dusty) wait for you.
   A choice you make on a slide is never overwritten later.

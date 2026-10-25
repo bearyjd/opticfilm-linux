@@ -6,10 +6,11 @@ import pytest
 
 from controller_helpers import open_new, scan_when_ready, wait_until
 from opticfilm_linux.app.controller import Controller
+from opticfilm_linux.app.holder import ANOTHER_PROGRAM
 from opticfilm_linux.app.messages import POWER_CYCLE_ADVICE, holder_failed_text
 from opticfilm_linux.model import ScanSettings
 from opticfilm_linux.scanner.base import ScanError, ScannerStatus
-from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT, ScannerInUse
 from opticfilm_linux.scanner.fake import FakeScanner
 
 CAL_FAIL = f"{POWER_CYCLE_HINT} Driver said: phase cal_dark_b: CalibrationError: dark_b residual"
@@ -102,6 +103,23 @@ def test_a_read_only_batch_refuses_holder_commands(build, tmp_path):
     c.eject_holder()
     wait_until(c, lambda: c.state().banner is not None)
     assert "read-only" in c.state().banner.message and scanner.calls == []
+
+
+def test_a_move_refused_because_another_program_has_the_scanner_is_not_a_failure(
+    build, tmp_path, monkeypatch
+):
+    c, scanner = build()
+
+    def refused() -> None:
+        raise ScannerInUse("another program is using the scanner")
+
+    monkeypatch.setattr(scanner, "eject", refused)
+    open_new(c, tmp_path / "b")
+    wait_until(c, lambda: c.state().can_eject)
+    c.eject_holder()
+    wait_until(c, lambda: c.state().banner is not None)
+    banner = c.state().banner
+    assert banner.message == ANOTHER_PROGRAM and "lights go out" not in banner.message
 
 
 @pytest.mark.parametrize(

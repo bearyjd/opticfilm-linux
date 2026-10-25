@@ -15,9 +15,10 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
-from opticfilm_linux.scanner.base import Scanner
+from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT, ScannerInUse
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.select import real_scanner
+from opticfilm_linux.scanner.select import NEXT_STRIP_ENV, next_strip_enabled, real_scanner
 
 EXIT_INTERRUPTED = 130
 
@@ -54,6 +55,13 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     scan.add_argument("directory", type=Path)
     scan.add_argument("--fake", type=Path, help="replay the stored sweep in this folder")
     scan.add_argument("--count", type=int, default=1, help="how many trays to scan")
+
+    for name, text in (
+        ("eject", "eject the film holder"),
+        ("load", "load the next holder without a terminal (needs OPTICFILM_NEXT_STRIP=1)"),
+    ):
+        holder = sub.add_parser(name, help=text)
+        holder.add_argument("--fake", type=Path, help="use the stored sweep in this folder")
 
     accept = sub.add_parser("accept-all", help="accept every slide in every reviewed tray")
     accept.add_argument("directory", type=Path)
@@ -117,12 +125,43 @@ def _scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _holder(args: argparse.Namespace) -> int:
+    command = args.batch_command
+    if command == "load" and not next_strip_enabled():
+        raise ScanError(
+            "loading the next holder is not proven on this scanner yet; "
+            f"set {NEXT_STRIP_ENV}=1 to allow it, or load the holder by hand"
+        )
+    try:
+        scanner: Scanner = FakeScanner(args.fake) if args.fake is not None else real_scanner()
+        if not isinstance(scanner, HolderControl):
+            raise ScanError("this scanner cannot move the holder")
+        if command == "eject":
+            scanner.eject()
+            print("eject finished; check the holder has come out before you pull it")
+        else:
+            scanner.load_next_strip()
+            print("load finished; check the holder is seated before you scan")
+    except ScannerInUse:
+        raise  # nothing failed: no power-cycle advice
+    except ScanError as exc:
+        if POWER_CYCLE_HINT in str(exc):
+            raise
+        raise ScanError(f"{exc} {POWER_CYCLE_HINT}") from exc
+    except KeyboardInterrupt:  # the driver is already stopped; its state is unknown
+        print("interrupted: the holder may be half-moved; check the scanner", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    return 0
+
+
 def run_batch(args: argparse.Namespace) -> int:
     command = args.batch_command
     if command == "new":
         return _new(args)
     if command == "scan":
         return _scan(args)
+    if command in ("eject", "load"):
+        return _holder(args)
     if command == "status":
         with BatchStore.open(args.directory, readonly=True) as store:
             _print_status(store)
