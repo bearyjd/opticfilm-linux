@@ -5,9 +5,10 @@ from synthetic import make_sweep
 
 
 @pytest.fixture(autouse=True)
-def isolated_scanner_lock(tmp_path, monkeypatch):
-    """No test takes the scanner lock file in the real home folder."""
+def isolated_scanner_paths(tmp_path, monkeypatch):
+    """Keep scanner locks, logs and scan scratch files out of the real home folder."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
 
 @pytest.fixture
