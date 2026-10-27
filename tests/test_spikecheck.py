@@ -383,7 +383,9 @@ def test_diag_without_frame_images_fails(tmp_path):
     assert status(spikecheck.check_folder(run), "tiffs") == "FAIL"
 
 
-@pytest.mark.parametrize("text", ["process exited -11", "process exited 0x82", "exit code: 1"])
+@pytest.mark.parametrize(
+    "text", ["process exited -11", "process exited 0x82", "exit code: 1", "process exited 0.5"]
+)
 def test_odd_exit_values_in_result_md_fail(tmp_path, text):
     run = make_run(tmp_path / "r", exit_code=None)
     (run / "RESULT.md").write_text(text + "\n")
@@ -395,3 +397,18 @@ def test_grayscale_rgb_tiff_fails(tmp_path):
     for name in ("tray-f1.overscan.tiff", "tray-f1-ir.overscan.tiff"):
         tifffile.imwrite(run / name, np.zeros((6, 5), np.uint16))
     assert status(spikecheck.check_folder(run), "tiffs") == "FAIL"
+
+
+def test_last_signed_exit_mention_wins(tmp_path):
+    run = make_run(tmp_path / "r", exit_code=None)
+    (run / "RESULT.md").write_text("dry run exited 0\nreal run exited +130\n")
+    assert status(spikecheck.check_folder(run), "exit-code") == "FAIL"
+
+
+def test_orphan_ir_frame_fails_tiffs_and_diag_checks(tmp_path):
+    run = make_run(tmp_path / "r")
+    tifffile.imwrite(run / "tray-f2-ir.overscan.tiff", np.zeros((6, 5, 3), np.uint16))
+    results = spikecheck.check_folder(run)
+    assert status(results, "tiffs") == "FAIL"
+    assert status(results, "park") == "FAIL"
+    assert status(results, "poll-timeouts") == "FAIL"

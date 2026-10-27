@@ -23,7 +23,7 @@ PARKED_STATUS = "f855"
 
 _POSITION_RE = re.compile(r"completion poll settled \w+ \(captured \w+\) after (\d+(?:\.\d+)?)s")
 _CAL_WARNING_RE = re.compile(r"WARNING.*(?:cc55.*ad55|ad55.*cc55)", re.IGNORECASE)
-_RESULT_EXIT_RE = re.compile(r"\bexit(?:ed)?\s*(?:code\s*)?[:=]?\s*(-?\d\w*)", re.IGNORECASE)
+_RESULT_EXIT_RE = re.compile(r"\bexit(?:ed)?\s*(?:code\s*)?[:=]?\s*([+-]?\d[\w.]*)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -94,6 +94,10 @@ def _check_tiffs(folder: Path) -> Result:
     problems: list[str] = []
     if not rgb:
         problems.append("no RGB TIFF found (only IR planes)")
+    for path in files:
+        stem, _, rest = path.name.partition(".")
+        if stem.endswith("-ir") and f"{stem[:-3]}.{rest}".rstrip(".") not in rgb:
+            problems.append(f"{path.name}: IR plane has no RGB TIFF")
     frames = {name.partition(".")[0] for name in rgb}
     for diag in sorted(folder.glob("*.diag.json")):
         if (prefix := diag.name.partition(".")[0]) not in frames:
@@ -222,8 +226,8 @@ def _diags_by_frame(folder: Path) -> dict[str, dict | None]:
     """Every *.diag.json, plus a None entry for each RGB TIFF frame that has none."""
     diags = {p.name: _load_diag(p) for p in sorted(folder.glob("*.diag.json"))}
     for tiff in sorted(folder.iterdir()):
-        prefix = tiff.name.partition(".")[0]
-        if tiff.suffix.lower() in (".tif", ".tiff") and not prefix.endswith("-ir"):
+        prefix = tiff.name.partition(".")[0].removesuffix("-ir")
+        if tiff.suffix.lower() in (".tif", ".tiff"):
             diags.setdefault(f"{prefix}.diag.json", None)
     return diags
 
