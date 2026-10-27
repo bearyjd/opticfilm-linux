@@ -90,7 +90,7 @@ def _scan_body(args: argparse.Namespace) -> int:
             time.sleep(120)
         except KeyboardInterrupt:  # as the real driver: Ctrl-C fails closed and exits by itself
             print("ERROR of135i: interrupted; failing closed", flush=True)
-            return 130
+            return 1  # an ordinary failure code: only this program knows it stopped the driver
     if mode == "noisy":  # bytes that are not valid text, and a lot of them
         sys.stdout.buffer.write(b"\xff\xfe not text \x80\n")
         sys.stdout.buffer.write(b"poll timed out\n" * 400_000)

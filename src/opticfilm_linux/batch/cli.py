@@ -18,7 +18,7 @@ from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner
 from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT, ScannerInUse, confirm_scanner_reset
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.interrupted import ScannerRefused
+from opticfilm_linux.scanner.interrupted import CONFIRM_COMMAND, ScannerRefused
 from opticfilm_linux.scanner.select import NEXT_STRIP_ENV, next_strip_enabled, real_scanner
 
 EXIT_INTERRUPTED = 130
@@ -160,7 +160,11 @@ def _holder(args: argparse.Namespace) -> int:
             raise
         raise ScanError(f"{exc} {POWER_CYCLE_HINT}") from exc
     except KeyboardInterrupt:  # the driver is already stopped; its state is unknown
-        print("interrupted: the holder may be half-moved; check the scanner", file=sys.stderr)
+        print(
+            "interrupted: the holder may be half-moved. Power-cycle the scanner, load the "
+            f"holder again, then run: {CONFIRM_COMMAND}",
+            file=sys.stderr,
+        )
         return EXIT_INTERRUPTED
     return 0
 

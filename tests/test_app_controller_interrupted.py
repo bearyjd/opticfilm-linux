@@ -6,14 +6,14 @@ import pytest
 
 from controller_helpers import open_new, wait_until
 from opticfilm_linux.app.controller import Controller
-from opticfilm_linux.app.holder import SCANNER_INTERRUPTED
+from opticfilm_linux.app.holder import ANOTHER_PROGRAM, REFUSED, SCANNER_INTERRUPTED
 from opticfilm_linux.app.messages import scanner_text
 from opticfilm_linux.app.state import build_state
 from opticfilm_linux.scanner import driver as driver_module
 from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.interrupted import ScannerInterrupted
+from opticfilm_linux.scanner.interrupted import ScannerInterrupted, ScannerRefused
 
 
 class GuardedScanner(FakeScanner):
@@ -124,7 +124,22 @@ def test_confirm_is_refused_while_another_program_holds_the_scanner(build, tmp_p
     finally:
         release.set()
         thread.join(10)
+    assert controller.state().banner.message == ANOTHER_PROGRAM
     assert interrupted.is_pending()
+
+
+def test_a_refusal_that_is_not_an_interruption_says_so(build, tmp_path, monkeypatch):
+    controller, scanner = build()
+    open_new(controller, tmp_path / "b")
+    wait_until(controller, lambda: controller.state().can_eject)
+
+    def unwritable() -> None:
+        raise ScannerRefused("cannot record that a scanner command is starting; refusing")
+
+    monkeypatch.setattr(scanner, "eject", unwritable)
+    controller.eject_holder()
+    wait_until(controller, lambda: controller.state().banner is not None)
+    assert controller.state().banner.message == REFUSED
 
 
 def test_the_backend_refusal_type_is_a_scan_error():

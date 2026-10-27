@@ -15,7 +15,7 @@ from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError
 from opticfilm_linux.scanner.base import HolderControl, ScanError, ScannerStatus
 from opticfilm_linux.scanner.driver import ScannerInUse, confirm_scanner_reset
-from opticfilm_linux.scanner.interrupted import ScannerRefused
+from opticfilm_linux.scanner.interrupted import ScannerInterrupted, ScannerRefused
 
 ANOTHER_PROGRAM = "Another program is using the scanner. Close it or wait for it to finish."
 WAIT_SCAN = "Wait for the scan to finish"
@@ -25,6 +25,7 @@ SCANNER_INTERRUPTED = (
     "A scan or holder move was cut off, so nothing moves the scanner until you confirm it was "
     "reset: power-cycle it, load the holder again, then press Confirm scanner reset."
 )
+REFUSED = "The scanner command was refused before it started; nothing moved. See Details."
 NEXT_STRIP_OFF = (
     "Load next holder is switched off: it is not proven on this scanner yet. "
     'Follow "How to load the scanner" instead.'
@@ -61,7 +62,8 @@ class HolderCommands:
             except ScannerInUse as exc:
                 self._set(_banner=Banner(ANOTHER_PROGRAM, f"ScannerInUse: {exc}"))
             except ScannerRefused as exc:  # refused before the driver started: not a failure
-                self._set(_banner=Banner(SCANNER_INTERRUPTED, f"{type(exc).__name__}: {exc}"))
+                text = SCANNER_INTERRUPTED if isinstance(exc, ScannerInterrupted) else REFUSED
+                self._set(_banner=Banner(text, f"{type(exc).__name__}: {exc}"))
             except ScanError as exc:
                 self._set(_banner=Banner(holder_failed_text(action), f"ScanError: {exc}"))
             finally:
@@ -94,6 +96,8 @@ class HolderCommands:
                 self._set(_banner=None)
             except ScannerInUse as exc:
                 self._set(_banner=Banner(ANOTHER_PROGRAM, f"ScannerInUse: {exc}"))
+            except ScannerRefused as exc:
+                self._set(_banner=Banner(REFUSED, f"ScannerRefused: {exc}"))
             finally:
                 if session is not None and session.poller is not None:
                     session.poller.poll()

@@ -173,3 +173,16 @@ def test_status_shows_the_interrupted_tray(tmp_path, sweep600_dir, capsys):
     _scan_interrupted_by(tmp_path, sweep600_dir, _interrupt).close()
     assert main(["batch", "status", str(tmp_path / "b")]) == 0
     assert INTERRUPTED_TEXT in capsys.readouterr().out
+
+
+def test_ctrl_c_during_a_holder_move_tells_how_to_confirm(monkeypatch, capsys):
+    class Interrupted:
+        def eject(self) -> None:
+            raise KeyboardInterrupt
+
+        def load_next_strip(self) -> None:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("opticfilm_linux.batch.cli.real_scanner", Interrupted)
+    assert main(["batch", "eject"]) == 130
+    assert "confirm-scanner --yes" in capsys.readouterr().err

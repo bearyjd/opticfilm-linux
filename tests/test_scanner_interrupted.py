@@ -72,7 +72,7 @@ def _alive(pid: int) -> bool:
         return False
 
 
-def _wait_for(path: Path, timeout: float = 20.0) -> None:
+def _wait_for(path: Path, timeout: float = 90.0) -> None:  # a loaded machine starts slowly
     deadline = time.monotonic() + timeout
     while not path.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -341,11 +341,19 @@ def test_a_scanning_process_that_dies_leaves_the_scanner_refusing(make, tmp_path
         time.sleep(0.3)
         child.send_signal(sig)
         child.wait(30)
+        _assert_refuses_everything(make(), tmp_path)
+        if sig == signal.SIGKILL:  # nothing stopped the driver: it is still running, orphaned
+            with pytest.raises(ScannerInUse, match="still running"):
+                confirm_scanner_reset()
+            assert interrupted.is_pending()
     finally:
         if child.poll() is None:
             child.kill()
         _kill_leftovers(pids_file)
-    _assert_refuses_everything(make(), tmp_path)
+    group = json.loads(pids_file.read_text())[0]  # the driver leads its own process group
+    deadline = time.monotonic() + 60
+    while driver_module._group_alive(group) and time.monotonic() < deadline:
+        time.sleep(0.1)  # until init has reaped the killed orphans
     assert confirm_scanner_reset() is True
     assert make().status() is ScannerStatus.READY
 
@@ -371,3 +379,102 @@ def test_a_dead_process_leaves_no_driver_behind_after_sigterm(tmp_path):
         if child.poll() is None:
             child.kill()
         _kill_leftovers(pids_file)
+
+
+# -- review follow-ups ----------------------------------------------------------------------
+
+
+def test_a_holder_move_clears_its_mark_while_still_holding_the_scanner(make, monkeypatch):
+    held: list[bool] = []
+    real_clear = interrupted.clear
+
+    def spy() -> None:
+        held.append(driver_module._HW_LOCK._thread.locked())
+        real_clear()
+
+    monkeypatch.setattr(interrupted, "clear", spy)
+    make().eject()
+    assert held == [True]
+
+
+def test_a_driver_exiting_with_128_plus_a_signal_is_cut_off(make, monkeypatch):
+    real_wait = subprocess.Popen.wait
+
+    def sigint_exit(proc, timeout=None):
+        real_wait(proc, timeout)
+        return 130 if proc.args[3:4] == ["eject"] else proc.returncode
+
+    monkeypatch.setattr(subprocess.Popen, "wait", sigint_exit)
+    with pytest.raises(ScanInterrupted):
+        make().eject()
+    assert interrupted.is_pending()
+
+
+def test_a_new_mark_shows_at_once_despite_a_cached_ready(make):
+    scanner = make()
+    assert scanner.status() is ScannerStatus.READY  # now cached
+    interrupted.begin("scan")  # another program was cut off meanwhile
+    assert scanner.status() is ScannerStatus.INTERRUPTED
+
+
+def test_the_mark_records_the_driver_process_group(make, tmp_path, monkeypatch):
+    groups: list[int | None] = []
+    real_popen = subprocess.Popen
+
+    class Spy(real_popen):
+        def wait(self, timeout=None):
+            if self.args[3:4] == ["eject"]:
+                groups.append(interrupted.driver_group())
+            return super().wait(timeout)
+
+    monkeypatch.setattr(driver_module.subprocess, "Popen", Spy)
+    make().eject()
+    assert groups and groups[0] is not None and groups[0] > 1
+
+
+def test_confirm_is_refused_when_the_lock_file_cannot_be_used(make, monkeypatch):
+    monkeypatch.setattr(driver_module._HW_LOCK, "_warned", False)  # restored afterwards
+    interrupted.begin("scan")
+
+    def unusable(_handle, _flags):
+        raise OSError("no locks on this file system")
+
+    monkeypatch.setattr(driver_module.fcntl, "flock", unusable)
+    with pytest.raises(interrupted.ScannerRefused, match="confirm refused"):
+        confirm_scanner_reset()
+    assert interrupted.is_pending()
+
+
+def test_the_mark_and_its_folder_reach_the_disk(monkeypatch):
+    synced: list[int] = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(interrupted.os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+    interrupted.begin("scan")
+    assert len(synced) == 2  # the file, then its folder (the rename)
+
+
+def test_marker_content_is_shown_short_and_printable():
+    path = interrupted.marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"command": "scan\x1b[31m" + "x" * 500, "started": "now"}))
+    text = interrupted.refusal_text()
+    assert "\x1b" not in text and len(text) < 600
+    path.write_text("[" * 100_000)  # not ours, and deeply nested
+    assert "details unreadable" in interrupted.refusal_text()
+
+
+def test_a_relative_state_home_is_ignored(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", "relative/state")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert interrupted.state_dir() == tmp_path / "home" / ".local" / "state" / "opticfilm-linux"
+
+
+def test_no_home_folder_counts_as_interrupted_and_refuses_to_start(monkeypatch):
+    def no_home():
+        raise RuntimeError("Could not determine home directory")
+
+    monkeypatch.delenv("XDG_STATE_HOME")
+    monkeypatch.setattr(interrupted.Path, "home", no_home)
+    assert interrupted.is_pending()
+    with pytest.raises(interrupted.ScannerRefused, match="refusing"):
+        interrupted.begin("scan")

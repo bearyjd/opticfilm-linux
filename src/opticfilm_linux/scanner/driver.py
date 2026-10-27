@@ -64,6 +64,7 @@ POWER_CYCLE_HINT = (
 )
 TERMINAL_LOAD_HINT = "The first load after power-on must be done in a terminal (of135i load)."
 HOLDER_TIMEOUT_S = STATUS_TIMEOUT_S * 6
+SIGNAL_EXIT_BASE = 128  # exit status 128 + n: the program ended because of signal n
 
 
 @dataclasses.dataclass(frozen=True)
@@ -206,6 +207,11 @@ class _HardwareLock:
             self._warned = True
             log.warning("cannot lock %s: other programs are not kept off the scanner", path)
 
+    @property
+    def holds_file(self) -> bool:
+        """True while this process owns the file lock (not merely its own thread lock)."""
+        return self._handle is not None
+
     def release(self) -> None:
         handle, self._handle = self._handle, None
         if handle is not None:
@@ -223,7 +229,7 @@ class _HardwareLock:
 _HW_LOCK = _HardwareLock()
 _LIVE: set[subprocess.Popen] = set()
 _SIGNALLED: set[subprocess.Popen] = set()  # drivers this program told to stop: cut off
-_LIVE_LOCK = threading.Lock()
+_LIVE_LOCK = threading.RLock()  # re-entrant: the SIGTERM handler may interrupt a holder
 
 
 def _stop_group(proc: subprocess.Popen) -> None:
@@ -310,11 +316,41 @@ def confirm_scanner_reset() -> bool:
             "another program is using the scanner; wait for it to finish, then confirm again"
         )
     try:
+        if not _HW_LOCK.holds_file:  # another program could be mid-command: never clear
+            raise ScannerRefused(
+                f"cannot lock {_lock_path()}, so another program may be using the scanner; "
+                "confirm refused"
+            )
+        group = interrupted.driver_group()
+        if group is not None and _group_alive(group):
+            raise ScannerInUse(
+                f"the driver of the cut-off command is still running (process group {group}); "
+                "wait for it to end or stop it, then confirm again"
+            )
         pending = interrupted.is_pending()
         interrupted.clear()
         return pending
     finally:
         _HW_LOCK.release()
+
+
+def _group_alive(group: int) -> bool:
+    try:
+        os.killpg(group, 0)  # signal 0: only asks whether the group exists
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _note_driver(command: str, group: int) -> None:
+    """Record the driver's process group in the mark (it runs in its own session, so it can
+    outlive this program). If that fails the mark stays as it was: still a refusal."""
+    try:
+        interrupted.note_driver(command, group)
+    except OSError:
+        log.warning("could not record driver group %s in %s", group, interrupted.marker_path())
 
 
 def _ended_by_itself() -> None:
@@ -384,7 +420,7 @@ class DriverScanner:
             interrupted.require_clear()  # refused before anything starts: nothing failed
             interrupted.begin("scan")
             try:
-                result = self._run(command, self._config.timeout_s, keep_log=True)
+                result = self._run(command, self._config.timeout_s, keep_log=True, journal="scan")
             except ScanError:
                 self._note_failure()  # a driver that did not finish: state unknown
                 self._keep_sidecars(work, failed=True)
@@ -428,14 +464,14 @@ class DriverScanner:
         with self._status_lock:
             if self._scanning.is_set():  # a scan began while this call waited for the lock
                 return ScannerStatus.BUSY
-            cached = self._status_cache
-            if cached is not None and time.monotonic() - cached[0] < STATUS_MAX_AGE_S:
-                return cached[1]
             if not self._hw_lock.acquire(blocking=False):
                 return ScannerStatus.BUSY  # a scan or eject holds the driver
             try:
                 if interrupted.is_pending():  # checked under the lock: never a live command's
                     return ScannerStatus.INTERRUPTED  # not cached, and no driver is run
+                cached = self._status_cache
+                if cached is not None and time.monotonic() - cached[0] < STATUS_MAX_AGE_S:
+                    return cached[1]
                 status = self._read_status()
                 self._status_cache = (time.monotonic(), status)  # before the lock is released
             finally:
@@ -461,9 +497,11 @@ class DriverScanner:
                 interrupted.require_clear()
                 interrupted.begin(args[0])
                 try:
-                    result = self._run(args, HOLDER_TIMEOUT_S, keep_log=True)
+                    result = self._run(args, HOLDER_TIMEOUT_S, keep_log=True, journal=args[0])
                 finally:
                     self._status_cache = None  # whatever happened, the old answer is stale
+                if not result.stopped:
+                    _ended_by_itself()  # still under the lock: never another command's mark
         except (ScannerInUse, ScannerRefused):
             raise  # the driver never ran: nothing to recover from
         except ScanError:
@@ -475,7 +513,6 @@ class DriverScanner:
         if result.stopped:
             self._note_failure()
             raise ScanInterrupted("the driver was stopped mid-move")
-        _ended_by_itself()
         if result.returncode != 0:
             self._note_failure()
             raise ScanError(f"{failure} Driver said: {_tail(result.output)}")
@@ -517,7 +554,12 @@ class DriverScanner:
         return status
 
     def _run(
-        self, args: Sequence[str], timeout: int, keep_log: bool, tail: int = OUTPUT_TAIL_BYTES
+        self,
+        args: Sequence[str],
+        timeout: int,
+        keep_log: bool,
+        tail: int = OUTPUT_TAIL_BYTES,
+        journal: str | None = None,  # the marked command: its driver's group joins the mark
     ) -> "_Result":
         env = dict(os.environ)
         if self._config.driver_dir is not None:
@@ -536,6 +578,8 @@ class DriverScanner:
                 )
                 with _LIVE_LOCK:
                     _LIVE.add(proc)
+                if journal is not None:
+                    _note_driver(journal, proc.pid)
                 try:
                     returncode = proc.wait(timeout=timeout)
                 except subprocess.TimeoutExpired as exc:
@@ -553,7 +597,8 @@ class DriverScanner:
                         _LIVE.discard(proc)
                         stopped = proc in _SIGNALLED
                         _SIGNALLED.discard(proc)
-            stopped = stopped or returncode < 0  # killed by a signal: it did not end by itself
+            # killed by a signal, or exited the way a program does when it was (128 + signal)
+            stopped = stopped or returncode < 0 or returncode >= SIGNAL_EXIT_BASE
             return _Result(returncode, _read_tail(sink_path, tail), stopped)
         finally:
             self._last_address = _address_in(sink_path) or self._last_address
