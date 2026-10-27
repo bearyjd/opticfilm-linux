@@ -42,13 +42,24 @@ VENDOR_HINTS = ("plustek", ".dll", ".exe", ".msi", "scanapi", "vendor")
 DEVICE_ARGS = {"--device=all", "--device=usb"}
 
 
-def sources(manifest: dict):
+def all_modules(manifest: dict):
+    """Every module, including nested ones; a module given as a file name is yielded as is."""
     for module in manifest.get("modules", []):
-        yield from module.get("sources", [])
+        yield module
+        if isinstance(module, dict):
+            yield from all_modules(module)
+
+
+def sources(manifest: dict):
+    for module in all_modules(manifest):
+        if isinstance(module, dict):
+            yield from module.get("sources", [])
 
 
 def lint_build(manifest: dict) -> list[str]:
-    commands = [c for m in manifest.get("modules", []) for c in m.get("build-commands", [])]
+    commands = [
+        c for m in all_modules(manifest) if isinstance(m, dict) for c in m.get("build-commands", [])
+    ]
     joined = "\n".join(commands)
     problems = []
     command = manifest.get("command", "")
@@ -81,7 +92,12 @@ def lint(manifest: dict, text: str) -> list[str]:
             problems.append(f"finish-arg not in the allow-list: {arg}")
     if manifest.get("base") != BASE_APP:
         problems.append(f"base must be {BASE_APP}")
-    scopes = [("top level", manifest)] + [(m.get("name"), m) for m in manifest.get("modules", [])]
+    for module in all_modules(manifest):
+        if not isinstance(module, dict):
+            problems.append(f"module given as a file reference, which is not linted: {module!r}")
+    scopes = [("top level", manifest)] + [
+        (m.get("name"), m) for m in all_modules(manifest) if isinstance(m, dict)
+    ]
     for name, scope in scopes:
         if "--share=network" in (scope.get("build-options") or {}).get("build-args", []):
             problems.append(f"{name}: network at build time")
@@ -90,6 +106,8 @@ def lint(manifest: dict, text: str) -> list[str]:
         url = src.get("url", "")
         if not url.startswith("https://"):
             problems.append(f"source url not https: {url!r}")
+        elif "@" in url.split("/")[2]:
+            problems.append("source url embeds credentials")
         if any(h in url.lower() for h in VENDOR_HINTS):
             problems.append(f"vendor material in source: {url!r}")
         if src.get("type") == "git" and not (
@@ -293,3 +311,44 @@ def test_launchers_match_project_scripts():
     for name, target in scripts.items():
         module, _, func = target.partition(":")
         assert f"from {module} import {func}" in commands and f"/app/bin/{name}" in commands
+
+
+def nest(m, module):
+    m["modules"][0]["modules"] = [module]
+
+
+def test_nested_unpinned_source_is_reported():
+    module = {"name": "x", "sources": [{"type": "git", "url": "https://example.org/x.git"}]}
+    assert any("pinned" in p for p in mutated(lambda m: nest(m, module)))
+
+
+def test_nested_build_network_is_reported():
+    module = {"name": "x", "build-options": {"build-args": ["--share=network"]}}
+    assert any("build time" in p for p in mutated(lambda m: nest(m, module)))
+
+
+def test_module_file_reference_is_reported():
+    assert any("file reference" in p for p in mutated(lambda m: m["modules"].append("other.json")))
+
+
+def test_url_with_credentials_is_reported():
+    def creds(m):
+        next(s for s in sources(m) if s["type"] == "git")["url"] = (
+            "https://user:pw@example.org/x.git"
+        )
+
+    assert any("credentials" in p for p in mutated(creds))
+
+
+def test_launcher_commands_write_runnable_scripts(tmp_path):
+    manifest = json.loads(MANIFEST.read_text())
+    commands = [
+        c for m in manifest["modules"] for c in m.get("build-commands", []) if "printf" in c
+    ]
+    (tmp_path / "bin").mkdir()
+    for command in commands:
+        subprocess.run(command.replace("/app", str(tmp_path)), shell=True, check=True)
+    for name in ("opticfilm", "ofscan"):
+        lines = (tmp_path / "bin" / name).read_text().splitlines()
+        assert lines[0] == "#!/bin/sh" and len(lines) == 2 and lines[1].endswith('"$@"')
+        subprocess.run(["sh", "-n", str(tmp_path / "bin" / name)], check=True)
