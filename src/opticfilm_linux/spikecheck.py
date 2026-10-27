@@ -23,7 +23,7 @@ PARKED_STATUS = "f855"
 
 _POSITION_RE = re.compile(r"completion poll settled \w+ \(captured \w+\) after (\d+(?:\.\d+)?)s")
 _CAL_WARNING_RE = re.compile(r"WARNING.*(?:cc55.*ad55|ad55.*cc55)", re.IGNORECASE)
-_RESULT_EXIT_RE = re.compile(r"\bexit(?:ed)?\s*(?:code\s*)?[:=]?\s*(\d+)", re.IGNORECASE)
+_RESULT_EXIT_RE = re.compile(r"\bexit(?:ed)?\s*(?:code\s*)?[:=]?\s*(-?\d\w*)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -71,17 +71,18 @@ def _check_exit_code(folder: Path, given: int | None) -> Result:
     return Result("exit-code", "FAIL", f"command exit code {value!r}, expected 0")
 
 
-def _tiff_problem(path: Path) -> tuple[str | None, tuple | None]:
+def _tiff_problem(path: Path, is_rgb: bool) -> tuple[str | None, tuple | None]:
     try:
-        with tifffile.TiffFile(path) as tif:
-            page = tif.pages[0]
-            shape, dtype = tuple(page.shape), page.dtype
+        pixels = tifffile.imread(path)  # decodes the pixel data: a truncated file must fail
+        shape, dtype = tuple(pixels.shape), pixels.dtype
     except Exception as exc:  # any unreadable file is a failed criterion, not a crash
         return f"{path.name}: unreadable ({type(exc).__name__})", None
     if str(dtype) != "uint16":
         return f"{path.name}: dtype {dtype}, expected uint16", None
     if not shape or 0 in shape:
         return f"{path.name}: empty image {shape}", None
+    if is_rgb and (len(shape) != 3 or shape[-1] != 3):
+        return f"{path.name}: shape {shape}, expected (H, W, 3)", None
     return None, shape
 
 
@@ -93,9 +94,13 @@ def _check_tiffs(folder: Path) -> Result:
     problems: list[str] = []
     if not rgb:
         problems.append("no RGB TIFF found (only IR planes)")
+    frames = {name.partition(".")[0] for name in rgb}
+    for diag in sorted(folder.glob("*.diag.json")):
+        if (prefix := diag.name.partition(".")[0]) not in frames:
+            problems.append(f"{diag.name}: no RGB TIFF for frame {prefix}")
     shapes: dict[str, tuple] = {}
     for path in files:
-        problem, shape = _tiff_problem(path)
+        problem, shape = _tiff_problem(path, path.name in rgb)
         if problem:
             problems.append(problem)
         elif shape is not None:

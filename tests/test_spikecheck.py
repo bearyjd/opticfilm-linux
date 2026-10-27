@@ -365,3 +365,33 @@ def test_non_ascii_log_text_does_not_break_cli_output(tmp_path):
     line = "WARNING of135i: timed out (last cc55, want ad55) caf\u00e9\n"
     run = make_run(tmp_path / "r", log_extra=line)
     assert run_cli(run).returncode == 1
+
+
+def test_truncated_tiff_fails(tmp_path):
+    run = make_run(tmp_path / "r")
+    path = run / "tray-f1.overscan.tiff"
+    with tifffile.TiffFile(path) as tif:
+        cut = tif.pages[0].dataoffsets[0]
+    path.write_bytes(path.read_bytes()[:cut])
+    assert status(spikecheck.check_folder(run), "tiffs") == "FAIL"
+
+
+def test_diag_without_frame_images_fails(tmp_path):
+    run = make_run(tmp_path / "r", frames=2)
+    for name in ("tray-f2.overscan.tiff", "tray-f2-ir.overscan.tiff"):
+        (run / name).unlink()
+    assert status(spikecheck.check_folder(run), "tiffs") == "FAIL"
+
+
+@pytest.mark.parametrize("text", ["process exited -11", "process exited 0x82", "exit code: 1"])
+def test_odd_exit_values_in_result_md_fail(tmp_path, text):
+    run = make_run(tmp_path / "r", exit_code=None)
+    (run / "RESULT.md").write_text(text + "\n")
+    assert status(spikecheck.check_folder(run), "exit-code") == "FAIL"
+
+
+def test_grayscale_rgb_tiff_fails(tmp_path):
+    run = make_run(tmp_path / "r")
+    for name in ("tray-f1.overscan.tiff", "tray-f1-ir.overscan.tiff"):
+        tifffile.imwrite(run / name, np.zeros((6, 5), np.uint16))
+    assert status(spikecheck.check_folder(run), "tiffs") == "FAIL"
