@@ -29,9 +29,11 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
     TrayStage,
 )
-from opticfilm_linux.batch.store import BatchError, BatchStore
+from opticfilm_linux.batch.store import INTERRUPTED_SCAN, BatchError, BatchStore
 from opticfilm_linux.model import ScanSettings
+from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import Scanner, ScannerNotReady, ScannerStatus
+from opticfilm_linux.scanner.interrupted import ScanInterrupted
 from opticfilm_linux.sweepstore import save_sweep
 
 RESCANNABLE = (TrayStage.REVIEW, TrayStage.FAILED)
@@ -168,10 +170,13 @@ class BatchRunner:
         try:
             save_sweep(self._scanner.scan_holder(settings), tmp)
             os.replace(tmp, final)
-        except Exception as exc:  # a failed scan must end as a visible FAILED tray, never vanish
+        except BaseException as exc:  # a failed scan must end as a visible FAILED tray
             if tmp.is_dir() and not tmp.is_symlink():
-                shutil.rmtree(tmp, ignore_errors=True)
-            self._fail(number, _describe(exc), (TrayStage.SCANNING,))
+                shutil.rmtree(tmp, ignore_errors=True)  # a partial payload never stays
+            if not isinstance(exc, Exception):
+                raise  # cut off (Ctrl-C): _report_crash flags the tray as interrupted
+            message = str(exc) if isinstance(exc, ScanInterrupted) else _describe(exc)
+            self._fail(number, message, (TrayStage.SCANNING,))
             return
         self._store.update_tray(number, stage=TrayStage.SCANNED)
         self._emit(TrayStageChanged(number, TrayStage.SCANNED))
@@ -214,6 +219,8 @@ class BatchRunner:
 
     def _require_ready(self) -> None:
         status = self._scanner.status()
+        if status is ScannerStatus.INTERRUPTED:
+            raise interrupted.ScannerInterrupted(interrupted.refusal_text())
         if status is not ScannerStatus.READY:
             raise ScannerNotReady(f"the scanner is not ready ({status})")
 
@@ -262,15 +269,18 @@ class BatchRunner:
         try:
             error = None if future.cancelled() else future.exception()
             if error is not None:
-                self._report_crash(number, error)
+                with self._lock:
+                    scan = future in self._scans
+                self._report_crash(number, error, scan)
         finally:
             with self._lock:
                 self._pending.discard(future)
                 self._scans.discard(future)
 
-    def _report_crash(self, number: int, error: BaseException) -> None:
+    def _report_crash(self, number: int, error: BaseException, scan: bool = False) -> None:
         """A job died outside its own error handling: never leave the tray stuck or silent."""
-        message = _describe(error)  # type: ignore[arg-type]
+        cut_off = scan and not isinstance(error, Exception)  # a scan stopped by Ctrl-C
+        message = INTERRUPTED_SCAN if cut_off else _describe(error)
         log.error("job for tray %s crashed: %s", number, message)
         try:
             applied = self._store.update_tray_if(

@@ -85,6 +85,7 @@ class AppState:
     can_load_next: bool = False
     next_strip_enabled: bool = False  # the experimental non-interactive load is switched on
     holder_busy: bool = False  # an eject or load is queued or running
+    can_confirm_scanner: bool = False  # a command was cut off; the owner may confirm a reset
 
 
 EMPTY_STATE = AppState(
@@ -188,5 +189,7 @@ def build_state(
         can_eject=idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY),
         can_load_next=idle and next_strip and scanner is ScannerStatus.NOT_READY,
         next_strip_enabled=next_strip,
+        can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED
+        and not (holder_busy or scan_pending or readonly),
         holder_busy=holder_busy,
     )

@@ -112,6 +112,11 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
 - **One program on the scanner at a time.** A lock file in `~/.local/state/opticfilm-linux/`
   keeps a second `ofscan` or the app out: `scan`, `eject` and `load` stop with "another program
   is using the scanner" instead of queueing, and the app's status shows busy.
+- **A scan or holder move cut off mid-run** (Ctrl-C, a closed terminal, a killed program) leaves
+  the scanner in an unknown state. The tray is flagged `interrupted: needs power-cycle + reload +
+  rescan` and is never enhanced or exported, and every `scan`, `eject` and `load` (and the app's
+  buttons) is refused until you power-cycle the scanner, load the holder again and run
+  `ofscan batch confirm-scanner --yes` (in the app: **Confirm scanner reset…**). Then rescan the tray.
 - **Enhancement runs in the background** while the next tray scans. Slides with no review flag are
   accepted automatically; flagged ones (very dark, very bright, clipped, dusty) wait for you.
   A choice you make on a slide is never overwritten later.
