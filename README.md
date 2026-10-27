@@ -42,8 +42,8 @@ Not verified, or known problems:
 - Dust repair is done at 8-bit precision: repaired pixels lose 16-bit depth (the rest of the
   pipeline stays 16-bit).
 
-The tool never treats the word "ejected" as proof that the holder was released; check the holder
-physically.
+Do not treat the word "ejected" in any output as proof that the holder was released; check the
+holder physically.
 
 ### Recovering after a failed scan
 
@@ -52,7 +52,11 @@ If a scan fails, is interrupted, or the scanner behaves oddly, stop sending comm
 1. Power-cycle the scanner: switch it off and leave it off until its lights go out, then switch it
    on.
 2. Load the holder again.
-3. Rescan that tray from the start.
+3. Rescan that tray from the start, only once the physical state is confirmed (see the checklist).
+
+This is a cautious procedure from single-unit experience, not a validated repair. After an
+interrupted or partly moved scan, the holder may still be retained: do not force it, and do not
+send further commands until you know where it is.
 
 See also the [hardware checklist](docs/hardware-checklist.md).
 
