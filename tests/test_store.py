@@ -114,7 +114,10 @@ def test_recover_interrupted_scan_marks_failed_and_removes_tmp(tmp_path):
     (finished / "rgb.npy").write_bytes(b"complete")
     store.recover_interrupted()
     trays = store.snapshot().trays
-    assert trays[0].stage is TrayStage.FAILED and trays[0].error == "scan was interrupted"
+    assert (
+        trays[0].stage is TrayStage.FAILED
+        and trays[0].error == "interrupted: needs power-cycle + reload + rescan"
+    )
     assert not tmp.exists()
     assert (finished / "rgb.npy").read_bytes() == b"complete"
     assert trays[1].stage is TrayStage.REVIEW

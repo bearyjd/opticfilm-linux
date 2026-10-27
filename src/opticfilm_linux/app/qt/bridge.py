@@ -178,6 +178,7 @@ class Bridge(QObject):
     canEject = _p(bool, changed, lambda s, _: s.can_eject)  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
     holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
+    canConfirmScanner = _p(bool, changed, lambda s, _: s.can_confirm_scanner)  # noqa: N815
     scannerStatus = _p(str, changed, lambda s, _: s.scanner.value)  # noqa: N815
     scanPending = _p(bool, changed, lambda s, _: s.scan_pending)  # noqa: N815
     selectedTray = _p(int, changed, lambda s, _: -1 if s.selected is None else s.selected)  # noqa: N815
@@ -285,6 +286,10 @@ class Bridge(QObject):
     @Slot()
     def loadNextHolder(self) -> None:  # noqa: N802
         self._controller.load_next_holder()
+
+    @Slot()
+    def confirmScannerReset(self) -> None:  # noqa: N802
+        self._controller.confirm_scanner_reset()
 
     @Slot()
     def copyLoadCommand(self) -> None:  # noqa: N802

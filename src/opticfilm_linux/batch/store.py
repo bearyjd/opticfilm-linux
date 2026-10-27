@@ -16,10 +16,11 @@ from typing import Literal
 
 from opticfilm_linux.batch.manifest import from_json, to_json
 from opticfilm_linux.batch.model import BatchDefaults, BatchManifest, TrayRecord, TrayStage
+from opticfilm_linux.scanner.interrupted import INTERRUPTED_TEXT
 
 MANIFEST_FILE = "batch.json"
 LOCK_FILE = "batch.lock"
-INTERRUPTED_SCAN = "scan was interrupted"
+INTERRUPTED_SCAN = INTERRUPTED_TEXT  # the flag of a tray whose scan was cut off
 
 
 class BatchError(ValueError):
@@ -205,6 +206,11 @@ def _release_lock(handle) -> None:
     if handle is not None:
         fcntl.flock(handle, fcntl.LOCK_UN)
         handle.close()
+
+
+def is_interrupted(tray: TrayRecord) -> bool:
+    """A tray whose scan was cut off: whatever it holds is partial, and only a rescan clears it."""
+    return tray.stage is TrayStage.FAILED and (tray.error or "").startswith(INTERRUPTED_SCAN)
 
 
 def _recovered(tray: TrayRecord) -> TrayRecord:

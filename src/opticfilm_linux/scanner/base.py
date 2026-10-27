@@ -26,6 +26,7 @@ class ScannerStatus(StrEnum):
     READY = "ready"
     ERROR = "error"
     UNKNOWN = "unknown"  # the backend cannot tell
+    INTERRUPTED = "interrupted"  # a command was cut off: the owner must confirm a reset
 
 
 @dataclass(frozen=True)

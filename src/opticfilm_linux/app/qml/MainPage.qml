@@ -43,6 +43,14 @@ Kirigami.Page {
         subtitle: qsTr("The old scan is kept on disk, but this tray's slide settings and choices are reset and it is enhanced again.")
         onConfirmed: bridge.rescan(bridge.selectedTray)
     }
+    ConfirmDialog {
+        id: confirmScannerDialog
+
+        objectName: "confirmScannerDialog"
+        title: qsTr("Confirm the scanner was reset?")
+        subtitle: qsTr("A scan or holder move was cut off, so the scanner's state is unknown. Only confirm after you have switched the scanner off until its lights went out, switched it on, and loaded the holder again. Then rescan the interrupted tray.")
+        onConfirmed: bridge.confirmScannerReset()
+    }
     ExportDialog {
         id: exportDialog
     }
@@ -135,6 +143,14 @@ Kirigami.Page {
                 text: qsTr("How to load the scanner")
                 icon.name: "help-contextual"
                 onClicked: loadHelpDialog.open()
+            }
+            QQC2.Button {
+                objectName: "confirmScannerButton"
+                visible: !bridge.readonly && bridge.scannerStatus === "interrupted"
+                enabled: bridge.canConfirmScanner
+                text: qsTr("Confirm scanner reset…")
+                icon.name: "dialog-ok"
+                onClicked: confirmScannerDialog.open()
             }
             QQC2.Button {
                 objectName: "ejectButton"

@@ -318,3 +318,41 @@ def test_the_help_dialog_hides_the_power_steps_while_a_scan_runs(qapp, sweep600_
         gate.set()
         bridge.shutdown()
         engine.deleteLater()
+
+
+def test_an_interrupted_scanner_offers_only_confirm_and_the_dialog_clears_it(
+    qapp, sweep600_dir, tmp_path
+):
+    from opticfilm_linux.scanner import interrupted
+    from opticfilm_linux.scanner.base import ScannerStatus
+    from opticfilm_linux.scanner.fake import FakeScanner
+
+    class Guarded(FakeScanner):
+        def status(self) -> ScannerStatus:
+            return ScannerStatus.INTERRUPTED if interrupted.is_pending() else ScannerStatus.READY
+
+    interrupted.begin("scan")
+    controller = Controller(lambda _dpi: Guarded(sweep600_dir))
+    bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
+    provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
+    engine, warnings = create_engine(bridge, provider)
+    try:
+        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Cut", "", "", 600)
+        _wait(bridge, lambda: bridge.hasBatch and bridge.canConfirmScanner)
+        root = engine.rootObjects()[0]
+        _wait(bridge, lambda: _prop(root, "confirmScannerButton", "enabled") is True)
+        assert not bridge.canScan and not bridge.canEject and not bridge.canLoadNext
+        assert _prop(root, "ejectButton", "enabled") is False
+        _wait(bridge, lambda: "cut off" in (_prop(root, "scannerStatusText", "text") or ""))
+        _click(root, "confirmScannerButton")
+        dialog = root.findChild(QObject, "confirmScannerDialog")
+        _wait(bridge, lambda: dialog.property("opened"))
+        assert interrupted.is_pending()  # opening the dialog changes nothing
+        QMetaObject.invokeMethod(dialog, "accept")
+        _wait(bridge, lambda: bridge.canScan)
+        assert not interrupted.is_pending()
+        assert not _prop(root, "confirmScannerButton", "visible")
+        assert not bridge.hasBanner and warnings == []
+    finally:
+        bridge.shutdown()
+        engine.deleteLater()

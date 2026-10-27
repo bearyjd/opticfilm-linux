@@ -22,7 +22,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.previews import make_preview, write_preview
-from opticfilm_linux.batch.store import BatchError, BatchStore
+from opticfilm_linux.batch.store import BatchError, BatchStore, is_interrupted
 from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.split import SlideSplitError, is_blank, split_slides
@@ -173,13 +173,20 @@ def enhance_tray(
     version = tray.sweep_version
     started = store.update_tray_if(
         number,
-        lambda t: t.stage is not TrayStage.SCANNING and t.sweep_version == version,
+        lambda t: (
+            t.stage is not TrayStage.SCANNING
+            and not is_interrupted(t)
+            and t.sweep_version == version
+        ),
         stage=TrayStage.ENHANCING,
         error=None,
     )
     if not started:
-        if _tray(store.snapshot(), number).stage is TrayStage.SCANNING:
+        now = _tray(store.snapshot(), number)
+        if now.stage is TrayStage.SCANNING:
             raise BatchError(f"tray {number} is still scanning")
+        if is_interrupted(now):  # a partial payload is never treated as a finished tray
+            raise BatchError(f"tray {number} was interrupted; rescan it")
         return  # the tray was re-scanned meanwhile; a newer job will handle it
 
     def current(t: TrayRecord) -> bool:

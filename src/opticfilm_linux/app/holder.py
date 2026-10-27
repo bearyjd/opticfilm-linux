@@ -13,13 +13,18 @@ from opticfilm_linux.app.messages import holder_failed_text
 from opticfilm_linux.app.state import Banner
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError
-from opticfilm_linux.scanner.base import HolderControl, ScanError
-from opticfilm_linux.scanner.driver import ScannerInUse
+from opticfilm_linux.scanner.base import HolderControl, ScanError, ScannerStatus
+from opticfilm_linux.scanner.driver import ScannerInUse, confirm_scanner_reset
+from opticfilm_linux.scanner.interrupted import ScannerRefused
 
 ANOTHER_PROGRAM = "Another program is using the scanner. Close it or wait for it to finish."
 WAIT_SCAN = "Wait for the scan to finish"
 WAIT_HOLDER = "Wait for the eject/load to finish"
 WAIT_EXPORT = "Wait for the export to finish, then press Eject again"
+SCANNER_INTERRUPTED = (
+    "A scan or holder move was cut off, so nothing moves the scanner until you confirm it was "
+    "reset: power-cycle it, load the holder again, then press Confirm scanner reset."
+)
 NEXT_STRIP_OFF = (
     "Load next holder is switched off: it is not proven on this scanner yet. "
     'Follow "How to load the scanner" instead.'
@@ -55,16 +60,19 @@ class HolderCommands:
                 move(session.holder)
             except ScannerInUse as exc:
                 self._set(_banner=Banner(ANOTHER_PROGRAM, f"ScannerInUse: {exc}"))
+            except ScannerRefused as exc:  # refused before the driver started: not a failure
+                self._set(_banner=Banner(SCANNER_INTERRUPTED, f"{type(exc).__name__}: {exc}"))
             except ScanError as exc:
                 self._set(_banner=Banner(holder_failed_text(action), f"ScanError: {exc}"))
             finally:
                 if session.poller is not None:
                     session.poller.poll()  # ask again now: the holder moved, or the move failed
 
+        cut_off = self._scanner_cut_off()  # read outside the lock: the poller may report
         with self._lock:
             if self._holder_busy:
                 return  # a second click while one is pending
-            refusal = self._holder_refusal()
+            refusal = SCANNER_INTERRUPTED if cut_off else self._holder_refusal()
             self._holder_busy = refusal is None
         if refusal is not None:
             self._set(_banner=Banner(refusal))
@@ -74,6 +82,36 @@ class HolderCommands:
         with self._lock:
             if future is not None and not future.done():
                 self._holder_future = future
+
+    def confirm_scanner_reset(self) -> None:
+        """The owner says the scanner was power-cycled and reloaded. Never talks to the scanner;
+        refused while a scan or holder move is queued or running, here or in another program."""
+
+        def job(_runner: BatchRunner) -> None:
+            session = self._session
+            try:
+                confirm_scanner_reset()
+                self._set(_banner=None)
+            except ScannerInUse as exc:
+                self._set(_banner=Banner(ANOTHER_PROGRAM, f"ScannerInUse: {exc}"))
+            finally:
+                if session is not None and session.poller is not None:
+                    session.poller.poll()
+
+        with self._lock:
+            refusal = WAIT_HOLDER if self._holder_busy else self._holder_refusal()
+            self._holder_busy = refusal is None
+        if refusal is not None:
+            self._set(_banner=Banner(refusal))
+            return
+        message = "Could not confirm the scanner reset"
+        future = self._run_writer(job, message, pool=self._holder_pool)
+        self._track(future, lambda: self._set(_holder_busy=False, _holder_future=None))
+
+    def _scanner_cut_off(self) -> bool:
+        session = self._session
+        poller = session.poller if session is not None else None
+        return poller is not None and poller.current() is ScannerStatus.INTERRUPTED
 
     def _holder_refusal(self) -> str | None:
         """Why a movement cannot start now; called under the lock."""

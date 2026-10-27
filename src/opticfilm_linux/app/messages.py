@@ -37,6 +37,11 @@ _SCANNER = {
         'says the scanner driver was not found, see "How to load the scanner" / the README '
         "(OPTICFILM_DRIVER_DIR)."
     ),
+    ScannerStatus.INTERRUPTED: (
+        "A scan or holder move was cut off, so the scanner's state is unknown. Power-cycle it "
+        "(off until the lights go out, then on), load the holder again, press Confirm scanner "
+        "reset, then rescan the interrupted tray."
+    ),
 }
 
 POWER_CYCLE_ADVICE = (

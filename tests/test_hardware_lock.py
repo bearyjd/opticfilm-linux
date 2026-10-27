@@ -76,13 +76,16 @@ def test_the_lock_is_free_again_after_an_eject_and_after_a_driver_failure(
     assert free()
 
 
-def test_an_unwritable_lock_location_does_not_stop_a_single_program(
-    scanner, tmp_path, monkeypatch, caplog
-):
+def test_an_unwritable_state_location_refuses_holder_moves(scanner, tmp_path, monkeypatch, caplog):
+    """Changed with the interrupted-scan mark: a move that could not be recorded as started
+    could be cut off unnoticed, so it is refused (fail closed) instead of run unlocked."""
+    from opticfilm_linux.scanner.interrupted import ScannerRefused
+
     blocker = tmp_path / "not-a-folder"
     blocker.write_text("x")
     monkeypatch.setenv("XDG_STATE_HOME", str(blocker))
-    scanner.eject()  # works on the in-process lock alone
+    with pytest.raises(ScannerRefused, match="refusing"):
+        scanner.eject()
     assert "lock" in caplog.text.lower()
 
 

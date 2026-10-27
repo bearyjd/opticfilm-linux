@@ -16,8 +16,9 @@ from opticfilm_linux.batch.model import (
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner
-from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT, ScannerInUse
+from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT, ScannerInUse, confirm_scanner_reset
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.interrupted import ScannerRefused
 from opticfilm_linux.scanner.select import NEXT_STRIP_ENV, next_strip_enabled, real_scanner
 
 EXIT_INTERRUPTED = 130
@@ -62,6 +63,16 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     ):
         holder = sub.add_parser(name, help=text)
         holder.add_argument("--fake", type=Path, help="use the stored sweep in this folder")
+
+    confirm = sub.add_parser(
+        "confirm-scanner",
+        help="after a cut-off scan or holder move: confirm the scanner was reset",
+    )
+    confirm.add_argument(
+        "--yes",
+        action="store_true",
+        help="I power-cycled the scanner and loaded the holder again",
+    )
 
     accept = sub.add_parser("accept-all", help="accept every slide in every reviewed tray")
     accept.add_argument("directory", type=Path)
@@ -142,8 +153,8 @@ def _holder(args: argparse.Namespace) -> int:
         else:
             scanner.load_next_strip()
             print("load finished; check the holder is seated before you scan")
-    except ScannerInUse:
-        raise  # nothing failed: no power-cycle advice
+    except (ScannerInUse, ScannerRefused):
+        raise  # the driver never started, nothing failed: its own words say what to do
     except ScanError as exc:
         if POWER_CYCLE_HINT in str(exc):
             raise
@@ -154,10 +165,32 @@ def _holder(args: argparse.Namespace) -> int:
     return 0
 
 
+CONFIRM_STEPS = (
+    "Only confirm after you have done all of this:\n"
+    "  1. power-cycle the scanner (off until the lights go out, then on);\n"
+    "  2. load the holder again (of135i load);\n"
+    "then run: ofscan batch confirm-scanner --yes, and rescan the interrupted tray."
+)
+
+
+def _confirm_scanner(args: argparse.Namespace) -> int:
+    """Clear the interrupted mark; never talks to the scanner. Without --yes nothing changes."""
+    if not args.yes:
+        print(CONFIRM_STEPS, file=sys.stderr)
+        return 2
+    if confirm_scanner_reset():
+        print("confirmed: scans and holder moves are allowed again; rescan the interrupted tray")
+    else:
+        print("nothing to confirm: no scanner command was cut off")
+    return 0
+
+
 def run_batch(args: argparse.Namespace) -> int:
     command = args.batch_command
     if command == "new":
         return _new(args)
+    if command == "confirm-scanner":
+        return _confirm_scanner(args)
     if command == "scan":
         return _scan(args)
     if command in ("eject", "load"):
