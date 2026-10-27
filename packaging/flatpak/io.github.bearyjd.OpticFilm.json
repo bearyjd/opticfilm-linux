@@ -1,0 +1,91 @@
+{
+  "app-id": "io.github.bearyjd.OpticFilm",
+  "runtime": "org.kde.Platform",
+  "runtime-version": "6.8",
+  "sdk": "org.kde.Sdk",
+  "base": "io.qt.PySide.BaseApp",
+  "base-version": "6.8",
+  "command": "opticfilm",
+  "x-notes": [
+    "DRAFT, NOT BUILDABLE YET: every PLACEHOLDER_* value below must be replaced by a real pin before a build.",
+    "The scanner driver is an EXTERNAL dependency (github.com/cgillinger/opticfilm135i-linux), fetched by pinned commit. Nothing from Plustek or the vendor driver is vendored here.",
+    "--device=all is the broad, known-working choice for raw USB access (07b3:1436); narrowing to --device=usb is untested on this scanner."
+  ],
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=all",
+    "--filesystem=xdg-pictures",
+    "--env=OPTICFILM_DRIVER_DIR=/app/share/opticfilm135i-linux"
+  ],
+  "modules": [
+    {
+      "name": "python-dependencies",
+      "buildsystem": "simple",
+      "build-commands": [
+        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} --no-deps numpy pillow tifffile opencv-python-headless pyusb"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/numpy-PLACEHOLDER_VERSION.whl",
+          "sha256": "PLACEHOLDER_SHA256_NUMPY"
+        },
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/pillow-PLACEHOLDER_VERSION.whl",
+          "sha256": "PLACEHOLDER_SHA256_PILLOW"
+        },
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/tifffile-PLACEHOLDER_VERSION.whl",
+          "sha256": "PLACEHOLDER_SHA256_TIFFFILE"
+        },
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/opencv_python_headless-PLACEHOLDER_VERSION.whl",
+          "sha256": "PLACEHOLDER_SHA256_OPENCV"
+        },
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/pyusb-PLACEHOLDER_VERSION.whl",
+          "sha256": "PLACEHOLDER_SHA256_PYUSB"
+        }
+      ]
+    },
+    {
+      "name": "opticfilm135i-linux",
+      "buildsystem": "simple",
+      "build-commands": [
+        "mkdir -p /app/share/opticfilm135i-linux",
+        "cp -r . /app/share/opticfilm135i-linux/"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/cgillinger/opticfilm135i-linux.git",
+          "commit": "PLACEHOLDER_COMMIT_DRIVER"
+        }
+      ]
+    },
+    {
+      "name": "opticfilm-linux",
+      "buildsystem": "simple",
+      "build-commands": [
+        "mkdir -p /app/lib/opticfilm /app/bin",
+        "cp -r src/opticfilm_linux /app/lib/opticfilm/",
+        "printf '#!/bin/sh\\nPYTHONPATH=/app/lib/opticfilm exec python3 -c \"from opticfilm_linux.app.qt.app import main; raise SystemExit(main())\" \"$@\"\\n' > /app/bin/opticfilm",
+        "printf '#!/bin/sh\\nPYTHONPATH=/app/lib/opticfilm exec python3 -c \"from opticfilm_linux.cli import main; raise SystemExit(main())\" \"$@\"\\n' > /app/bin/ofscan",
+        "chmod +x /app/bin/opticfilm /app/bin/ofscan"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/bearyjd/opticfilm-linux.git",
+          "commit": "PLACEHOLDER_COMMIT_APP"
+        }
+      ]
+    }
+  ]
+}
