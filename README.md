@@ -3,7 +3,9 @@
 Native Linux support for the **Plustek OpticFilm 135i** film scanner (USB `07b3:1436`): scan a
 four-slide holder and get finished, enhanced slides.
 
-> **Status: early development. Real scanning does not work yet.** Not affiliated with Plustek.
+> **Status: early development. Real scanning has worked in limited tests on one unit; it is not
+> yet reliable for a full tray at high resolution.** Not affiliated with Plustek. See
+> [Real scanner status](#real-scanner-status).
 
 ## What works today
 
@@ -16,15 +18,43 @@ four-slide holder and get finished, enhanced slides.
 - A fake scanner that replays stored sweeps, so everything above runs and is tested without
   hardware.
 
-## What does not work yet
+## Real scanner status
 
-- **Scanning the real device.** The community driver
-  ([opticfilm135i-linux](https://github.com/cgillinger/opticfilm135i-linux)) scans film strips but
-  has no mounted-slide sweep yet, and this project builds on it rather than duplicating it.
-  `ofscan scan` without `--fake` says so and exits with an error.
-- Everything has only been tested on synthetic sweeps. Quality on real slides is unverified.
+Evidence below comes from supervised tests on a single scanner (one unit, one holder), using the
+community driver ([opticfilm135i-linux](https://github.com/cgillinger/opticfilm135i-linux)) with
+a mounted-slide path. It is not a general guarantee.
+
+Verified natively on Linux:
+
+- One slide (slide 4) at 600 dpi.
+- All four slides at 600 dpi.
+- One slide (slide 1) at 3600 dpi.
+
+Not verified, or known problems:
+
+- A full four-slide tray at 3600 dpi has not been completed. A single-slide scan of slide 4 at
+  3600 dpi was interrupted after calibration warnings and produced no finished TIFF.
+- A full tray at 7200 dpi is untested.
+- Ejecting the holder from a cold start timed out twice during homing.
+- The driver's startup recovery is experimental and opt-in.
+- Calibration warnings and a default dark-level fallback appeared in the successful runs, so
+  image quality on real slides is not established.
 - Dust repair is done at 8-bit precision: repaired pixels lose 16-bit depth (the rest of the
   pipeline stays 16-bit).
+
+The tool never treats the word "ejected" as proof that the holder was released; check the holder
+physically.
+
+### Recovering after a failed scan
+
+If a scan fails, is interrupted, or the scanner behaves oddly, stop sending commands and:
+
+1. Power-cycle the scanner: switch it off and leave it off until its lights go out, then switch it
+   on.
+2. Load the holder again.
+3. Rescan that tray from the start.
+
+See also the [hardware checklist](docs/hardware-checklist.md).
 
 ## Quick start
 
@@ -84,8 +114,8 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
 - **Raw scans are kept** in the batch folder (about 0.9 GB per tray at 3600 dpi, 3.5 GB at 7200; see [performance](docs/performance.md)), so settings can
   change without re-scanning. They are removed only by the explicit raw cleanup of an exported
   tray, never automatically. Export always recomputes slides from the raw scans.
-- Scanning the real device still waits on the driver; the batch engine is tested against the
-  fake scanner.
+- Real-scanner use is limited to what is listed under [Real scanner status](#real-scanner-status);
+  most of the batch engine is tested against the fake scanner.
 
 ### Orientation
 
