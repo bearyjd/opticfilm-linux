@@ -64,6 +64,7 @@ POWER_CYCLE_HINT = (
 )
 TERMINAL_LOAD_HINT = "The first load after power-on must be done in a terminal (of135i load)."
 HOLDER_TIMEOUT_S = STATUS_TIMEOUT_S * 6
+MARKED_COMMANDS = frozenset({"scan", "eject", "load"})  # they move the scanner: see interrupted
 SIGNAL_EXIT_BASE = 128  # exit status 128 + n: the program ended because of signal n
 
 
@@ -420,7 +421,7 @@ class DriverScanner:
             interrupted.require_clear()  # refused before anything starts: nothing failed
             interrupted.begin("scan")
             try:
-                result = self._run(command, self._config.timeout_s, keep_log=True, journal="scan")
+                result = self._run(command, self._config.timeout_s, keep_log=True)
             except ScanError:
                 self._note_failure()  # a driver that did not finish: state unknown
                 self._keep_sidecars(work, failed=True)
@@ -497,7 +498,7 @@ class DriverScanner:
                 interrupted.require_clear()
                 interrupted.begin(args[0])
                 try:
-                    result = self._run(args, HOLDER_TIMEOUT_S, keep_log=True, journal=args[0])
+                    result = self._run(args, HOLDER_TIMEOUT_S, keep_log=True)
                 finally:
                     self._status_cache = None  # whatever happened, the old answer is stale
                 if not result.stopped:
@@ -554,12 +555,7 @@ class DriverScanner:
         return status
 
     def _run(
-        self,
-        args: Sequence[str],
-        timeout: int,
-        keep_log: bool,
-        tail: int = OUTPUT_TAIL_BYTES,
-        journal: str | None = None,  # the marked command: its driver's group joins the mark
+        self, args: Sequence[str], timeout: int, keep_log: bool, tail: int = OUTPUT_TAIL_BYTES
     ) -> "_Result":
         env = dict(os.environ)
         if self._config.driver_dir is not None:
@@ -578,8 +574,8 @@ class DriverScanner:
                 )
                 with _LIVE_LOCK:
                     _LIVE.add(proc)
-                if journal is not None:
-                    _note_driver(journal, proc.pid)
+                if args[0] in MARKED_COMMANDS:  # its driver's group joins the mark
+                    _note_driver(args[0], proc.pid)
                 try:
                     returncode = proc.wait(timeout=timeout)
                 except subprocess.TimeoutExpired as exc:
