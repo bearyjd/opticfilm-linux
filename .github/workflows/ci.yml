@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
       - run: uv run ruff check .
@@ -22,7 +22,7 @@ jobs:
     container: fedora:43
     steps:
       - run: dnf install -y git python3 python3-pyside6 kf6-kirigami qt6-qtdeclarative uv
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: uv venv --system-site-packages --python /usr/bin/python3 .venv-qt
       - run: UV_PROJECT_ENVIRONMENT=.venv-qt uv sync --python /usr/bin/python3
       - run: QT_QPA_PLATFORM=offscreen .venv-qt/bin/python -m pytest -m qt tests/qt -q
