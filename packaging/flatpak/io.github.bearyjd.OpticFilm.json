@@ -9,7 +9,7 @@
   "x-notes": [
     "DRAFT, NOT BUILDABLE YET: every PLACEHOLDER_* value below must be replaced by a real pin before a build.",
     "The scanner driver is an EXTERNAL dependency (github.com/cgillinger/opticfilm135i-linux), fetched by pinned commit. Nothing from Plustek or the vendor driver is vendored here.",
-    "--device=all is the broad, known-working choice for raw USB access (07b3:1436); narrowing to --device=usb is untested on this scanner."
+    "--device=all is the broad choice for raw USB access (07b3:1436): it works on the host but is untested inside the sandbox, and it also grants GPU access that Qt Quick may rely on, so narrowing to --device=usb needs --device=dri alongside and is untested."
   ],
   "finish-args": [
     "--share=ipc",
