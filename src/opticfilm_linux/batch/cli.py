@@ -122,7 +122,12 @@ def _scan(args: argparse.Namespace) -> int:
                 runner.wait_scans_idle()
             runner.wait_idle()
         except KeyboardInterrupt:
-            print("interrupted: finishing the scan in progress", file=sys.stderr)
+            print(
+                "interrupted: finishing the scan in progress. If this program is stopped before "
+                "it ends, power-cycle the scanner, load the holder again and run: "
+                f"{CONFIRM_COMMAND}",
+                file=sys.stderr,
+            )
             runner.close()
             _print_status(store, set(numbers))
             return EXIT_INTERRUPTED

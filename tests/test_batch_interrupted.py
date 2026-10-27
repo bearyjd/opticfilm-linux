@@ -186,3 +186,15 @@ def test_ctrl_c_during_a_holder_move_tells_how_to_confirm(monkeypatch, capsys):
     monkeypatch.setattr("opticfilm_linux.batch.cli.real_scanner", Interrupted)
     assert main(["batch", "eject"]) == 130
     assert "confirm-scanner --yes" in capsys.readouterr().err
+
+
+def test_ctrl_c_during_batch_scan_says_what_to_do_if_cut_off(
+    tmp_path, sweep600_dir, monkeypatch, capsys
+):
+    def interrupted_wait(self, timeout=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(BatchRunner, "wait_scans_idle", interrupted_wait)
+    main(["batch", "new", str(tmp_path / "b"), "--name", "T", "--dpi", "600"])
+    assert main(["batch", "scan", str(tmp_path / "b"), "--fake", str(sweep600_dir)]) == 130
+    assert "confirm-scanner --yes" in capsys.readouterr().err

@@ -144,6 +144,7 @@ def test_a_driver_stopped_by_the_signal_handler_is_cut_off_even_if_it_exits_clea
     pids_file = tmp_path / "pids.json"
     monkeypatch.setenv("FAKE_DRIVER_MODE", "hang")
     monkeypatch.setenv("FAKE_DRIVER_PIDS", str(pids_file))
+    monkeypatch.setenv("FAKE_DRIVER_SIGINT_EXIT", "1")  # exits by itself with a plain code
     monkeypatch.setattr(driver_module, "STOP_GRACE_S", 5.0)
     scanner = make()
     outcome: list[BaseException] = []
@@ -316,46 +317,137 @@ _CHILD = textwrap.dedent(
     from pathlib import Path
     from opticfilm_linux.model import ScanSettings
     from opticfilm_linux.scanner.driver import DriverConfig, DriverScanner, install_signal_cleanup
+    from opticfilm_linux.scanner import driver
     install_signal_cleanup()
     driver_dir, work = Path(sys.argv[1]), Path(sys.argv[2])
+    if sys.argv[3:] == ["no-group"]:  # killed before the driver's group reached the mark
+        driver._note_driver = lambda *_args: None
     config = DriverConfig(driver_dir=driver_dir, log_dir=work / "logs", work_dir=work)
     DriverScanner(config).scan_holder(ScanSettings(dpi=600))
     """
 )
 
 
-@pytest.mark.parametrize("sig", [signal.SIGKILL, signal.SIGTERM])
-def test_a_scanning_process_that_dies_leaves_the_scanner_refusing(make, tmp_path, monkeypatch, sig):
+def _start_child(tmp_path: Path, *extra: str) -> tuple[subprocess.Popen, Path]:
     pids_file = tmp_path / "pids.json"
-    env = {
-        **os.environ,
-        "FAKE_DRIVER_MODE": "hang",
-        "FAKE_DRIVER_PIDS": str(pids_file),
-    }
+    env = {**os.environ, "FAKE_DRIVER_MODE": "hang", "FAKE_DRIVER_PIDS": str(pids_file)}
     env.pop("OPTICFILM_DRIVER_DIR", None)
     child = subprocess.Popen(
-        [sys.executable, "-c", _CHILD, str(FAKE_DRIVER), str(tmp_path / "child")], env=env
+        [sys.executable, "-c", _CHILD, str(FAKE_DRIVER), str(tmp_path / "child"), *extra], env=env
     )
-    try:
-        _wait_for(pids_file)
-        time.sleep(0.3)
-        child.send_signal(sig)
-        child.wait(30)
-        _assert_refuses_everything(make(), tmp_path)
-        if sig == signal.SIGKILL:  # nothing stopped the driver: it is still running, orphaned
-            with pytest.raises(ScannerInUse, match="still running"):
-                confirm_scanner_reset()
-            assert interrupted.is_pending()
-    finally:
-        if child.poll() is None:
-            child.kill()
-        _kill_leftovers(pids_file)
+    return child, pids_file
+
+
+def _wait_group_gone(pids_file: Path) -> None:
     group = json.loads(pids_file.read_text())[0]  # the driver leads its own process group
     deadline = time.monotonic() + 60
     while driver_module._group_alive(group) and time.monotonic() < deadline:
         time.sleep(0.1)  # until init has reaped the killed orphans
+
+
+def test_a_scanning_process_stopped_by_sigterm_leaves_the_scanner_refusing(make, tmp_path):
+    child, pids_file = _start_child(tmp_path)
+    try:
+        _wait_for(pids_file)
+        time.sleep(0.3)
+        child.send_signal(signal.SIGTERM)
+        child.wait(30)
+        _assert_refuses_everything(make(), tmp_path)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        _kill_leftovers(pids_file)
+    _wait_group_gone(pids_file)
     assert confirm_scanner_reset() is True
     assert make().status() is ScannerStatus.READY
+
+
+@pytest.mark.parametrize("extra", [(), ("no-group",)], ids=["group-recorded", "group-not-recorded"])
+def test_a_killed_process_leaves_its_orphaned_driver_holding_the_scanner(
+    make, tmp_path, monkeypatch, extra
+):
+    """SIGKILL: nothing stops the driver (its own session). It inherited the scanner lock, so
+    nothing else runs and no confirm passes while it lives, even if its group was never noted."""
+    monkeypatch.setattr(driver_module, "LOCK_WAIT_S", 0.3)
+    child, pids_file = _start_child(tmp_path, *extra)
+    try:
+        _wait_for(pids_file)
+        time.sleep(0.3)
+        child.kill()
+        child.wait(30)
+        scanner = make()
+        assert scanner.status() is ScannerStatus.BUSY
+        with pytest.raises(ScannerInUse):
+            scanner.eject()
+        with pytest.raises(ScannerInUse):
+            confirm_scanner_reset()
+        assert interrupted.is_pending()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        _kill_leftovers(pids_file)
+    _wait_group_gone(pids_file)
+    _assert_refuses_everything(make(), tmp_path)  # the orphan is gone; the mark is not
+    assert confirm_scanner_reset() is True
+
+
+def test_confirm_waits_for_a_recorded_driver_group_that_is_still_alive(make):
+    other = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    try:
+        interrupted.note_driver("scan", other.pid)
+        with pytest.raises(ScannerInUse, match="still running"):
+            confirm_scanner_reset()
+        assert interrupted.is_pending()
+    finally:
+        other.kill()
+        other.wait()
+    assert confirm_scanner_reset() is True
+
+
+def test_an_external_ctrl_c_to_the_driver_is_an_interrupted_scan(make, tmp_path, monkeypatch):
+    """The real driver exits 130 when Ctrl-C reaches it, even if this program sent nothing."""
+    pids_file = tmp_path / "pids.json"
+    monkeypatch.setenv("FAKE_DRIVER_MODE", "hang")
+    monkeypatch.setenv("FAKE_DRIVER_PIDS", str(pids_file))
+    scanner = make()
+    outcome: list[BaseException] = []
+
+    def scan() -> None:
+        try:
+            scanner.scan_holder(ScanSettings(dpi=600))
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+            outcome.append(exc)
+
+    thread = threading.Thread(target=scan)
+    thread.start()
+    try:
+        _wait_for(pids_file)
+        time.sleep(0.3)
+        os.kill(json.loads(pids_file.read_text())[0], signal.SIGINT)
+        thread.join(60)
+    finally:
+        _kill_leftovers(pids_file)
+    assert outcome and isinstance(outcome[0], ScanInterrupted)
+    assert interrupted.is_pending()
+
+
+def test_scans_and_holder_moves_refuse_without_the_cross_program_lock(make, tmp_path, monkeypatch):
+    monkeypatch.setattr(driver_module._HW_LOCK, "_warned", False)  # restored afterwards
+
+    def unusable(_handle, _flags):
+        raise OSError("no locks on this file system")
+
+    monkeypatch.setattr(driver_module.fcntl, "flock", unusable)
+    scanner = make()
+    for command in (scanner.eject, scanner.load_next_strip):
+        with pytest.raises(interrupted.ScannerRefused, match="refusing"):
+            command()
+    with pytest.raises(interrupted.ScannerRefused, match="refusing"):
+        scanner.scan_holder(ScanSettings(dpi=600))
+    assert _trace(tmp_path) == [] and not interrupted.is_pending()
+    assert scanner.status() is ScannerStatus.READY  # a status check still runs
 
 
 def test_a_dead_process_leaves_no_driver_behind_after_sigterm(tmp_path):

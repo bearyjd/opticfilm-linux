@@ -152,7 +152,9 @@ class _HardwareLock:
     or the app out. A blocking ``acquire`` refuses at once rather than queue behind another
     program: an eject that ran after someone else's scan finished would surprise them.
     ``acquire(blocking=False)`` just says no. If the lock file cannot be used the process
-    still has its own lock, and a warning says the other programs are not excluded.
+    still has its own lock, and a warning says the other programs are not excluded; scans and
+    holder moves then refuse to start (``holds_file``), status checks still run. The driver
+    inherits the locked file, so a driver orphaned by a killed program keeps the scanner locked.
     """
 
     def __init__(self) -> None:
@@ -212,6 +214,10 @@ class _HardwareLock:
     def holds_file(self) -> bool:
         """True while this process owns the file lock (not merely its own thread lock)."""
         return self._handle is not None
+
+    def file_descriptor(self) -> int | None:
+        """The locked file, for the driver to inherit; None without a file lock."""
+        return self._handle.fileno() if self._handle is not None else None
 
     def release(self) -> None:
         handle, self._handle = self._handle, None
@@ -418,6 +424,7 @@ class DriverScanner:
             output = work / "tray.tiff"
             command = ["scan", "--slides", SLIDES, "--dpi", str(settings.dpi), "--ir"]
             command += ["--dark-fallback", DARK_FALLBACK, "-o", str(output)]
+            self._require_file_lock()
             interrupted.require_clear()  # refused before anything starts: nothing failed
             interrupted.begin("scan")
             try:
@@ -495,6 +502,7 @@ class DriverScanner:
         self._status_cache = None
         try:
             with self._hw_lock:
+                self._require_file_lock()
                 interrupted.require_clear()
                 interrupted.begin(args[0])
                 try:
@@ -517,6 +525,15 @@ class DriverScanner:
         if result.returncode != 0:
             self._note_failure()
             raise ScanError(f"{failure} Driver said: {_tail(result.output)}")
+
+    def _require_file_lock(self) -> None:
+        """A command that moves the scanner needs other programs kept off it: without that,
+        two commands could overlap and one could clear the other's interrupted mark."""
+        if not self._hw_lock.holds_file:
+            raise ScannerRefused(
+                f"cannot lock {_lock_path()}, so other programs are not kept off the scanner; "
+                "refusing to start it"
+            )
 
     def _note_failure(self) -> None:
         """The driver failed or did not finish: only a power cycle recovers the scanner. A power
@@ -562,11 +579,14 @@ class DriverScanner:
             extra = str(self._config.driver_dir)
             env["PYTHONPATH"] = extra + os.pathsep + env.get("PYTHONPATH", "")
         sink_path, temporary = self._output_file(args[0], keep_log)
+        lock_fd = self._hw_lock.file_descriptor()
+        held = (lock_fd,) if lock_fd is not None else ()
         try:
             with open(sink_path, "wb") as sink:  # output goes to disk, never all into memory
                 proc = subprocess.Popen(
                     [self._config.python, "-m", "of135i", *args],
                     stdin=subprocess.DEVNULL,  # a driver that asks for Enter fails, not hangs
+                    pass_fds=held,  # the scanner lock: an orphaned driver still holds it
                     stdout=sink,
                     stderr=subprocess.STDOUT,
                     env=env,
