@@ -15,12 +15,12 @@ Where the project stands and what to do next. Written 2026-10-27. Update it as i
 
 Decode the status values already recorded in the per-run logs and classify every calibration poll timeout and both cold-eject failures.
 
-First results (2026-10-27):
+First results (2026-10-27), from the owner's local run logs (not published; unreviewed, treat as leads, not conclusions):
 
-- The calibration read-back timeout seen on slide 4 (last value `ec55`, wanted `dc55`) appears in **every** run, including the runs that finished cleanly (slide 1 at 3600 dpi, slide 4 at 600 dpi, all four slides at 600 dpi). It is not specific to slide 4 and is not by itself a failure signature.
-- The earlier `cc55` vs `ad55` divergence is different: the driver wanted the engine running with data buffered and read the engine stopped with the buffer empty. It appears in only one older run. It is the only recorded case that matches the new calibration read-back guard.
-- The slide-4 3600 dpi scan was stopped by hand at its second `ec55`/`dc55` timeout, which is the same value pair as in the clean runs. That abort was conservative, not a detected positioning failure.
-- Both cold-eject failures ended at the same status value, the one that means idle on the sensor-clear side, not the exact value the driver waits for. The old logs have no read history, so they cannot tell "moved and stopped off the sensor" from "never started". The new outcome classification will answer this on the next run.
+- One calibration read-back timeout per frame appears in **every** logged run, including the runs that finished cleanly (slide 1 at 3600 dpi, slide 4 at 600 dpi, all four slides at 600 dpi). It is not specific to slide 4 and is not by itself a failure signature.
+- One older run shows a different pattern: the driver expected the scan engine running with data buffered and read it stopped with the buffer empty. It is the only logged case that matches the new calibration read-back guard.
+- The slide-4 3600 dpi scan was stopped by hand at its second calibration read-back timeout, the same kind as in the clean runs. That abort was conservative, not a detected positioning failure. This does not show the 3600 dpi slide-4 scan would have completed.
+- Both cold-eject failures ended on the same idle, sensor-clear status, not the exact value the driver waits for. The old logs have no read history, so they cannot tell "moved and stopped off the sensor" from "never started". The new outcome classification is intended to separate these on the next run; that is not yet confirmed.
 
 Still to do: a short report script under `scripts/` that prints this classification for any run folder, so the next hardware session gets it automatically.
 
@@ -39,18 +39,20 @@ Set `OPTICFILM_DRIVER_DIR` to a fresh checkout of the driver fork's master first
 
 ### 3. Capture of the vendor app from power-on with a retained holder
 
-The biggest unknown is the vendor's cold-start sequence. This capture is passive on the scanner side and is the evidence needed for a vendor-faithful cold start and eject.
+The biggest unknown is the vendor's cold-start sequence. This is the evidence needed for a vendor-faithful cold start and eject. It is not risk-free: the vendor app has been seen to reposition a retained holder automatically at startup, so it needs the owner at the scanner with the physical state confirmed, like any other hardware step.
 
 ### 4. Driver changes to build after that, each opt-in until proven
 
-- Cold start and eject: replace the nine forward moves with a reverse-to-sensor, then forward sequence, once the capture confirms it.
-- Calibration read-back: wait on the data-enable status as the vendor does.
-- Slide geometry: the native slide pitch (62.6 mm) differs slightly from the vendor setting (62.53 mm), about 0.21 mm of drift by slide 4. Handle it in the empty-holder procedure.
+Candidates from the local analysis. All are unconfirmed until the evidence above exists:
+
+- Cold start and eject: a different move order, only if the capture confirms it.
+- Calibration read-back: a different wait condition, only if real logs show the current one is wrong.
+- Slide geometry: the native slide pitch may differ slightly from the vendor app's. Handle it in the empty-holder procedure.
 
 ### 5. More analysis (budgeted)
 
-- Narrow the blanket startup refusal by mapping the one startup branch that is still unexplained.
-- Compare the driver's motor and phase tables with the vendor's constants. A mismatch could explain slow 3600 dpi scans.
+- Document the one startup branch that is still unexplained. No startup or cold-start guard is relaxed without hardware evidence.
+- Compare the driver's motor and phase tables with the vendor app's. A mismatch might explain slow 3600 dpi scans. This is a question to check, not a finding.
 
 ### 6. Later
 
