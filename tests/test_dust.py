@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 
 from opticfilm_linux.pipeline.dust import defect_mask, remove_dust
 from synthetic import dust_centers, make_sweep, truth_boxes
@@ -193,17 +194,39 @@ def test_inpaint_work_for_2000_specks_at_3600_dpi_is_bounded(monkeypatch):
     rgb = np.full((size, size, 3), 30_000, np.uint16)
     work = _inpaint_work(monkeypatch, ir, rgb, 3600)
     assert len(centers) > 1800
-    # a 21 px mask, a 3 px radius and three channels, with 2x slack; the 12 px dilation and
-    # 18 px radius this replaced cost about 1.4 million per speck
+    # a 17 px mask (21 with room), a 3 px radius and three channels, with 2x slack; the 12 px
+    # dilation and 18 px radius this replaced cost about 1.4 million per speck
     assert work / len(centers) < 2 * 21 * 3 * 3 * 3
 
 
 def test_repair_of_a_flat_area_keeps_its_exact_16_bit_level():
-    """Losing the low byte, on the way in or out, moves these levels by 50 or more (TELEA itself
-    rounds by a few)."""
-    rgb = np.full((120, 120, 3), (30_123, 12_345, 50_001), np.uint16)
+    """Losing the low byte, on the way in or out, moves each of these levels by more than 50
+    (TELEA itself rounds by a few)."""
+    rgb = np.full((120, 120, 3), (30_123, 12_400, 50_001), np.uint16)
     ir = np.full((120, 120), 58_000, np.uint16)
     rgb[50:70, 50:70] = 1_000
     ir[50:70, 50:70] = 15_000
     out = remove_dust(rgb, ir, dpi=3600)
-    assert np.abs(out[50:70, 50:70].astype(np.int64) - (30_123, 12_345, 50_001)).max() <= 8
+    assert np.abs(out[50:70, 50:70].astype(np.int64) - (30_123, 12_400, 50_001)).max() <= 8
+
+
+def _blurred_specks(dpi: int) -> tuple[np.ndarray, np.ndarray]:
+    """Specks whose size scales with dpi (2-4 px at 600 dpi, as in ``make_sweep``) and whose edge
+    is softened by the scanner's optics: a blur of a fixed size in sensor pixels."""
+    size = 60 * dpi // 600 + 200
+    rgb = np.full((size, size), 30_000, np.float32)
+    ir = np.full((size, size), 58_000, np.float32)
+    for k, radius_at_600 in enumerate((2, 3, 4)):
+        radius = round(radius_at_600 * dpi / 600)
+        center = (size // 2 + (k - 1) * size // 3, size // 2)
+        cv2.circle(rgb, center, radius, 3_000, -1)
+        cv2.circle(ir, center, radius, 20_000, -1)
+    rgb, ir = (cv2.GaussianBlur(plane, (0, 0), 0.8) for plane in (rgb, ir))
+    return np.repeat(rgb[..., None], 3, axis=2).astype(np.uint16), ir.astype(np.uint16)
+
+
+@pytest.mark.parametrize("dpi", [600, 3600, 7200])
+def test_no_dark_halo_is_left_around_a_repaired_speck(dpi):
+    rgb, ir = _blurred_specks(dpi)
+    out = remove_dust(rgb, ir, dpi=dpi)
+    assert 30_000 - int(out.min()) < 300  # 1% of the background; a 1 px dilation leaves ~700
