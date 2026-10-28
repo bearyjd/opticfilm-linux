@@ -95,19 +95,22 @@ Before the fixes, one 7200 dpi slide spent most of its time in two places:
 - **Single-threaded numpy**: the per-pixel float work in exposure, colour, grain and sharpening
   ran on one thread, although OpenCV threads its own filters.
 - **Dust removal**: `cv2.inpaint` is single-threaded, and its cost grows with defect area times
-  the radius squared. That is 16x per doubling of dpi.
+  the radius squared. That was 16x per doubling of dpi while the mask dilation and the inpaint
+  radius both scaled with dpi. Both are now fixed (2 px and 3 px at every dpi, since the infrared
+  and colour planes register to 0 px), so the cost grows only with the defects' own area, and
+  each channel is inpainted at 16 bits instead of 8.
 
 Changes, all with byte-identical output:
 
 1. `pipeline/arrays.map_strips` runs strips on a few threads, up to 8. It uses one worker per 8
    strips, so the float temporaries in flight stay below the size of the image. Small images
    (all 600 dpi slides) still run in the caller's thread. Each strip writes only its own rows.
-2. `pipeline/dust.remove_dust` converts only each defect's patch to 8 bits, never the whole
-   slide. That removed a full-slide uint16 temporary and a uint8 copy, and cut the function's
+2. `pipeline/dust.remove_dust` copies only each defect's patch, never the whole slide (at the
+   time it converted patches to 8 bits; it now inpaints them at 16 bits, one channel at a time). That removed a full-slide uint16 temporary and a uint8 copy, and cut the function's
    peak memory from 2.7x the slide to below 1.8x. Patches are inpainted on a few threads and
    written back in contour order, so overlapping bounding boxes resolve exactly as they do on
    one thread. Patches are submitted lazily, and the ones in flight are bounded by bytes:
-   their 8-bit size stays at most min(256 MB, a quarter of the slide), and one patch always
+   their size stays at most min(256 MB, a quarter of the slide), and one patch always
    runs. Without that, a few long diagonal scratches, each with an almost full-image bounding
    box, would be inpainted all at once (the review measured 4x the old peak).
 3. `map_strips` stays on the caller's thread when OpenCV's optimisations are switched off
