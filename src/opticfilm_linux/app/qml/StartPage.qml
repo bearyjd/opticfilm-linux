@@ -111,34 +111,29 @@ Kirigami.ScrollablePage {
                 objectName: "slotOrientationsToggle"
                 text: qsTr("Some holder slots are always loaded differently")
             }
-            Repeater {
-                id: slotRepeater
+            SlotRow {
+                id: slot1
 
-                model: slotsBox.checked ? bridge.slotCount : 0
-                delegate: RowLayout {
-                    id: slotRow
+                position: 1
+                visible: slotsBox.checked
+            }
+            SlotRow {
+                id: slot2
 
-                    required property int index
-                    readonly property int rotation: parseInt(slotRotation.currentText)
-                    readonly property bool mirrored: slotMirror.checked
+                position: 2
+                visible: slotsBox.checked
+            }
+            SlotRow {
+                id: slot3
 
-                    objectName: "slotOrientation" + (index + 1)
-                    Kirigami.FormData.label: qsTr("Holder slot %1:").arg(index + 1)
+                position: 3
+                visible: slotsBox.checked
+            }
+            SlotRow {
+                id: slot4
 
-                    QQC2.ComboBox {
-                        id: slotRotation
-
-                        objectName: "slotRotation" + (slotRow.index + 1)
-                        model: bridge.rotationChoices
-                        displayText: qsTr("%1° more").arg(currentText)
-                    }
-                    QQC2.CheckBox {
-                        id: slotMirror
-
-                        objectName: "slotMirror" + (slotRow.index + 1)
-                        text: qsTr("Mirror")
-                    }
-                }
+                position: 4
+                visible: slotsBox.checked
             }
             QQC2.Label {
                 visible: slotsBox.checked
@@ -154,13 +149,9 @@ Kirigami.ScrollablePage {
                 highlighted: true
                 enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== ""
                 onClicked: {
-                    let rotations = [];
-                    let mirrors = [];
-                    for (let i = 0; i < slotRepeater.count; ++i) {
-                        rotations.push(slotRepeater.itemAt(i).rotation);
-                        mirrors.push(slotRepeater.itemAt(i).mirrored);
-                    }
-                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked, rotations, mirrors);
+                    // hidden slot rows do not count: the owner said all slots are loaded alike
+                    const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored));
                 }
             }
         }

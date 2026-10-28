@@ -10,7 +10,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
-from opticfilm_linux.app.controller import LOCKED_PREFIX, SLIDES_PER_TRAY, Controller
+from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
 from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_text
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
@@ -164,7 +164,6 @@ class Bridge(QObject):
     defaultDpi = Property(int, lambda self: self._demo_dpi or DEFAULT_DPI, constant=True)  # noqa: N815
     dpiChoices = Property("QVariantList", lambda self: list(DPI_CHOICES), constant=True)  # noqa: N815
     rotationChoices = Property("QVariantList", lambda self: list(ROTATIONS), constant=True)  # noqa: N815
-    slotCount = Property(int, lambda self: SLIDES_PER_TRAY, constant=True)  # noqa: N815
     loadCommand = Property(str, lambda self: self._load_command, constant=True)  # noqa: N815
     nextStripEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.next_strip_enabled, constant=True

@@ -358,17 +358,6 @@ def test_an_interrupted_scanner_offers_only_confirm_and_the_dialog_clears_it(
         engine.deleteLater()
 
 
-def _item(root, name):
-    """Find a visual item by name; Repeater delegates are not QObject children of the window."""
-    pending = [root.contentItem()]
-    while pending:
-        item = pending.pop()
-        if item.objectName() == name:
-            return item
-        pending.extend(item.childItems())
-    return None
-
-
 def test_the_new_batch_form_sets_slot_orientations(loaded, tmp_path):
     from opticfilm_linux.batch.model import SlotOrientation
     from opticfilm_linux.batch.store import BatchStore
@@ -379,11 +368,12 @@ def test_the_new_batch_form_sets_slot_orientations(loaded, tmp_path):
         "parentFolder", QUrl.fromLocalFile(str(tmp_path))
     )
     root.findChild(QObject, "newBatchName").setProperty("text", "Slots")
-    assert _item(root, "slotRotation2") is None  # hidden until asked for
+    row = root.findChild(QObject, "slotOrientation2")
+    assert row is not None and not row.property("visible")  # hidden until asked for
     root.findChild(QObject, "slotOrientationsToggle").setProperty("checked", True)
-    _wait(bridge, lambda: _item(root, "slotRotation2") is not None)
-    _item(root, "slotRotation2").setProperty("currentIndex", 2)  # 180
-    _item(root, "slotMirror3").setProperty("checked", True)
+    _wait(bridge, lambda: row.property("visible"))
+    root.findChild(QObject, "slotRotation2").setProperty("currentIndex", 2)  # 180
+    root.findChild(QObject, "slotMirror3").setProperty("checked", True)
     QMetaObject.invokeMethod(root.findChild(QObject, "createBatch"), "click")  # may be off-screen
     _wait(bridge, lambda: bridge.hasBatch)
     with BatchStore.open(tmp_path / "Slots", readonly=True) as store:
