@@ -22,6 +22,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.previews import make_preview, write_preview
+from opticfilm_linux.batch.slots import compose, slot_orientation
 from opticfilm_linux.batch.store import BatchError, BatchStore, is_interrupted
 from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
@@ -35,21 +36,22 @@ class RawRemoved(BatchError):
     """The tray's raw scans were cleaned up, so it can no longer be re-enhanced."""
 
 
-def options_for(defaults: BatchDefaults, mode: Mode, settings: SlideSettings) -> ProcessOptions:
-    """Combine the batch defaults with one slide's own settings.
+def options_for(
+    defaults: BatchDefaults, mode: Mode, settings: SlideSettings, position: int
+) -> ProcessOptions:
+    """Combine the batch defaults with the slot's default and one slide's own settings.
 
-    An orientation is "turn clockwise by ``rotation``, THEN flip left-right if ``mirror``", so
-    both act on the image as shown. The slide's own orientation is applied after the batch's,
-    as if done by hand on the batch-oriented image. In that same normal form the result is
-    rotation ``defaults.rotation + (-1 if defaults.mirror else 1) * settings.rotation`` (mod
-    360) and mirror ``defaults.mirror XOR settings.mirror``: a turn made after a flip runs the
-    other way underneath.
+    Orientations are applied in turn, each to the image as shown: the batch's, then the default
+    for the slide's holder slot, then the slide's own, as if each were done by hand on the image
+    the previous one produced (see ``slots.compose``).
     """
-    sign = -1 if defaults.mirror else 1
 
     def pick(override: float | None, default: float) -> float:
         return default if override is None else override
 
+    batch = (defaults.rotation, defaults.mirror)
+    slot = compose(batch, slot_orientation(defaults, position))
+    rotation, mirror = compose(slot, (settings.rotation, settings.mirror))
     return ProcessOptions(
         mode=mode,
         remove_dust=defaults.remove_dust,
@@ -58,8 +60,8 @@ def options_for(defaults: BatchDefaults, mode: Mode, settings: SlideSettings) ->
         grain_strength=pick(settings.grain_strength, defaults.grain_strength),
         skip_blank=defaults.skip_blank,
         brightness_ev=settings.brightness_ev,
-        rotation=(defaults.rotation + sign * settings.rotation) % 360,
-        mirror=defaults.mirror != settings.mirror,
+        rotation=rotation,
+        mirror=mirror,
     )
 
 
@@ -142,7 +144,9 @@ def _process_slide(
     if defaults.skip_blank and is_blank(slide):
         _merge_slide(store, number, tray, snapshot, (), blank=True, defaults=defaults)
         return
-    enhanced = enhance_slide(slide, options_for(defaults, tray.mode, snapshot.settings), sweep.dpi)
+    enhanced = enhance_slide(
+        slide, options_for(defaults, tray.mode, snapshot.settings, snapshot.position), sweep.dpi
+    )
     before = store.preview_path(number, position, "before")
     after = store.preview_path(number, position, "after")
 
@@ -153,7 +157,7 @@ def _process_slide(
     try:
         write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
         write_preview(make_preview(enhanced), _pending(after))
-        flags = compute_flags(enhanced, slide.ir, sweep.dpi)
+        flags = compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
         _merge_slide(store, number, tray, snapshot, flags, False, defaults, publish)
     finally:  # a result that was dropped leaves nothing behind
         _pending(before).unlink(missing_ok=True)

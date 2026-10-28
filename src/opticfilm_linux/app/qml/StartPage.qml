@@ -7,6 +7,8 @@ import org.kde.kirigami as Kirigami
 Kirigami.ScrollablePage {
     id: page
 
+    objectName: "startPage"
+
     property url parentFolder: ""
 
     title: qsTr("OpticFilm Linux")
@@ -59,6 +61,8 @@ Kirigami.ScrollablePage {
             QQC2.TextField {
                 id: nameField
 
+                objectName: "newBatchName"
+
                 Kirigami.FormData.label: qsTr("Name:")
                 placeholderText: qsTr("Family trips")
             }
@@ -101,12 +105,54 @@ Kirigami.ScrollablePage {
                 text: qsTr("Scan one tray first and check; you can change it later.")
                 opacity: 0.7
             }
+            QQC2.CheckBox {
+                id: slotsBox
+
+                objectName: "slotOrientationsToggle"
+                text: qsTr("Some holder slots are always loaded differently")
+            }
+            SlotRow {
+                id: slot1
+
+                position: 1
+                visible: slotsBox.checked
+            }
+            SlotRow {
+                id: slot2
+
+                position: 2
+                visible: slotsBox.checked
+            }
+            SlotRow {
+                id: slot3
+
+                position: 3
+                visible: slotsBox.checked
+            }
+            SlotRow {
+                id: slot4
+
+                position: 4
+                visible: slotsBox.checked
+            }
+            QQC2.Label {
+                visible: slotsBox.checked
+                text: qsTr("Applied to that slot in every tray, on top of the slide orientation above. Your own changes to a slide still apply on top.")
+                opacity: 0.7
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+            }
             QQC2.Button {
+                objectName: "createBatch"
                 text: qsTr("Create batch")
                 icon.name: "document-new"
                 highlighted: true
                 enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== ""
-                onClicked: bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked)
+                onClicked: {
+                    // hidden slot rows do not count: the owner said all slots are loaded alike
+                    const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored));
+                }
             }
         }
 

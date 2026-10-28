@@ -23,6 +23,7 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.model import HolderKind, RawSweep
+from opticfilm_linux.pipeline.split import split_slides
 from opticfilm_linux.sweepstore import save_sweep
 from synthetic import make_sweep, truth_boxes
 
@@ -146,7 +147,7 @@ def test_negative_mode_tray_reaches_review(tmp_path):
 def test_options_for_prefers_slide_overrides_and_falls_back():
     defaults = BatchDefaults(grain_strength=0.3, sharpen_amount=0.5, color_strength=1.0)
     settings = SlideSettings(rotation=180, brightness_ev=-1.0, grain_strength=0.0)
-    options = options_for(defaults, "negative", settings)
+    options = options_for(defaults, "negative", settings, 1)
     assert options.grain_strength == 0.0 and options.sharpen_amount == 0.5
     assert options.color_strength == 1.0 and options.mode == "negative"
     assert (options.rotation, options.brightness_ev) == (180, -1.0)
@@ -266,3 +267,20 @@ def test_a_mode_change_during_enhancement_discards_the_stale_results(tmp_path, m
     release.set()
     worker.join(60)
     assert _tray(store).slides == ()  # a newer enhancement job (for the new mode) will fill it
+
+
+def test_dust_flag_sees_the_slides_raw_colour_image(tmp_path, monkeypatch):
+    """The flag's mask must use the unrotated raw colour image, registered to the infrared."""
+    seen = []
+    real = enhance_module.compute_flags
+
+    def spy(enhanced, ir, dpi, visible=None):
+        seen.append(visible)
+        return real(enhanced, ir, dpi, visible=visible)
+
+    monkeypatch.setattr(enhance_module, "compute_flags", spy)
+    sweep = make_sweep(dpi=600, dust=12)
+    enhance_tray(_store(tmp_path, sweep), 1)
+    raw = [slide.rgb for slide in split_slides(sweep)]
+    assert len(seen) == 4
+    assert all(any(np.array_equal(v, r) for r in raw) for v in seen)

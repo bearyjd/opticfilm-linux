@@ -11,6 +11,7 @@ from opticfilm_linux.batch.model import (
     SlideRecord,
     SlideSettings,
     SlideStatus,
+    SlotOrientation,
     TrayRecord,
     TrayStage,
 )
@@ -23,7 +24,10 @@ class ManifestFormatError(ValueError):
 
 
 def to_json(manifest: BatchManifest) -> str:
-    return json.dumps(asdict(manifest), indent=2)
+    data = asdict(manifest)
+    if not manifest.defaults.slots:  # older versions refuse the key: keep such batches readable
+        data["defaults"] = {k: v for k, v in data["defaults"].items() if k != "slots"}
+    return json.dumps(data, indent=2)
 
 
 def _settings(data: dict[str, Any]) -> SlideSettings:
@@ -54,6 +58,22 @@ def _tray(data: dict[str, Any]) -> TrayRecord:
     )
 
 
+SLOT_KEYS = {"position", "rotation", "mirror"}
+
+
+def _slot(data: Any) -> SlotOrientation:
+    if not isinstance(data, dict) or set(data) != SLOT_KEYS:
+        raise ManifestFormatError(f"a slot orientation needs exactly {sorted(SLOT_KEYS)}")
+    return SlotOrientation(**data)
+
+
+def _defaults(data: dict[str, Any]) -> BatchDefaults:
+    slots = data.get("slots", [])  # absent in batches made before slot orientations
+    if not isinstance(slots, list):
+        raise ManifestFormatError("slots must be a list")
+    return BatchDefaults(**{**data, "slots": tuple(_slot(s) for s in slots)})
+
+
 def from_json(text: str) -> BatchManifest:
     try:
         data = json.loads(text)
@@ -65,7 +85,7 @@ def from_json(text: str) -> BatchManifest:
             name=data["name"],
             album=data["album"],
             date=data["date"],
-            defaults=BatchDefaults(**data["defaults"]),
+            defaults=_defaults(data["defaults"]),
             trays=tuple(_tray(t) for t in data["trays"]),
             version=data["version"],
         )

@@ -103,7 +103,7 @@ def test_options_for_is_the_batch_orientation_followed_by_the_slides_own(default
     image = np.arange(2 * 3, dtype=np.uint16).reshape(2, 3)  # no symmetry at all
     defaults = BatchDefaults(rotation=default[0], mirror=default[1])
     settings = SlideSettings(rotation=own[0], mirror=own[1])
-    options = options_for(defaults, "positive", settings)
+    options = options_for(defaults, "positive", settings, 1)
     expected = _shown(_shown(image, *default), *own)
     assert np.array_equal(_shown(image, options.rotation, options.mirror), expected)
 

@@ -14,6 +14,11 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.runner import BatchRunner
+from opticfilm_linux.batch.slots import (
+    parse_slot_positions,
+    parse_slot_rotations,
+    slot_orientations,
+)
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.base import HolderControl, ScanError, Scanner
 from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT, ScannerInUse, confirm_scanner_reset
@@ -48,6 +53,21 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     new.add_argument("--date", default=None)
     new.add_argument("--dpi", type=int, default=3600)
     add_orientation_options(new)
+    new.add_argument(
+        "--slot-rotate",
+        type=parse_slot_rotations,
+        default={},
+        metavar="SLOT=DEGREES,...",
+        help="turn the slide in these holder slots of every tray clockwise, on top of --rotate "
+        "(e.g. 2=180,3=180 when slots 2 and 3 are always loaded upside down)",
+    )
+    new.add_argument(
+        "--slot-mirror",
+        type=parse_slot_positions,
+        default=(),
+        metavar="SLOT,...",
+        help="flip the slide in these holder slots of every tray left-right, after turning it",
+    )
 
     status = sub.add_parser("status", help="list the trays")
     status.add_argument("directory", type=Path)
@@ -104,7 +124,12 @@ def _print_status(store: BatchStore, only: set[int] | None = None) -> None:
 
 
 def _new(args: argparse.Namespace) -> int:
-    defaults = BatchDefaults(dpi=args.dpi, rotation=args.rotate, mirror=args.mirror)
+    defaults = BatchDefaults(
+        dpi=args.dpi,
+        rotation=args.rotate,
+        mirror=args.mirror,
+        slots=slot_orientations(args.slot_rotate, args.slot_mirror),
+    )
     BatchStore.create(args.directory, args.name, args.album, args.date, defaults).close()
     print(f"created batch {args.name!r} in {args.directory}")
     return 0
