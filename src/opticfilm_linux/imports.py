@@ -1,7 +1,8 @@
 """Enhance finished images from other scanning software (for example the vendor's own app).
 
 Each image is one slide. There is no infrared plane, so dust removal is off; everything else
-(exposure, colour, grain, sharpening, numbered never-overwritten output) is the normal pipeline.
+(exposure, colour, grain, sharpening, numbered never-overwritten output) is the normal pipeline,
+except that the pixels are already tone mapped: they take the non-linear exposure path.
 """
 
 from collections.abc import Sequence
@@ -79,5 +80,5 @@ def process_images(
         slide = Slide(
             index=index, rgb=rgb, ir=None, box=Box(x=0, y=0, w=rgb.shape[1], h=rgb.shape[0])
         )
-        written.append(write_slide(enhance_slide(slide, options, dpi), out))
+        written.append(write_slide(enhance_slide(slide, options, dpi, linear=False), out))
     return RunResult(written=tuple(written), blank_positions=())
