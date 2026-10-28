@@ -142,6 +142,75 @@ def test_position_line_missing_fails(tmp_path):
     assert status(results, "position-wait") == "FAIL"
 
 
+EXACT_LINE = "INFO of135i: completion poll settled f455 (exact) after {wait:.2f}s\n"
+POSITIONING = "INFO of135i: positioning to frame {n} (FEEDL=6255, 3600 dpi dual)\n"
+JOG_EXACT = "INFO of135i: completion poll settled f855 (exact) after 0.50s\n"
+
+
+def run_with_log(tmp_path, log: str) -> Path:
+    run = make_run(tmp_path / "r", wait=None)
+    (run / "scan.log").write_text(log)
+    return run
+
+
+def test_slide1_exact_settle_passes(tmp_path):
+    log = POSITIONING.format(n=1) + EXACT_LINE.format(wait=0.0)
+    results = spikecheck.check_folder(run_with_log(tmp_path, log))
+    assert status(results, "position-wait") == "PASS"
+    detail = next(r.detail for r in results if r.name == "position-wait")
+    assert "settled exactly after 0.00 s" in detail
+
+
+def test_exact_settle_ignores_the_strict_window(tmp_path):
+    log = POSITIONING.format(n=1) + EXACT_LINE.format(wait=42.0)
+    results = spikecheck.check_folder(run_with_log(tmp_path, log))
+    assert status(results, "position-wait") == "PASS"
+
+
+def test_jog_exact_settle_without_positioning_still_fails(tmp_path):
+    log = "INFO of135i: jog\n" + JOG_EXACT
+    results = spikecheck.check_folder(run_with_log(tmp_path, log))
+    assert status(results, "position-wait") == "FAIL"
+
+
+def test_jog_exact_settle_after_position_settle_is_not_position(tmp_path):
+    log = POSITIONING.format(n=1) + POSITION_LINE.format(wait=20.0) + JOG_EXACT
+    results = spikecheck.check_folder(run_with_log(tmp_path, log))
+    assert status(results, "position-wait") == "FAIL"
+
+
+def test_jog_exact_settle_before_positioning_is_not_position(tmp_path):
+    log = JOG_EXACT + POSITIONING.format(n=2) + POSITION_LINE.format(wait=3.31)
+    results = spikecheck.check_folder(run_with_log(tmp_path, log))
+    assert status(results, "position-wait") == "FAIL"
+
+
+def test_mixed_frames_exact_then_strict_in_window_passes(tmp_path):
+    log = (
+        POSITIONING.format(n=1)
+        + EXACT_LINE.format(wait=0.0)
+        + POSITIONING.format(n=4)
+        + POSITION_LINE.format(wait=10.44)
+        + JOG_EXACT
+    )
+    assert status(spikecheck.check_folder(run_with_log(tmp_path, log)), "position-wait") == "PASS"
+
+
+def test_mixed_frames_strict_out_of_window_fails_despite_exact(tmp_path):
+    log = (
+        POSITIONING.format(n=1)
+        + EXACT_LINE.format(wait=0.0)
+        + POSITIONING.format(n=4)
+        + POSITION_LINE.format(wait=42.9)
+    )
+    assert status(spikecheck.check_folder(run_with_log(tmp_path, log)), "position-wait") == "FAIL"
+
+
+def test_exact_settle_must_directly_follow_positioning(tmp_path):
+    log = POSITIONING.format(n=1) + "INFO of135i: other\n" + JOG_EXACT
+    assert status(spikecheck.check_folder(run_with_log(tmp_path, log)), "position-wait") == "FAIL"
+
+
 def test_multi_frame_uses_the_longest_wait(tmp_path):
     run = make_run(tmp_path / "r", wait=0.0)
     with (run / "scan.log").open("a") as log:
