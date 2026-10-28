@@ -39,8 +39,6 @@ Not verified, or known problems:
 - The driver's startup recovery is experimental and opt-in.
 - Calibration warnings and a default dark-level fallback appeared in the successful runs, so
   image quality on real slides is not established.
-- Dust repair is done at 8-bit precision: repaired pixels lose 16-bit depth (the rest of the
-  pipeline stays 16-bit).
 
 Do not treat the word "ejected" in any output as proof that the holder was released; check the
 holder physically.

@@ -7,6 +7,9 @@ those library kernels, independent of this project's code, gives the development
 result. Everywhere, the current code (serial and threaded) is compared with frozen copies of the
 pre-change implementations (tests/reference_pipeline.py) in the same environment. If a dependency
 update changes the pins, check the images by eye before re-pinning.
+
+Dust removal changed pixels on purpose (fixed dilation and radius, 16-bit repair): the pins were
+retaken then, and the frozen comparison runs the current dust removal on one thread.
 """
 
 import hashlib
@@ -19,7 +22,7 @@ import reference_pipeline
 from opticfilm_linux.batch.flags import compute_flags
 from opticfilm_linux.batch.model import Flag
 from opticfilm_linux.batch.previews import make_preview
-from opticfilm_linux.pipeline import arrays, dust
+from opticfilm_linux.pipeline import arrays, dust, run
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
 from synthetic import make_sweep
@@ -29,20 +32,20 @@ NEGATIVE = ProcessOptions(mode="negative", brightness_ev=0.5, rotation=90)
 # (enhanced, after preview, before preview) per slide
 PINNED = {
     "positive": [
-        ("0dd38874823d2313", "4365a694618f0645", "6a5debe78ef169c9"),
-        ("c0e1feca98e42f17", "8aa14f08224bf13b", "fbdcbbcee6223a2d"),
-        ("ed353fad9caf9fa9", "357d070dc4297d69", "89b723526263a2c1"),
-        ("2d0b37051eb2d699", "28e1f0b4d3748143", "9e0107edaf8d2a53"),
+        ("c993c6c3c3f0ed0b", "0a9ed6de40a8801b", "6a5debe78ef169c9"),
+        ("7d9861e26acd851d", "5da3f406a6d35f5e", "fbdcbbcee6223a2d"),
+        ("6399fda20467aa12", "4d36aab27f3e8f3f", "89b723526263a2c1"),
+        ("c115d1767cc314ff", "77a6412c4f8383f3", "9e0107edaf8d2a53"),
     ],
     "negative": [
-        ("2728e8474b35b706", "bbb63b7f6b8aeecd", "6a5debe78ef169c9"),
-        ("468dfe091d46a410", "5f8c409b114f93a6", "fbdcbbcee6223a2d"),
-        ("bc2381150777b364", "9898299cb2489d31", "89b723526263a2c1"),
-        ("2d5710f1d420cf3c", "e321d462ff93287f", "9e0107edaf8d2a53"),
+        ("31e84c15fcab36fd", "a629a447748f1f0d", "6a5debe78ef169c9"),
+        ("b5d99ff10aca4780", "13fa7170170a678f", "fbdcbbcee6223a2d"),
+        ("4f47602240579012", "469e4e1c30ec0cd4", "89b723526263a2c1"),
+        ("af8c02563fe5349d", "addca032a2025627", "9e0107edaf8d2a53"),
     ],
 }
 FLAGS = {"positive": (), "negative": (Flag.CLIPPING,)}
-PROBE = "06cd634ee476ceeb"  # _kernel_probe() on the machine the pins were taken on
+PROBE = "f9ada86de5f3f3b1"  # _kernel_probe() on the machine the pins were taken on
 
 
 def _digest(array: np.ndarray) -> str:
@@ -61,7 +64,7 @@ def _kernel_probe() -> str:
         -np.log10(np.clip(x, 1e-4, 1.0)),  # negative inversion's density
         np.log(x.astype(np.float64)),
         cv2.medianBlur(x8[..., 0], 21),
-        cv2.inpaint(x8, (x8[..., 0] > 240).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA),
+        cv2.inpaint(x16[..., 0], (x8[..., 0] > 240).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA),
         cv2.resize(x16, (20, 20), interpolation=cv2.INTER_AREA),
         np.percentile(x, [0.1, 50, 99.9]),
     ]
@@ -104,6 +107,7 @@ def test_outputs_match_the_frozen_pre_change_implementation(slides, name, option
     """Runs on every CPU: old serial code and new code, side by side in this environment."""
     with monkeypatch.context() as frozen:
         reference_pipeline.use_reference(frozen)
+        frozen.setattr(run, "remove_dust", dust.remove_dust)  # repairs changed on purpose
         reference = _outputs(slides, options, False, frozen)
     assert _outputs(slides, options, False, monkeypatch) == reference
     assert _outputs(slides, options, True, monkeypatch) == reference

@@ -5,6 +5,7 @@ checked on every CPU, not only where historical hashes happen to reproduce. Do n
 "fix" this file: it is the yardstick.
 """
 
+import math
 from collections.abc import Callable
 
 import cv2
@@ -59,6 +60,30 @@ def remove_dust(rgb: np.ndarray, ir: np.ndarray | None, *, dpi: int = 3600) -> n
         defect = mask[core]
         out[core][defect] = patch_core[defect].astype(np.uint16) * UINT8_TO_UINT16
     return out
+
+
+def reference_sharpen(rgb: np.ndarray, radius_px: float = 1.5, amount: float = 0.5) -> np.ndarray:
+    """detail.sharpen from before dpi scaling (main at d26b0cf)."""
+    if amount == 0:
+        return rgb.copy()
+
+    def apply(x: np.ndarray) -> np.ndarray:
+        return x + amount * (x - cv2.GaussianBlur(x, (0, 0), radius_px))
+
+    return map_strips(rgb, apply, margin=math.ceil(4 * radius_px) + 1)
+
+
+def reference_reduce_grain(rgb: np.ndarray, strength: float = 0.3) -> np.ndarray:
+    """detail.reduce_grain from before dpi scaling (main at d26b0cf)."""
+    if strength == 0:
+        return rgb.copy()
+    sigma_space = 2.5
+
+    def apply(x: np.ndarray) -> np.ndarray:
+        smooth = cv2.bilateralFilter(x, -1, 0.1, sigma_space)
+        return (1.0 - strength) * x + strength * smooth
+
+    return map_strips(rgb, apply, margin=math.ceil(3 * sigma_space) + 2)
 
 
 def use_reference(monkeypatch) -> None:

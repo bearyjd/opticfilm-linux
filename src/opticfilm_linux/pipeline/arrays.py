@@ -29,7 +29,10 @@ def to_uint16(values: np.ndarray) -> np.ndarray:
 
 
 def map_strips(
-    image: np.ndarray, func: Callable[[np.ndarray], np.ndarray], margin: int = 0
+    image: np.ndarray,
+    func: Callable[..., np.ndarray],
+    margin: int = 0,
+    with_rows: bool = False,
 ) -> np.ndarray:
     """Apply ``func`` (float32 in [0, 1] to float) to horizontal strips; returns a new uint16 image.
 
@@ -37,6 +40,7 @@ def map_strips(
     give the same result as a single pass while only a few strips of float temporaries are alive.
     Strips are independent and each writes only its own rows, so on a large image they run on a
     few threads (numpy and OpenCV release the GIL) with byte-identical results.
+    With ``with_rows`` ``func`` also receives the strip's padded row range ``(p0, p1)``.
     """
     height = image.shape[0]
     out = np.empty(image.shape, dtype=np.uint16)
@@ -44,7 +48,8 @@ def map_strips(
     def strip(y0: int) -> None:
         y1 = min(y0 + STRIP_ROWS, height)
         p0, p1 = max(0, y0 - margin), min(height, y1 + margin)
-        result = func(to_float(image[p0:p1]))
+        x = to_float(image[p0:p1])
+        result = func(x, p0, p1) if with_rows else func(x)
         out[y0:y1] = to_uint16(result[y0 - p0 : y1 - p0])
 
     starts = range(0, height, STRIP_ROWS)
