@@ -2,7 +2,8 @@
 
 The openings are found along the sweep from a 1-D brightness profile. Infrared is preferred:
 the opaque mount blocks it while film and clear windows pass it. Without infrared the
-luminance profile is used instead.
+luminance profile is used instead. Across the sweep the window is cropped from infrared only;
+without infrared the full width is kept.
 """
 
 import cv2
@@ -18,6 +19,15 @@ FULL_SCALE = 65535.0
 BLANK_MIN_MEAN = 0.95
 MOUNT_MARGIN = 0.005
 BLANK_MAX_STD = 0.02
+# Across the sweep: the window is where columns stay above the midpoint between mount and window.
+WINDOW_MIN_CONTRAST = 0.2
+WINDOW_COLUMN_PERCENTILES = (2.0, 98.0)
+WINDOW_LEVEL = 0.25  # of the way from mount to window; keeps dark picture content inside
+WINDOW_ROW_QUORUM = 0.9
+WINDOW_MIN_FRACTION = 0.5
+# Dropped from each mount-side edge: rounded corners and edge shadow.
+EDGE_INSET_MM = 0.15
+EDGE_INSET_MIN_PX = 2
 
 
 class SlideSplitError(ValueError):
@@ -54,22 +64,60 @@ def _openings(profile: np.ndarray, low: float, high: float, expected: int) -> li
     return best
 
 
+def edge_inset_px(dpi: int) -> int:
+    return max(EDGE_INSET_MIN_PX, round(EDGE_INSET_MM / MM_PER_INCH * dpi))
+
+
+def _longest_run(mask: np.ndarray) -> tuple[int, int] | None:
+    runs = _runs_above(mask.astype(np.float64), 0.5)
+    return max(runs, key=lambda run: run[1] - run[0]) if runs else None
+
+
+def _window_columns(plane: np.ndarray, dpi: int) -> tuple[int, int]:
+    """Column span ``(x, w)`` of the bright window in one opening; full width if unclear."""
+    width = plane.shape[1]
+    full = (0, width)
+    if plane.size == 0:
+        return full
+    columns = plane.mean(axis=0, dtype=np.float64)
+    low, high = np.percentile(columns, WINDOW_COLUMN_PERCENTILES)
+    if high - low < WINDOW_MIN_CONTRAST * FULL_SCALE:
+        return full
+    bright = (plane > low + WINDOW_LEVEL * (high - low)).mean(axis=0) >= WINDOW_ROW_QUORUM
+    run = _longest_run(bright)
+    if run is None:
+        return full
+    inset = edge_inset_px(dpi)
+    start = run[0] + inset if run[0] > 0 else 0
+    end = run[1] - inset if run[1] < width else width
+    if end - start < WINDOW_MIN_FRACTION * width:
+        return full
+    return start, end - start
+
+
 def split_slides(sweep: RawSweep, expected: int = 4) -> tuple[Slide, ...]:
     target = APERTURE_LENGTH_MM / MM_PER_INCH * sweep.dpi
     low, high = target * (1 - LENGTH_TOLERANCE), target * (1 + LENGTH_TOLERANCE)
     runs = _openings(_profile(sweep), low, high, expected)
     if len(runs) != expected:
         raise SlideSplitError(f"expected {expected} slide openings, found {len(runs)}")
-    width = sweep.rgb.shape[1]
-    return tuple(
-        Slide(
-            index=index,
-            rgb=sweep.rgb[start:end],
-            ir=None if sweep.ir is None else sweep.ir[start:end],
-            box=Box(x=0, y=start, w=width, h=end - start),
+    slides = []
+    for index, (start, end) in enumerate(runs):
+        # Only infrared separates mount from picture; luminance cannot tell a dark edge from mount.
+        x, w = (
+            (0, sweep.rgb.shape[1])
+            if sweep.ir is None
+            else _window_columns(sweep.ir[start:end], sweep.dpi)
         )
-        for index, (start, end) in enumerate(runs)
-    )
+        slides.append(
+            Slide(
+                index=index,
+                rgb=sweep.rgb[start:end, x : x + w],
+                ir=None if sweep.ir is None else sweep.ir[start:end, x : x + w],
+                box=Box(x=x, y=start, w=w, h=end - start),
+            )
+        )
+    return tuple(slides)
 
 
 def is_blank(slide: Slide) -> bool:

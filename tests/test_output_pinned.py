@@ -8,9 +8,11 @@ result. Everywhere, the current code (serial and threaded) is compared with froz
 pre-change implementations (tests/reference_pipeline.py) in the same environment. If a dependency
 update changes the pins, check the images by eye before re-pinning.
 
-The positive pins were re-taken on purpose when linear scans moved their per-channel black level
-and colour stretch before the shared exposure curve (run._tone); the negative pins and the
-before-previews did not change.
+Dust removal changed pixels on purpose (fixed dilation and radius, 16-bit repair): the pins were
+retaken then, and the frozen comparison runs the current dust removal on one thread.
+The positive pins were re-taken on purpose again when linear scans moved their per-channel black
+level and colour stretch before the shared exposure curve (run._tone), on top of that dust
+removal; the negative pins and the before-previews did not change.
 """
 
 import hashlib
@@ -23,7 +25,7 @@ import reference_pipeline
 from opticfilm_linux.batch.flags import compute_flags
 from opticfilm_linux.batch.model import Flag
 from opticfilm_linux.batch.previews import make_preview
-from opticfilm_linux.pipeline import arrays, dust
+from opticfilm_linux.pipeline import arrays, dust, run
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
 from synthetic import make_sweep
@@ -33,20 +35,20 @@ NEGATIVE = ProcessOptions(mode="negative", brightness_ev=0.5, rotation=90)
 # (enhanced, after preview, before preview) per slide
 PINNED = {
     "positive": [
-        ("ea10c5caa7bd2f6d", "da4334efd2c2b869", "6a5debe78ef169c9"),
-        ("e31fa4461c56b37f", "269e4904d426366d", "fbdcbbcee6223a2d"),
-        ("35437e81f9b3592f", "955975dc943654f8", "89b723526263a2c1"),
-        ("9f3bf76f7a74a814", "a640d605bfe05d53", "9e0107edaf8d2a53"),
+        ("88614f35d04bcf05", "47f32b2929bdf34a", "6a5debe78ef169c9"),
+        ("8a8f511e31e55ce9", "a7b107eccc51ca37", "fbdcbbcee6223a2d"),
+        ("a8c2279781e16993", "97fa3d1e423ef10e", "89b723526263a2c1"),
+        ("b5cf50e34e5c5e6d", "0ac7921dfd3b1e4a", "9e0107edaf8d2a53"),
     ],
     "negative": [
-        ("2728e8474b35b706", "bbb63b7f6b8aeecd", "6a5debe78ef169c9"),
-        ("468dfe091d46a410", "5f8c409b114f93a6", "fbdcbbcee6223a2d"),
-        ("bc2381150777b364", "9898299cb2489d31", "89b723526263a2c1"),
-        ("2d5710f1d420cf3c", "e321d462ff93287f", "9e0107edaf8d2a53"),
+        ("31e84c15fcab36fd", "a629a447748f1f0d", "6a5debe78ef169c9"),
+        ("b5d99ff10aca4780", "13fa7170170a678f", "fbdcbbcee6223a2d"),
+        ("4f47602240579012", "469e4e1c30ec0cd4", "89b723526263a2c1"),
+        ("af8c02563fe5349d", "addca032a2025627", "9e0107edaf8d2a53"),
     ],
 }
 FLAGS = {"positive": (), "negative": (Flag.CLIPPING,)}
-PROBE = "06cd634ee476ceeb"  # _kernel_probe() on the machine the pins were taken on
+PROBE = "f9ada86de5f3f3b1"  # _kernel_probe() on the machine the pins were taken on
 
 
 def _digest(array: np.ndarray) -> str:
@@ -65,7 +67,7 @@ def _kernel_probe() -> str:
         -np.log10(np.clip(x, 1e-4, 1.0)),  # negative inversion's density
         np.log(x.astype(np.float64)),
         cv2.medianBlur(x8[..., 0], 21),
-        cv2.inpaint(x8, (x8[..., 0] > 240).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA),
+        cv2.inpaint(x16[..., 0], (x8[..., 0] > 240).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA),
         cv2.resize(x16, (20, 20), interpolation=cv2.INTER_AREA),
         np.percentile(x, [0.1, 50, 99.9]),
     ]
@@ -108,6 +110,7 @@ def test_outputs_match_the_frozen_pre_change_implementation(slides, name, option
     """Runs on every CPU: old serial code and new code, side by side in this environment."""
     with monkeypatch.context() as frozen:
         reference_pipeline.use_reference(frozen)
+        frozen.setattr(run, "remove_dust", dust.remove_dust)  # repairs changed on purpose
         reference = _outputs(slides, options, False, frozen)
     assert _outputs(slides, options, False, monkeypatch) == reference
     assert _outputs(slides, options, True, monkeypatch) == reference
@@ -131,7 +134,7 @@ def test_outputs_are_pixel_identical_to_the_pinned_ones(
 # comparison above shares the current tone code on both sides.
 STATS = {
     "positive": [
-        (0.4329, 0.6022, 0.4136, 0.5059),
+        (0.4328, 0.6022, 0.4136, 0.5059),
         (0.4626, 0.5330, 0.4464, 0.4699),
         (0.4805, 0.4447, 0.4865, 0.4652),
         (0.4783, 0.4645, 0.4846, 0.4712),
