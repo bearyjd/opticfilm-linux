@@ -33,10 +33,10 @@ NEGATIVE = ProcessOptions(mode="negative", brightness_ev=0.5, rotation=90)
 # (enhanced, after preview, before preview) per slide
 PINNED = {
     "positive": [
-        ("221ba81f9c610826", "d4847da5e7862d54", "6a5debe78ef169c9"),
-        ("e21d21d97e8c004c", "61dcbd7ba9eaf21f", "fbdcbbcee6223a2d"),
-        ("f5da101046bd404f", "0f5d0254676871f5", "89b723526263a2c1"),
-        ("c01024f4f89c3a21", "85a1a509b1eec1fe", "9e0107edaf8d2a53"),
+        ("ea10c5caa7bd2f6d", "da4334efd2c2b869", "6a5debe78ef169c9"),
+        ("e31fa4461c56b37f", "269e4904d426366d", "fbdcbbcee6223a2d"),
+        ("35437e81f9b3592f", "955975dc943654f8", "89b723526263a2c1"),
+        ("9f3bf76f7a74a814", "a640d605bfe05d53", "9e0107edaf8d2a53"),
     ],
     "negative": [
         ("2728e8474b35b706", "bbb63b7f6b8aeecd", "6a5debe78ef169c9"),
@@ -123,3 +123,32 @@ def test_outputs_are_pixel_identical_to_the_pinned_ones(
 ):
     expected = [(*hashes, FLAGS[name]) for hashes in PINNED[name]]
     assert _outputs(slides, options, threads, monkeypatch) == expected
+
+
+# Per slide: mean R, G, B and the median of the channel mean, as fractions of full scale.
+# These hold on every CPU (kernel rounding moves a value by at most a code, far below the
+# tolerance), so unlike the hashes they guard the tone stages where the probe skips: the frozen
+# comparison above shares the current tone code on both sides.
+STATS = {
+    "positive": [
+        (0.4329, 0.6022, 0.4136, 0.5059),
+        (0.4626, 0.5330, 0.4464, 0.4699),
+        (0.4805, 0.4447, 0.4865, 0.4652),
+        (0.4783, 0.4645, 0.4846, 0.4712),
+    ],
+    "negative": [
+        (0.5716, 0.4010, 0.5913, 0.4923),
+        (0.5535, 0.4793, 0.5704, 0.5438),
+        (0.5246, 0.5636, 0.5187, 0.5364),
+        (0.5265, 0.5412, 0.5193, 0.5192),
+    ],
+}
+STATS_TOLERANCE = 3e-4  # about 20 codes; rounding of the pinned values is 5e-5
+
+
+@pytest.mark.parametrize("name, options", [("positive", POSITIVE), ("negative", NEGATIVE)])
+def test_output_statistics_match_on_every_cpu(slides, name, options):
+    for slide, expected in zip(slides, STATS[name], strict=True):
+        pixels = enhance_slide(slide, options, 600).reshape(-1, 3).astype(np.float64) / 65535
+        stats = (*pixels.mean(axis=0), np.median(pixels.mean(axis=1)))
+        assert np.allclose(stats, expected, rtol=0, atol=STATS_TOLERANCE), (name, slide.index)

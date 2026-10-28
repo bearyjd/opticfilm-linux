@@ -49,7 +49,10 @@ def subtract_black(rgb: np.ndarray) -> np.ndarray:
     offset differently, a cast that no later stretch undoes, so the per-channel part goes first;
     the shared part is left to ``auto_exposure``, which takes it from the whole frame.
     Black levels are a low percentile of the frame's interior, so dark mount at the edges
-    (cropped or not) never sets them. A channel with no range there (a uniform or fully clipped
+    (cropped or not) never sets them. A channel's offset is also never larger than the same
+    offset measured on the whole frame: a scanner offset is in every pixel (the opaque mount
+    shows it too), while coloured content in the middle must not push neutral shadows near the
+    edges below zero. A channel with no range in the interior (a uniform or fully clipped
     channel) is left alone, offsets are capped at ``MAX_BLACK_OFFSET``, and the subtraction is
     in float, so nothing wraps below zero.
     """
@@ -61,8 +64,9 @@ def subtract_black(rgb: np.ndarray) -> np.ndarray:
     usable = high - black > MIN_SPAN
     if not usable.any():
         return rgb.copy()
-    offset = np.where(usable, black - black[usable].min(), 0.0)
-    offset = np.minimum(offset, MAX_BLACK_OFFSET).astype(np.float32)
+    whole = np.percentile(sample.reshape(-1, 3), BLACK_PERCENTILE, axis=0)
+    offset = np.minimum(black - black[usable].min(), whole - whole[usable].min())
+    offset = np.where(usable, np.clip(offset, 0.0, MAX_BLACK_OFFSET), 0.0).astype(np.float32)
     if not offset.any():
         return rgb.copy()
     return map_strips(rgb, lambda x: np.clip(x - offset, 0.0, 1.0))

@@ -97,11 +97,35 @@ def test_the_old_order_was_dark_and_green_deficient():
 
 
 def test_the_black_level_comes_from_the_interior_not_the_mount():
+    """Mount darker than the film still carries the scanner's offset; the film's level is used."""
     image = _dark_linear_scene(mount=True)
-    image[:, :MOUNT] = 0  # a mount darker than any channel's black would fool a whole-frame pick
-    image[:, -MOUNT:] = 0
     lows = np.percentile(_interior(subtract_black(image)), 0.5, axis=0)
-    assert abs(lows[1] - lows[0]) < 0.001  # green's offset was removed
+    assert abs(lows[1] - lows[0]) < 0.001  # green's offset was removed, not just the mount's
+
+
+def _neutral_edges_coloured_middle() -> np.ndarray:
+    """Neutral dark shadows around the frame, a coloured subject in the middle (Codex probe)."""
+    x = np.linspace(0.01, 0.02, 10_000).reshape(100, 100)
+    rgb = np.stack([x] * 3, axis=2)
+    rgb[20:80, 20:80] += [0.2, 0.1, 0.0]
+    return np.rint(rgb * FULL).astype(np.uint16)
+
+
+def test_a_coloured_middle_does_not_push_neutral_edge_shadows_below_zero():
+    image = _neutral_edges_coloured_middle()
+    assert np.array_equal(subtract_black(image), image)
+
+
+@pytest.mark.parametrize("strength", [0.0, 1.0])
+def test_a_coloured_middle_leaves_the_edges_neutral_through_the_pipeline(strength):
+    options = ProcessOptions(
+        remove_dust=False, sharpen_amount=0.0, grain_strength=0.0, color_strength=strength
+    )
+    out = enhance_slide(_slide(_neutral_edges_coloured_middle()), options, 600)
+    assert np.mean(out == 0, axis=(0, 1)).max() < 0.01
+    if strength == 0.0:
+        edge = out[:10].reshape(-1, 3).astype(np.float64).mean(axis=0)
+        assert edge.max() / edge.min() < 1.01
 
 
 def test_subtract_black_removes_each_channels_own_offset():
