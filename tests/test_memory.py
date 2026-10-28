@@ -5,9 +5,14 @@ import pytest
 
 from opticfilm_linux.pipeline import arrays
 from opticfilm_linux.pipeline.detail import reduce_grain, sharpen
-from opticfilm_linux.pipeline.tone import auto_exposure, invert_negative, restore_color
+from opticfilm_linux.pipeline.tone import (
+    auto_exposure,
+    invert_negative,
+    restore_color,
+    subtract_black,
+)
 
-STEPS = [auto_exposure, restore_color, invert_negative, sharpen, reduce_grain]
+STEPS = [subtract_black, auto_exposure, restore_color, invert_negative, sharpen, reduce_grain]
 
 
 def _image(rows: int = 1500, cols: int = 1500) -> np.ndarray:
