@@ -51,6 +51,9 @@ def _tone(image: np.ndarray, options: ProcessOptions, linear: bool) -> np.ndarra
     Raw scans are dark and each channel has its own black level; a gamma bends any per-channel
     offset or stretch differently, which shows as a cast that no later stretch can undo. Tone
     mapped pixels (inverted negatives, finished images) keep the conservative order and floor.
+    At full colour strength ``restore_color`` re-takes each channel's black from the whole frame,
+    mount included; opaque mount reads the sensor's dark level, which carries the same
+    per-channel offset as the film, so cropped and uncropped slides come out alike.
     """
     if options.mode == "positive" and linear:
         image = subtract_black(image)

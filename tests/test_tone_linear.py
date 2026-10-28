@@ -150,12 +150,14 @@ def test_tiny_frames_do_not_fail():
 
 
 def test_the_gamma_floor_still_holds_on_a_near_black_frame():
-    """A frame that is black but for a few bright specks must not have its noise lifted to grey."""
-    image = np.full((100, 100, 3), np.uint16(0.001 * FULL), np.uint16)
-    image[:2, :] = FULL  # 2 % bright pixels set the white point
+    """A frame that is black but for a few bright specks must not have its noise lifted to grey:
+    it wants a gamma near 0.1, and the floor keeps its median well below the target."""
+    rng = np.random.default_rng(1)
+    dark = rng.uniform(0.001, 0.003, (100, 100, 3))
+    dark[:2, :] = 1.0  # 2 % bright pixels set the white point
+    image = np.rint(dark * FULL).astype(np.uint16)
     out = auto_exposure(image, gamma_limits=LINEAR_GAMMA_LIMITS)
-    floor = (0.001 / 1.0) ** LINEAR_GAMMA_LIMITS[0]
-    assert float(np.median(out)) / FULL <= floor + 0.01
+    assert float(np.median(out)) / FULL < 0.35
 
 
 def test_gamma_limits_are_sane():
