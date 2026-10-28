@@ -13,7 +13,11 @@ DUST_FRACTION = 0.005  # more than this share of the image masked as defects: du
 SAMPLE_STEP = 4
 
 
-def compute_flags(enhanced: np.ndarray, ir: np.ndarray | None, dpi: int) -> tuple[Flag, ...]:
+def compute_flags(
+    enhanced: np.ndarray, ir: np.ndarray | None, dpi: int, visible: np.ndarray | None = None
+) -> tuple[Flag, ...]:
+    """``visible`` is the slide's raw colour image, registered to ``ir`` (``enhanced`` may be
+    turned or mirrored): with it, infrared dips on its strong edges do not count as dust."""
     sample = enhanced[::SAMPLE_STEP, ::SAMPLE_STEP]
     mean = float(sample.mean()) / FULL_SCALE
     clipped = float(np.mean((sample == 0) | (sample == FULL_SCALE)))
@@ -24,6 +28,6 @@ def compute_flags(enhanced: np.ndarray, ir: np.ndarray | None, dpi: int) -> tupl
         flags.append(Flag.TOO_BRIGHT)
     if clipped > CLIP_FRACTION:
         flags.append(Flag.CLIPPING)
-    if ir is not None and float(defect_mask_for(ir, dpi).mean()) > DUST_FRACTION:
+    if ir is not None and float(defect_mask_for(ir, dpi, visible=visible).mean()) > DUST_FRACTION:
         flags.append(Flag.DUST)
     return tuple(flags)
