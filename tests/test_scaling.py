@@ -11,7 +11,12 @@ import reference_pipeline
 from opticfilm_linux.pipeline import arrays, dust
 from opticfilm_linux.pipeline.detail import reduce_grain, sharpen
 from opticfilm_linux.pipeline.dust import remove_dust
-from opticfilm_linux.pipeline.tone import auto_exposure, invert_negative, restore_color
+from opticfilm_linux.pipeline.tone import (
+    auto_exposure,
+    invert_negative,
+    restore_color,
+    subtract_black,
+)
 
 
 def _dusty(rows: int = 1200, cols: int = 1500) -> tuple[np.ndarray, np.ndarray]:
@@ -35,7 +40,7 @@ def test_dust_removal_never_converts_the_whole_slide_to_8_bit():
     assert peak < 1.8 * rgb.nbytes
 
 
-STEPS = [auto_exposure, restore_color, invert_negative, sharpen, reduce_grain]
+STEPS = [subtract_black, auto_exposure, restore_color, invert_negative, sharpen, reduce_grain]
 
 
 @pytest.mark.parametrize("step", STEPS, ids=lambda s: s.__name__)

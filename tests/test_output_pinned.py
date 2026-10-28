@@ -7,6 +7,10 @@ those library kernels, independent of this project's code, gives the development
 result. Everywhere, the current code (serial and threaded) is compared with frozen copies of the
 pre-change implementations (tests/reference_pipeline.py) in the same environment. If a dependency
 update changes the pins, check the images by eye before re-pinning.
+
+The positive pins were re-taken on purpose when linear scans moved their per-channel black level
+and colour stretch before the shared exposure curve (run._tone); the negative pins and the
+before-previews did not change.
 """
 
 import hashlib
@@ -29,10 +33,10 @@ NEGATIVE = ProcessOptions(mode="negative", brightness_ev=0.5, rotation=90)
 # (enhanced, after preview, before preview) per slide
 PINNED = {
     "positive": [
-        ("0dd38874823d2313", "4365a694618f0645", "6a5debe78ef169c9"),
-        ("c0e1feca98e42f17", "8aa14f08224bf13b", "fbdcbbcee6223a2d"),
-        ("ed353fad9caf9fa9", "357d070dc4297d69", "89b723526263a2c1"),
-        ("2d0b37051eb2d699", "28e1f0b4d3748143", "9e0107edaf8d2a53"),
+        ("221ba81f9c610826", "d4847da5e7862d54", "6a5debe78ef169c9"),
+        ("e21d21d97e8c004c", "61dcbd7ba9eaf21f", "fbdcbbcee6223a2d"),
+        ("f5da101046bd404f", "0f5d0254676871f5", "89b723526263a2c1"),
+        ("c01024f4f89c3a21", "85a1a509b1eec1fe", "9e0107edaf8d2a53"),
     ],
     "negative": [
         ("2728e8474b35b706", "bbb63b7f6b8aeecd", "6a5debe78ef169c9"),

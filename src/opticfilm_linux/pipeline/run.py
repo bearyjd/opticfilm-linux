@@ -13,10 +13,12 @@ from opticfilm_linux.pipeline.dust import remove_dust
 from opticfilm_linux.pipeline.orient import mirror, rotate
 from opticfilm_linux.pipeline.split import is_blank, split_slides
 from opticfilm_linux.pipeline.tone import (
+    LINEAR_GAMMA_LIMITS,
     adjust_brightness,
     auto_exposure,
     invert_negative,
     restore_color,
+    subtract_black,
 )
 
 
@@ -43,16 +45,38 @@ class RunResult:
         return len(self.blank_positions)
 
 
-def enhance_slide(slide: Slide, options: ProcessOptions, dpi: int) -> np.ndarray:
-    """Dust, negative, exposure, colour, brightness, grain, sharpening, rotation, then mirror."""
+def _tone(image: np.ndarray, options: ProcessOptions, linear: bool) -> np.ndarray:
+    """Exposure and colour. Linear positives get both in linear light, before the shared curve.
+
+    Raw scans are dark and each channel has its own black level; a gamma bends any per-channel
+    offset or stretch differently, which shows as a cast that no later stretch can undo. Tone
+    mapped pixels (inverted negatives, finished images) keep the conservative order and floor.
+    """
+    if options.mode == "positive" and linear:
+        image = subtract_black(image)
+        if options.color_strength > 0:
+            image = restore_color(image, strength=options.color_strength)
+        return auto_exposure(image, gamma_limits=LINEAR_GAMMA_LIMITS)
+    image = auto_exposure(image)
+    if options.color_strength > 0:
+        image = restore_color(image, strength=options.color_strength)
+    return image
+
+
+def enhance_slide(
+    slide: Slide, options: ProcessOptions, dpi: int, *, linear: bool = True
+) -> np.ndarray:
+    """Dust, negative, exposure, colour, brightness, grain, sharpening, rotation, then mirror.
+
+    ``linear`` says the pixels are raw scanner data; finished images from other software
+    (``linear=False``) are already tone mapped and take the conservative path in ``_tone``.
+    """
     image = slide.rgb
     if options.remove_dust:
         image = remove_dust(image, slide.ir, dpi=dpi)
     if options.mode == "negative":
         image = invert_negative(image)
-    image = auto_exposure(image)
-    if options.color_strength > 0:
-        image = restore_color(image, strength=options.color_strength)
+    image = _tone(image, options, linear)
     if options.brightness_ev != 0:
         image = adjust_brightness(image, options.brightness_ev)
     image = reduce_grain(image, strength=options.grain_strength)
