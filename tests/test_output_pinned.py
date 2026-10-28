@@ -92,7 +92,9 @@ def _outputs(slides, options, threads: bool, monkeypatch) -> list[tuple]:
         enhanced = enhance_slide(slide, options, 600)
         digests = (_digest(enhanced), _digest(make_preview(enhanced)))
         before = _digest(make_preview(slide.rgb, gamma=2.2))
-        results.append((*digests, before, compute_flags(enhanced, slide.ir, 600)))
+        results.append(
+            (*digests, before, compute_flags(enhanced, slide.ir, 600, visible=slide.rgb))
+        )
     return results
 
 

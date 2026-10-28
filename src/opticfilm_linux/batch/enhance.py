@@ -153,7 +153,7 @@ def _process_slide(
     try:
         write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
         write_preview(make_preview(enhanced), _pending(after))
-        flags = compute_flags(enhanced, slide.ir, sweep.dpi)
+        flags = compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
         _merge_slide(store, number, tray, snapshot, flags, False, defaults, publish)
     finally:  # a result that was dropped leaves nothing behind
         _pending(before).unlink(missing_ok=True)
