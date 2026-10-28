@@ -8,7 +8,7 @@ The recording itself is read-only and happens on the Linux host. The vendor app 
 
 - **Anomaly rule.** If you hear or see grinding, stalled movement, a holder that is not moving while the motor runs, or a cancel that does not stop the carriage: stop waiting for the app. Power the scanner off at once (off until the lights go out), stop the recording, and note it in the action log. Do not retry.
 - **Start state.** Each action below names its start state. Confirm it physically first. If the state is not what the step says, skip the step.
-- **Checklist exceptions.** Captures 01 (retained holder) and 02 (no holder) deliberately start without a freshly front-loaded holder. All other checklist rules still apply. Capture 03 (load) starts with the holder out and the loading is done by the app, not by hand.
+- **Checklist exceptions.** Captures 01 (retained holder), 02 (no holder) and 03 (load) deliberately start without a freshly front-loaded holder, so the checklist rule "no commands until the holder is seated" does not apply to them. For 03, put the holder in by hand the way the app's load prompt tells you, then press Load. All other checklist rules still apply to every capture.
 - Do not unplug the scanner or force the holder during a capture.
 - Nothing from `ofscan` may talk to the scanner during a capture. The Windows VM owns it.
 
@@ -16,7 +16,7 @@ The recording itself is read-only and happens on the Linux host. The vendor app 
 
 1. **Prepare while the scanner is powered on and attached to the VM.** Find its USB bus: `grep -l 1436 /sys/bus/usb/devices/*/idProduct`; the folder name starts with the bus number (for example `3-2` is bus 3). Note the bus. Do this before the cold-start captures, because a powered-off scanner has no entry. The bus number stays the same across power cycles unless the VM changes the port; check again before each capture that you started from a power-off.
 2. **Make sure usbmon works.** If `/dev/usbmon<bus>` does not exist, run `sudo modprobe usbmon`.
-3. **Storage.** Use a folder outside the repository (for example `~/captures/2026-10-28/`) so nothing is committed or published by accident. Check free space first: `df -h <folder>`. Keep at least 20 GB free. Captures are truncated per packet (below), so they are much smaller than the scans, but a long session still adds up.
+3. **Storage.** Use a folder outside the repository so nothing is committed or published by accident. Create it first: `mkdir -p ~/captures/2026-10-28/`. Check free space: `df -h ~/captures/2026-10-28/`. Keep at least 20 GB free. Captures are truncated per packet (below), so they are much smaller than the scans, but a long session still adds up.
 4. Captures contain traffic from every device on the same bus. They stay on your machine.
 
 ## One capture
@@ -50,6 +50,15 @@ Do the short ones first. Skip any step if the start state is not what it says.
 | 09b | slide1-noir | holder loaded | scan slide 1 at 600 dpi, IR off, positive |
 | 09c | slide1-neg | holder loaded | scan slide 1 at 600 dpi, IR on, negative |
 | 10 | idle | app open | leave it alone for 6 minutes, then stop (`timeout 420` instead of 3600) |
+
+## Getting to each start state
+
+The captures are not a continuous run. Between them, prepare the start state without recording, following the checklist (power off until the lights go out; remove a holder only if it is confirmed released, never by force):
+
+- After 01, to reach 02: power off, and take the holder out only if the app showed it released. If it will not come out, stop and get advice.
+- After 04 (eject), to reach 05 onward: load the holder again by hand and through the app, without recording, or record it again as 03.
+- After 08 (cancel), power-cycle before the next scan capture.
+- Before 09a to 09c, confirm the holder is loaded and the same four slides are in it.
 
 Notes:
 
