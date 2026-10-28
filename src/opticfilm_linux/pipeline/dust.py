@@ -40,6 +40,7 @@ _SQUARE_3 = np.ones((3, 3), np.uint8)
 EDGE_STRIP_ROWS = 64
 SPECK_DEPTH = 0.1  # a defect darkening the colour by 10% or more...
 SPECK_FLOOR = 0.01 * 65535  # ...and by more than noise in dark areas does is dust, edge or not
+SPECK_BOX_WINDOWS = 2  # larger defects are not judged as specks (bounds the work)
 Box = tuple[int, int, int, int]
 Repaired = tuple[tuple[slice, slice], np.ndarray, np.ndarray]
 
@@ -96,16 +97,23 @@ def _in_darker_regions(
     the pixels around it: a speck or scratch that darkens the colour evenly (a plateau, so no
     single pixel is a local minimum), not a dip along an edge, which lies between the edge's
     dark and bright sides. "Clearly darker": the defect's median is below the 10th percentile
-    of its one-pixel ring by SPECK_DEPTH of it and by SPECK_FLOOR. A defect whose bounding box
-    is wider than ``widest_px`` both ways is no speck or scratch (the median window finds only
-    defects narrower than itself; edges joined into networks can span the frame), which also
-    bounds the work per defect."""
+    of its one-pixel ring by SPECK_DEPTH of it and by SPECK_FLOOR. Every defect is judged,
+    including one inside a hole of another (its region includes what it encloses). A defect
+    whose bounding box is wider than the median window both ways and covers more than
+    SPECK_BOX_WINDOWS windows a side is not judged (edges joined into networks can span the
+    frame), which bounds the work per defect; a long straight or a bent scratch is judged.
+    Known limit: a speck joined to an edge dip is judged with the dip, so the speck pixels
+    flagged as edge are dropped if the dip outweighs it."""
     out = np.zeros(edges.shape, bool)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     height, width = mask.shape
-    for contour in contours:
+    largest = (SPECK_BOX_WINDOWS * widest_px) ** 2
+    for contour, (_, _, _, parent) in zip(contours, hierarchy[0], strict=True):
+        if parent >= 0:  # the outline of a hole, not a defect
+            continue
         x, y, w, h = cv2.boundingRect(contour)
-        if min(w, h) > widest_px or not edges[y : y + h, x : x + w].any():
+        too_big = min(w, h) > widest_px and w * h > largest
+        if too_big or not edges[y : y + h, x : x + w].any():
             continue
         y0, y1, x0, x1 = max(0, y - 1), min(height, y + h + 1), max(0, x - 1), min(width, x + w + 1)
         region = np.zeros((y1 - y0, x1 - x0), np.uint8)

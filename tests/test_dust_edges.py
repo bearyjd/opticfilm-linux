@@ -364,8 +364,8 @@ def test_a_faint_speck_two_pixels_from_an_edge_is_kept():
 def _rescued(inside: int, around: int, size: int = 4, widest: int = 21) -> bool:
     """Is a ``size`` square defect of visible level ``inside`` on ``around``, all of it flagged
     as on an edge, rescued as a speck?"""
-    visible = np.full((60, 60), around, np.uint16)
-    mask = np.zeros((60, 60), np.uint8)
+    visible = np.full((100, 100), around, np.uint16)
+    mask = np.zeros((100, 100), np.uint8)
     cell = (slice(20, 20 + size), slice(20, 20 + size))
     visible[cell], mask[cell] = inside, 1
     return bool(dust._in_darker_regions(visible, mask, mask.astype(bool), widest)[cell].all())
@@ -378,6 +378,47 @@ def test_only_a_clearly_darker_defect_is_rescued_as_a_speck():
     assert _rescued(500, 2_000)
 
 
-def test_defects_wider_than_the_median_window_both_ways_are_not_rescued():
-    assert _rescued(5_000, 40_000, size=21, widest=21)
-    assert not _rescued(5_000, 40_000, size=22, widest=21)
+def test_defects_beyond_two_median_windows_a_side_are_not_rescued():
+    assert _rescued(5_000, 40_000, size=42, widest=21)
+    assert not _rescued(5_000, 40_000, size=43, widest=21)
+
+
+def test_a_long_thin_defect_is_judged_however_long():
+    visible = np.full((40, 900), 40_000, np.uint16)
+    mask = np.zeros((40, 900), np.uint8)
+    visible[10:14, 20:880], mask[10:14, 20:880] = 5_000, 1
+    rescued = dust._in_darker_regions(visible, mask, mask.astype(bool), 21)
+    assert rescued[10:14, 20:880].all()
+
+
+def _scratch_frame(enclosing_ring: bool):
+    """A 4 px wide L-shaped scratch spanning 280 x 280 px, or a 4 px speck inside a 4 px wide
+    square ring of the same size, both darkening the colour evenly."""
+    rgb = np.full((400, 400, 3), 40_000, np.uint16)
+    ir = np.full((400, 400), 45_000, np.uint16)
+    dark = np.zeros((400, 400), bool)
+    if enclosing_ring:
+        dark[60:340, 60:340] = True
+        dark[64:336, 64:336] = False
+        dark[198:202, 198:202] = True
+    else:
+        dark[60:340, 60:64] = True
+        dark[336:340, 60:340] = True
+    rgb[dark], ir[dark] = 5_000, 10_000
+    return rgb, ir, dark
+
+
+@pytest.mark.parametrize(
+    "enclosing_ring, dpi",
+    [(False, 7200), (True, 7200), (True, 600)],
+    ids=["bent-scratch-7200", "enclosed-speck-7200", "enclosed-speck-600"],
+)
+def test_bent_scratches_and_enclosed_specks_are_kept(enclosing_ring, dpi):
+    """At 600 dpi the ring is too big to be judged as a speck; the speck inside it still is."""
+    rgb, ir, dark = _scratch_frame(enclosing_ring)
+    plain = defect_mask_for(ir, dpi)
+    assert plain[dark].all()
+    with_visible = defect_mask_for(ir, dpi, visible=rgb)
+    if dpi == 7200:
+        assert np.array_equal(with_visible, plain)
+    assert with_visible[198:202, 198:202].all() if enclosing_ring else True
