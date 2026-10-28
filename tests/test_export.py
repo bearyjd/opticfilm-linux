@@ -76,7 +76,7 @@ def test_export_is_recomputed_from_raw_and_settings(store, tmp_path):
     apply_slide_settings(store, 1, 1, settings)
     result = export_batch(store, tmp_path / "out")
     sweep = load_sweep(store.sweep_dir(1, 1))
-    options = options_for(store.snapshot().defaults, "positive", settings)
+    options = options_for(store.snapshot().defaults, "positive", settings, 1)
     expected = enhance_slide(split_slides(sweep)[0], options, sweep.dpi)
     assert np.array_equal(tifffile.imread(result.written[0]), expected)
 

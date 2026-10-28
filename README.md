@@ -136,6 +136,14 @@ left-right, and the slide's own rotate and mirror apply on top of the batch's. S
 it, and change the whole batch later with **Batch orientation…**: every slide is enhanced again
 and must be exported again; trays whose raw scans were removed keep their old orientation.
 
+If some holder slots are always loaded the same wrong way, give them a default when you create
+the batch: `ofscan batch new ... --slot-rotate 2=180,3=180 --slot-mirror 1` (in the app: "Some
+holder slots are always loaded differently"). It applies to that slot in every tray, on top of
+the batch orientation, and is never stored as a choice on the slide: the slide's own rotate and
+mirror still apply on top, and "reset to auto" goes back to the slot default. Slot defaults are
+set when the batch is created and cannot be changed later. A batch with slot defaults cannot be
+opened by versions released before this setting existed (they refuse it rather than ignore it).
+
 ## Desktop app
 
 `opticfilm` is one live window over the same batches: press **Scan** whenever the scanner says it

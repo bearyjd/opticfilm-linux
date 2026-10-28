@@ -356,3 +356,37 @@ def test_an_interrupted_scanner_offers_only_confirm_and_the_dialog_clears_it(
     finally:
         bridge.shutdown()
         engine.deleteLater()
+
+
+def _item(root, name):
+    """Find a visual item by name; Repeater delegates are not QObject children of the window."""
+    pending = [root.contentItem()]
+    while pending:
+        item = pending.pop()
+        if item.objectName() == name:
+            return item
+        pending.extend(item.childItems())
+    return None
+
+
+def test_the_new_batch_form_sets_slot_orientations(loaded, tmp_path):
+    from opticfilm_linux.batch.model import SlotOrientation
+    from opticfilm_linux.batch.store import BatchStore
+
+    bridge, engine, warnings = loaded
+    root = engine.rootObjects()[0]
+    root.findChild(QObject, "startPage").setProperty(
+        "parentFolder", QUrl.fromLocalFile(str(tmp_path))
+    )
+    root.findChild(QObject, "newBatchName").setProperty("text", "Slots")
+    assert _item(root, "slotRotation2") is None  # hidden until asked for
+    root.findChild(QObject, "slotOrientationsToggle").setProperty("checked", True)
+    _wait(bridge, lambda: _item(root, "slotRotation2") is not None)
+    _item(root, "slotRotation2").setProperty("currentIndex", 2)  # 180
+    _item(root, "slotMirror3").setProperty("checked", True)
+    QMetaObject.invokeMethod(root.findChild(QObject, "createBatch"), "click")  # may be off-screen
+    _wait(bridge, lambda: bridge.hasBatch)
+    with BatchStore.open(tmp_path / "Slots", readonly=True) as store:
+        slots = store.snapshot().defaults.slots
+    assert slots == (SlotOrientation(2, 180), SlotOrientation(3, 0, True))
+    assert warnings == []

@@ -7,6 +7,8 @@ import org.kde.kirigami as Kirigami
 Kirigami.ScrollablePage {
     id: page
 
+    objectName: "startPage"
+
     property url parentFolder: ""
 
     title: qsTr("OpticFilm Linux")
@@ -59,6 +61,8 @@ Kirigami.ScrollablePage {
             QQC2.TextField {
                 id: nameField
 
+                objectName: "newBatchName"
+
                 Kirigami.FormData.label: qsTr("Name:")
                 placeholderText: qsTr("Family trips")
             }
@@ -101,12 +105,63 @@ Kirigami.ScrollablePage {
                 text: qsTr("Scan one tray first and check; you can change it later.")
                 opacity: 0.7
             }
+            QQC2.CheckBox {
+                id: slotsBox
+
+                objectName: "slotOrientationsToggle"
+                text: qsTr("Some holder slots are always loaded differently")
+            }
+            Repeater {
+                id: slotRepeater
+
+                model: slotsBox.checked ? bridge.slotCount : 0
+                delegate: RowLayout {
+                    id: slotRow
+
+                    required property int index
+                    readonly property int rotation: parseInt(slotRotation.currentText)
+                    readonly property bool mirrored: slotMirror.checked
+
+                    objectName: "slotOrientation" + (index + 1)
+                    Kirigami.FormData.label: qsTr("Holder slot %1:").arg(index + 1)
+
+                    QQC2.ComboBox {
+                        id: slotRotation
+
+                        objectName: "slotRotation" + (slotRow.index + 1)
+                        model: bridge.rotationChoices
+                        displayText: qsTr("%1° more").arg(currentText)
+                    }
+                    QQC2.CheckBox {
+                        id: slotMirror
+
+                        objectName: "slotMirror" + (slotRow.index + 1)
+                        text: qsTr("Mirror")
+                    }
+                }
+            }
+            QQC2.Label {
+                visible: slotsBox.checked
+                text: qsTr("Applied to that slot in every tray, on top of the slide orientation above. Your own changes to a slide still apply on top.")
+                opacity: 0.7
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+            }
             QQC2.Button {
+                objectName: "createBatch"
                 text: qsTr("Create batch")
                 icon.name: "document-new"
                 highlighted: true
                 enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== ""
-                onClicked: bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked)
+                onClicked: {
+                    let rotations = [];
+                    let mirrors = [];
+                    for (let i = 0; i < slotRepeater.count; ++i) {
+                        rotations.push(slotRepeater.itemAt(i).rotation);
+                        mirrors.push(slotRepeater.itemAt(i).mirrored);
+                    }
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked, rotations, mirrors);
+                }
             }
         }
 

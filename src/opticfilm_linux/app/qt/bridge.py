@@ -10,7 +10,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
-from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
+from opticfilm_linux.app.controller import LOCKED_PREFIX, SLIDES_PER_TRAY, Controller
 from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_text
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
@@ -24,6 +24,7 @@ from opticfilm_linux.app.prefs import (
 from opticfilm_linux.app.qt.models import DictListModel
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
+from opticfilm_linux.batch.slots import slot_orientations
 
 TICK_MS = 500
 DEBOUNCE_MS = 300
@@ -163,6 +164,7 @@ class Bridge(QObject):
     defaultDpi = Property(int, lambda self: self._demo_dpi or DEFAULT_DPI, constant=True)  # noqa: N815
     dpiChoices = Property("QVariantList", lambda self: list(DPI_CHOICES), constant=True)  # noqa: N815
     rotationChoices = Property("QVariantList", lambda self: list(ROTATIONS), constant=True)  # noqa: N815
+    slotCount = Property(int, lambda self: SLIDES_PER_TRAY, constant=True)  # noqa: N815
     loadCommand = Property(str, lambda self: self._load_command, constant=True)  # noqa: N815
     nextStripEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.next_strip_enabled, constant=True
@@ -230,7 +232,7 @@ class Bridge(QObject):
 
     # -- batch ---------------------------------------------------------------------------
 
-    @Slot(str, str, str, str, int, int, bool)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList")
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -240,12 +242,24 @@ class Bridge(QObject):
         dpi: int,
         rotation: int = 0,
         mirror: bool = False,
+        slot_rotations: list[int] | None = None,
+        slot_mirrors: list[bool] | None = None,
     ) -> None:
+        """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
+        rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
+        mirrored = [i for i, m in enumerate(slot_mirrors or (), start=1) if m]
         folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
         self._pending.clear()
         self._opening = self._last_attempt = folder
         self._controller.new_batch(
-            folder, name.strip() or folder.name, album, date or None, dpi, rotation, mirror
+            folder,
+            name.strip() or folder.name,
+            album,
+            date or None,
+            dpi,
+            rotation,
+            mirror,
+            slot_orientations(rotations, mirrored),
         )
 
     @Slot(str, bool)
