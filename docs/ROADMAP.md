@@ -22,7 +22,7 @@ First results (2026-10-27), from the owner's local run logs (not published; unre
 - The slide-4 3600 dpi scan was stopped by hand at its second calibration read-back timeout, the same kind as in the clean runs. That abort was conservative, not a detected positioning failure. This does not show the 3600 dpi slide-4 scan would have completed.
 - Both cold-eject failures ended on the same idle, sensor-clear status, not the exact value the driver waits for. The old logs have no read history, so they cannot tell "moved and stopped off the sensor" from "never started". The new outcome classification is intended to separate these on the next run; that is not yet confirmed.
 
-Still to do: a short report script under `scripts/` that prints this classification for any run folder, so the next hardware session gets it automatically.
+Done: `scripts/poll_report.py` prints this classification for any run folder (see `docs/hardware-checklist.md`), so the next hardware session gets it automatically. Its output is a lead from logs, not proof.
 
 ### 2. One supervised hardware session
 
