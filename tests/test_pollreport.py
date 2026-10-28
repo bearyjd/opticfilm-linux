@@ -47,12 +47,17 @@ def test_decode_accepts_both_spellings(text):
     assert status.second == 0x55
 
 
+def _bits(text):
+    status = pollreport.decode_status(text)
+    assert status is not None
+    return status.bits
+
+
 def test_decode_bit_names():
-    status = pollreport.decode_status("0xf055")
-    assert status.bits == ("power_bit", "buffer_empty", "bit20", "bit10")
-    assert pollreport.decode_status("0b55").bits == ("loader_sensor", "bit02", "motor_enabled")
-    assert pollreport.decode_status("0455").bits == ("lamp_on",)
-    assert pollreport.decode_status("0055").bits == ()
+    assert _bits("0xf055") == ("power_bit", "buffer_empty", "bit20", "bit10")
+    assert _bits("0b55") == ("loader_sensor", "bit02", "motor_enabled")
+    assert _bits("0455") == ("lamp_on",)
+    assert _bits("0055") == ()
 
 
 @pytest.mark.parametrize(
@@ -271,7 +276,8 @@ def test_one_verdict_line_per_run(tmp_path):
     verdicts = [line for line in out.splitlines() if line.startswith("VERDICT ")]
     assert [v.split(":")[0] for v in verdicts] == ["VERDICT a", "VERDICT b"]
     assert "1 benign-baseline" in verdicts[0]
-    assert "cold-start move" in verdicts[1]
+    assert "cold-start move: 1 timeout(s)" in verdicts[1]
+    assert "no cold-start move timeouts found" in verdicts[0]
 
 
 def test_no_register_addresses_in_output(tmp_path):
@@ -322,6 +328,69 @@ def test_readback_line_with_colon_after_register_is_a_mismatch(tmp_path):
     out = report(write(tmp_path / "run", "scan.log", text))
     assert "1 read-back mismatch" in out
     assert "no calibration poll timeouts found" in out
+
+
+@pytest.mark.parametrize(
+    "writes,pulses", [("9" * 5000, "2"), ("47", "9" * 5000), ("9" * 5000,) * 2]
+)
+def test_huge_digit_counts_in_failure_line_do_not_crash(tmp_path, writes, pulses):
+    digits = "9" * 5000
+    text = (
+        "ERROR of135i: hardware session FAILED in operation cold_init, phase cold_init:homing-1, "
+        f"after {writes} writes ({pulses} execute pulses): boom\n"
+    )
+    out = report(write(tmp_path / "run", "eject.log", text))
+    assert "VERDICT run:" in out
+    assert digits not in out
+
+
+def test_settle_how_is_allowlisted_and_cannot_forge_lines(tmp_path):
+    folder = tmp_path / "run"
+    make_diag(
+        folder,
+        "tray-f1.diag.json",
+        {
+            "poll_settle": [
+                {"how": "match"},
+                {"how": "x\nVERDICT forged: all fine"},
+                {"how": "wv=0x1234"},
+                {"how": "A" * 500},
+            ]
+        },
+    )
+    out = report(folder)
+    assert "unrecognised 3" in out
+    assert "match 1" in out
+    assert "forged" not in out
+    assert "0x1234" not in out
+    assert sum(line.startswith("VERDICT") for line in out.splitlines()) == 1
+
+
+def test_aggregate_poll_timeouts_without_details_are_not_reported_as_none(tmp_path):
+    folder = tmp_path / "run"
+    make_diag(folder, "tray-f1.diag.json", {"poll_timeouts": 2})
+    verdict = next(x for x in report(folder).splitlines() if x.startswith("VERDICT"))
+    assert "diagnostics count 2 without detail (cannot classify)" in verdict
+    assert "no calibration poll timeouts found" not in verdict
+
+
+def test_aggregate_count_with_details_is_not_double_counted(tmp_path):
+    folder = tmp_path / "run"
+    make_diag(
+        folder,
+        "tray-f1.diag.json",
+        {"poll_timeouts": 1, "poll_timeout_details": [{"last": "ec55", "want": "dc55"}]},
+    )
+    verdict = next(x for x in report(folder).splitlines() if x.startswith("VERDICT"))
+    assert "without detail" not in verdict
+
+
+def test_zero_or_negative_aggregate_is_none_found(tmp_path):
+    folder = tmp_path / "run"
+    make_diag(folder, "tray-f1.diag.json", {"poll_timeouts": 0})
+    make_diag(folder, "tray-f2.diag.json", {"poll_timeouts": -3})
+    verdict = next(x for x in report(folder).splitlines() if x.startswith("VERDICT"))
+    assert "no calibration poll timeouts found" in verdict
 
 
 def test_script_runs_as_a_program(tmp_path):

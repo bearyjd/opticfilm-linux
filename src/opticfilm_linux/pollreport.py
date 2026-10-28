@@ -37,6 +37,7 @@ HEADER = (
 )
 
 _STATUS_RE = re.compile(r"(?:0x)?([0-9a-f]{2})([0-9a-f]{2})", re.IGNORECASE)
+_HOW_RE = re.compile(r"[a-z][a-z_-]{0,19}")
 _LOG_TIMEOUT_RE = re.compile(
     r"^\S*\s*WARNING\b.*?\bpoll\b.*?timed out after [\d.]+s \(last ([^,\s)]+), want ([^\s)]+)\)"
 )
@@ -48,7 +49,7 @@ _HOMING_RE = re.compile(r"cold_init: homing round (\d+)/(\d+)")
 _RESYNC_RE = re.compile(r"cold_init: resync status word (\S+) \(want ([^)\s]+)\)")
 _FAILED_RE = re.compile(
     r"hardware session FAILED in operation (\w+), phase ([\w:.-]+), "
-    r"after (\d+) writes \((\d+) execute pulses?\)"
+    r"after (\d{1,9}) writes \((\d{1,9}) execute pulses?\)"
 )
 _OUTCOME_RE = re.compile(
     r"\boutcome\b[\s=:]*['\"]?(" + "|".join(OUTCOMES) + r")(?![\w-])", re.IGNORECASE
@@ -76,7 +77,11 @@ def decode_status(value: object) -> Status | None:
 
 
 def classify_calibration(last: object, want: object) -> str:
-    """benign-baseline, acquisition-not-observed, other, or malformed (unreadable word)."""
+    """benign-baseline, acquisition-not-observed, other, or malformed (unreadable word).
+
+    ``benign-baseline`` is judged on the wanted value alone (it is itself an idle/empty-buffer
+    value); the observed bits are printed beside it so a reader can still see what was read.
+    """
     got, wanted = decode_status(last), decode_status(want)
     if got is None or wanted is None:
         return "malformed"
@@ -156,6 +161,13 @@ class DiagSummary:
     details: tuple[CalEvent, ...]
 
 
+def _how_label(value: object) -> str:
+    """A settle mode word for display; anything not a short plain word is hidden."""
+    if isinstance(value, str) and _HOW_RE.fullmatch(value):
+        return value
+    return "unrecognised"
+
+
 def _diag_summary(path: Path) -> DiagSummary:
     data = _load_diag(path)
     if data is None:
@@ -163,7 +175,7 @@ def _diag_summary(path: Path) -> DiagSummary:
     count = data.get("poll_timeouts")
     count = count if isinstance(count, int) and not isinstance(count, bool) else None
     settle = [e for e in _as_list(data.get("poll_settle")) if isinstance(e, dict)]
-    how = Counter(e["how"] for e in settle if isinstance(e.get("how"), str))
+    how = Counter(_how_label(e.get("how")) for e in settle if isinstance(e.get("how"), str))
     details = tuple(
         _cal_event(path.name, "timeout", e.get("last"), e.get("want"))
         for e in _as_list(data.get("poll_timeout_details"))
@@ -243,7 +255,10 @@ def _cal_section(events: list[CalEvent], diags: list[DiagSummary]) -> tuple[list
         )
     for d in diags:
         lines.append("  " + _diag_line(d))
-    if not (log_timeouts or diag_timeouts):
+    undetailed = sum(
+        d.poll_timeouts for d in diags if not d.details and d.poll_timeouts and d.poll_timeouts > 0
+    )
+    if not (log_timeouts or diag_timeouts or undetailed):
         lines.append("  no calibration poll timeouts found")
         return lines, "no calibration poll timeouts found"
     # The two sources can describe the same timeouts; report each, never a merged total.
@@ -252,6 +267,8 @@ def _cal_section(events: list[CalEvent], diags: list[DiagSummary]) -> tuple[list
         for label, found in (("logs", log_timeouts), ("diagnostics", diag_timeouts))
         if found
     ]
+    if undetailed:
+        parts.append(f"diagnostics count {undetailed} without detail (cannot classify)")
     return lines, f"calibration timeouts: {'; '.join(parts)}"
 
 
