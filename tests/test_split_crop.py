@@ -122,13 +122,12 @@ def test_noisy_mount_columns_do_not_move_the_edges(dpi):
         assert abs((slide.box.x + slide.box.w) - (x1 - inset)) <= 2
 
 
-def test_without_ir_the_luminance_profile_is_used():
-    sweep, x0, x1 = _mounted(600, ir=False)
-    inset = _inset(600)
+def test_without_ir_the_full_width_is_kept():
+    sweep, _, _ = _mounted(600, ir=False)
+    width = sweep.rgb.shape[1]
     for slide in split_slides(sweep):
         assert slide.ir is None
-        assert abs(slide.box.x - (x0 + inset)) <= 3
-        assert abs((slide.box.x + slide.box.w) - (x1 - inset)) <= 3
+        assert (slide.box.x, slide.box.w) == (0, width)
 
 
 def test_narrow_sliver_window_falls_back_to_full_width():

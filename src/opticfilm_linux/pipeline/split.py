@@ -2,7 +2,8 @@
 
 The openings are found along the sweep from a 1-D brightness profile. Infrared is preferred:
 the opaque mount blocks it while film and clear windows pass it. Without infrared the
-luminance profile is used instead.
+luminance profile is used instead. Across the sweep the window is cropped from infrared only;
+without infrared the full width is kept.
 """
 
 import cv2
@@ -100,10 +101,14 @@ def split_slides(sweep: RawSweep, expected: int = 4) -> tuple[Slide, ...]:
     runs = _openings(_profile(sweep), low, high, expected)
     if len(runs) != expected:
         raise SlideSplitError(f"expected {expected} slide openings, found {len(runs)}")
-    plane = sweep.ir if sweep.ir is not None else sweep.rgb.mean(axis=2, dtype=np.float32)
     slides = []
     for index, (start, end) in enumerate(runs):
-        x, w = _window_columns(plane[start:end], sweep.dpi)
+        # Only infrared separates mount from picture; luminance cannot tell a dark edge from mount.
+        x, w = (
+            (0, sweep.rgb.shape[1])
+            if sweep.ir is None
+            else _window_columns(sweep.ir[start:end], sweep.dpi)
+        )
         slides.append(
             Slide(
                 index=index,
