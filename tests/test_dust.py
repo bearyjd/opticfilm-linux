@@ -102,3 +102,108 @@ def test_defect_mask_for_scales_with_dpi_like_remove_dust():
     ir = _apertures(DUST)[0][1]
     assert np.array_equal(defect_mask_for(ir, 600), defect_mask(ir, dilate_px=2, median_px=21))
     assert defect_mask_for(ir, 1200).sum() >= defect_mask_for(ir, 600).sum()
+
+
+# Real infrared and colour planes register to 0 px, so the mask only needs to cover a speck's
+# soft edge: its dilation and the inpaint radius must not grow with the scan resolution.
+SPECK_STEP = 40
+
+
+def _one_pixel_specks(size: int, step: int = SPECK_STEP) -> tuple[np.ndarray, list]:
+    """A clean infrared plane with a 1-px dark speck every ``step`` pixels."""
+    ir = np.full((size, size), 58_000, np.uint16)
+    steps = range(step, size - step, step)
+    centers = [(y, x) for y in steps for x in steps]
+    for y, x in centers:
+        ir[y, x] = 15_000
+    return ir, centers
+
+
+def _covered_per_speck(dpi: int) -> float:
+    from opticfilm_linux.pipeline.dust import defect_mask_for
+
+    ir, centers = _one_pixel_specks(1200)
+    mask = defect_mask_for(ir, dpi)
+    assert all(mask[y, x] for y, x in centers)
+    return mask.sum() / len(centers)
+
+
+def test_mask_around_a_one_pixel_speck_stays_small_at_3600_dpi():
+    assert _covered_per_speck(3600) <= 25
+
+
+def test_mask_coverage_does_not_grow_with_dpi():
+    at_600 = _covered_per_speck(600)
+    assert _covered_per_speck(3600) <= 1.5 * at_600
+    assert _covered_per_speck(7200) <= 1.5 * at_600
+
+
+def _ramp_with_blob() -> tuple[np.ndarray, np.ndarray, tuple[slice, slice]]:
+    """A smooth two-axis 16-bit ramp with a 40x40 defect in the middle."""
+    yy, xx = np.mgrid[0:200, 0:200].astype(np.float64)
+    level = 4_000 + 150 * yy + 90 * xx  # steep: neighbouring repaired pixels differ in level
+    rgb = np.repeat(level[..., None], 3, axis=2).astype(np.uint16)
+    ir = np.full((200, 200), 58_000, np.uint16)
+    core = (slice(80, 120), slice(80, 120))
+    rgb[core] = 1_000
+    ir[core] = 15_000
+    return rgb, ir, core
+
+
+def test_repair_keeps_16_bit_precision():
+    from opticfilm_linux.pipeline.dust import defect_mask_for
+
+    rgb, ir, _ = _ramp_with_blob()
+    mask = defect_mask_for(ir, 3600)
+    repaired = remove_dust(rgb, ir, dpi=3600)[..., 1][mask]
+    assert np.unique(repaired).size > 256
+    assert not np.all(repaired % 257 == 0)
+
+
+def test_repair_follows_the_ramp_under_the_defect():
+    rgb, ir, core = _ramp_with_blob()
+    yy, xx = np.mgrid[core]
+    truth = 4_000 + 150 * yy + 90 * xx
+    repaired = remove_dust(rgb, ir, dpi=3600)[core][..., 1].astype(np.float64)
+    # a 3 px radius fills a 40 px hole from its rim: close to the ramp, not exact (left
+    # unrepaired, the error would be about 2.5x the ramp's range)
+    assert np.abs(repaired - truth).mean() < 0.15 * np.ptp(truth)
+
+
+def _inpaint_work(monkeypatch, ir: np.ndarray, rgb: np.ndarray, dpi: int) -> int:
+    """Masked pixels times radius squared over every cv2.inpaint call: inpainting's cost."""
+    from opticfilm_linux.pipeline import dust
+
+    work = [0]
+    real = cv2.inpaint
+
+    def counting(src, mask, radius, flags):
+        work[0] += int(np.count_nonzero(mask)) * radius * radius
+        return real(src, mask, radius, flags)
+
+    monkeypatch.setattr(dust.cv2, "inpaint", counting)
+    monkeypatch.setattr(dust, "INPAINT_WORKERS", 1)
+    dust.remove_dust(rgb, ir, dpi=dpi)
+    return work[0]
+
+
+def test_inpaint_work_for_2000_specks_at_3600_dpi_is_bounded(monkeypatch):
+    size = 45 * SPECK_STEP  # about 1900 specks
+    ir, centers = _one_pixel_specks(size)
+    rgb = np.full((size, size, 3), 30_000, np.uint16)
+    work = _inpaint_work(monkeypatch, ir, rgb, 3600)
+    assert len(centers) > 1800
+    # a 21 px mask, a 3 px radius and three channels, with 2x slack; the 12 px dilation and
+    # 18 px radius this replaced cost about 1.4 million per speck
+    assert work / len(centers) < 2 * 21 * 3 * 3 * 3
+
+
+def test_repair_of_a_flat_area_keeps_its_exact_16_bit_level():
+    """Losing the low byte, on the way in or out, moves these levels by 50 or more (TELEA itself
+    rounds by a few)."""
+    rgb = np.full((120, 120, 3), (30_123, 12_345, 50_001), np.uint16)
+    ir = np.full((120, 120), 58_000, np.uint16)
+    rgb[50:70, 50:70] = 1_000
+    ir[50:70, 50:70] = 15_000
+    out = remove_dust(rgb, ir, dpi=3600)
+    assert np.abs(out[50:70, 50:70].astype(np.int64) - (30_123, 12_345, 50_001)).max() <= 8
