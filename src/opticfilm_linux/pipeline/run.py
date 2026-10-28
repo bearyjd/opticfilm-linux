@@ -82,8 +82,8 @@ def enhance_slide(
     image = _tone(image, options, linear)
     if options.brightness_ev != 0:
         image = adjust_brightness(image, options.brightness_ev)
-    image = reduce_grain(image, strength=options.grain_strength)
-    image = sharpen(image, amount=options.sharpen_amount)
+    image = reduce_grain(image, strength=options.grain_strength, dpi=dpi)
+    image = sharpen(image, amount=options.sharpen_amount, dpi=dpi)
     if options.rotation:
         image = rotate(image, options.rotation)
     return mirror(image) if options.mirror else image
