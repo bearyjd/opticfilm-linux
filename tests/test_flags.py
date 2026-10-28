@@ -58,3 +58,11 @@ def test_flags_come_in_fixed_order():
     image = _flat(0.02)
     image[:30] = FULL
     assert compute_flags(image, None, 600) == (Flag.TOO_DARK, Flag.CLIPPING)
+
+
+def test_infrared_dips_on_visible_edges_are_not_counted_as_dust():
+    from test_dust_edges import _edge_frame
+
+    rgb, ir, _ = _edge_frame(specks=False)
+    assert Flag.DUST in compute_flags(rgb, ir, 600)
+    assert Flag.DUST not in compute_flags(rgb, ir, 600, visible=rgb)
