@@ -36,6 +36,7 @@ PATCH_BUDGET_BYTES = 256 * 1024 * 1024
 EDGE_REACH_PX = (1, 2)
 EDGE_CONTRAST = 0.5  # the brighter neighbour is at least twice the darker one
 EDGE_FLOOR = 0.02 * 65535  # and brighter by 2% of full scale, so near-black noise is no edge
+EDGE_RIM_PX = 2 * max(EDGE_REACH_PX)  # an edge-like rim this wide, joined to a speck, is kept
 _SQUARE_3 = np.ones((3, 3), np.uint8)
 EDGE_STRIP_ROWS = 64
 SPECK_DEPTH = 0.1  # a defect darkening the colour by 10% or more...
@@ -72,7 +73,13 @@ def defect_mask(
         edges = _on_visible_edges(visible, found)
         if edges.any():
             edges &= ~_in_darker_regions(visible, mask, edges, _odd(median_px))
-        mask = (found & ~edges).astype(np.uint8)
+        kept = (found & ~edges).astype(np.uint8)
+        # A speck joined to an edge dip is judged with it, so its own edge-like rim may be lost:
+        # grow the kept pixels back through found ones only, EDGE_RIM_PX steps, so the speck is
+        # masked whole while the dip further along the edge stays out.
+        for _ in range(EDGE_RIM_PX):
+            kept = cv2.dilate(kept, _SQUARE_3) & mask
+        mask = kept
     if dilate_px > 0 and mask.any():
         mask = cv2.dilate(mask, _disc(dilate_px))
     return mask.astype(bool)
@@ -102,8 +109,8 @@ def _in_darker_regions(
     whose bounding box is wider than the median window both ways and covers more than
     SPECK_BOX_WINDOWS windows a side is not judged (edges joined into networks can span the
     frame), which bounds the work per defect; a long straight or a bent scratch is judged.
-    Known limit: a speck joined to an edge dip is judged with the dip, so the speck pixels
-    flagged as edge are dropped if the dip outweighs it."""
+    A speck joined to an edge dip is judged with the dip; ``defect_mask`` grows its kept
+    pixels back over its rim."""
     out = np.zeros(edges.shape, bool)
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     height, width = mask.shape

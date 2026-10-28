@@ -422,3 +422,24 @@ def test_bent_scratches_and_enclosed_specks_are_kept(enclosing_ring, dpi):
     if dpi == 7200:
         assert np.array_equal(with_visible, plain)
     assert with_visible[198:202, 198:202].all() if enclosing_ring else True
+
+
+def _speck_joined_to_an_edge_dip():
+    """A dense 6 x 6 speck on the bright side of a step, touching an infrared dip that runs
+    along the step's transition column."""
+    visible = np.full((80, 80), 40_000, np.uint16)
+    visible[:, :40] = 2_000
+    visible[:, 40] = 20_000
+    ir = np.full((80, 80), 45_000, np.uint16)
+    ir[10:70, 40] = 25_000  # the edge dip
+    speck = (slice(37, 43), slice(41, 47))
+    visible[speck], ir[speck] = 5_000, 10_000
+    return visible, ir, speck
+
+
+def test_a_speck_joined_to_an_edge_dip_is_kept_whole():
+    visible, ir, speck = _speck_joined_to_an_edge_dip()
+    assert defect_mask(ir, dilate_px=0)[speck].all()
+    assert defect_mask(ir, dilate_px=0, visible=visible)[speck].all()
+    # and the dip along the edge, away from the speck, is still left out
+    assert not defect_mask(ir, dilate_px=0, visible=visible)[15:25, 40].any()
