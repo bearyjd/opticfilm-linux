@@ -176,6 +176,17 @@ def test_strips_and_threads_do_not_change_high_dpi_results(dpi, monkeypatch):
     assert np.array_equal(sharpen(image, dpi=dpi), whole[1])
 
 
+@pytest.mark.parametrize("size", [(25, 25), (26, 37), (24, 24)])
+def test_edge_pixels_beyond_whole_shrink_blocks_still_count(size):
+    """Codex finding: rows/columns past the last whole 12x12 block were dropped and refilled."""
+    image = np.zeros((*size, 3), np.uint16)
+    image[-1, :] = FULL
+    image[:, -1] = FULL
+    out = reduce_grain(image, strength=1.0, dpi=7200)
+    assert out[-1, size[1] // 2, 0] > 0.1 * FULL
+    assert out[size[0] // 2, -1, 0] > 0.1 * FULL
+
+
 def test_scale_is_capped_at_7200_dpi():
     image = _grain_pattern(2)
     assert np.array_equal(sharpen(image, dpi=100_000), sharpen(image, dpi=7200))

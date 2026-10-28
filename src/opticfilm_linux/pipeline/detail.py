@@ -73,19 +73,22 @@ def _reduce_grain_shrunk(rgb: np.ndarray, strength: float, scale: float, factor:
     The smoothed layer is enlarged again strip by strip, so no full-size float image exists.
     """
     height, width = rgb.shape[:2]
-    small_h, small_w = height // factor, width // factor
-    small = cv2.resize(
-        rgb[: small_h * factor, : small_w * factor],
-        (small_w, small_h),
-        interpolation=cv2.INTER_AREA,
+    small_h, small_w = -(-height // factor), -(-width // factor)
+    over_h, over_w = small_h * factor - height, small_w * factor - width
+    # a partial last block is completed by repeating the edge, so no pixel is left out
+    padded = (
+        cv2.copyMakeBorder(rgb, 0, over_h, 0, over_w, cv2.BORDER_REPLICATE)
+        if (over_h or over_w)
+        else rgb
     )
+    small = cv2.resize(padded, (small_w, small_h), interpolation=cv2.INTER_AREA)
+    del padded
     sigma_space = GRAIN_SIGMA_SPACE * scale / factor
 
     def bilateral(x: np.ndarray) -> np.ndarray:
         return cv2.bilateralFilter(x, -1, GRAIN_SIGMA_COLOR, sigma_space)
 
     smooth = to_float(map_strips(small, bilateral, margin=math.ceil(3 * sigma_space) + 2))
-    cols = np.minimum(np.arange(width), small_w * factor - 1)
 
     def blend(x: np.ndarray, p0: int, p1: int) -> np.ndarray:
         first = max(0, p0 // factor - 1)  # one extra row of context for the linear enlargement
@@ -95,7 +98,7 @@ def _reduce_grain_shrunk(rgb: np.ndarray, strength: float, scale: float, factor:
             (small_w * factor, (last - first) * factor),
             interpolation=cv2.INTER_LINEAR,
         )
-        rows = np.minimum(np.arange(p0, p1), small_h * factor - 1) - first * factor
-        return (1.0 - strength) * x + strength * band[rows][:, cols]
+        offset = p0 - first * factor
+        return (1.0 - strength) * x + strength * band[offset : offset + p1 - p0, :width]
 
     return map_strips(rgb, blend, with_rows=True)
