@@ -210,12 +210,17 @@ def test_edge_check_memory_is_bounded_by_strips():
     """No full-size float temporaries: a float32 copy of this frame alone would be 64 MB."""
     rgb, ir = _big_edge_frame(4000)
     candidates = np.ones(ir.shape, bool)  # worst case: every pixel a candidate
-    tracemalloc.start()
+    tracing = tracemalloc.is_tracing()  # leave a caller's tracing as it was
+    if not tracing:
+        tracemalloc.start()
     try:
+        base = tracemalloc.get_traced_memory()[0]
+        tracemalloc.reset_peak()
         dust._on_visible_edges(rgb, candidates)
-        _, peak = tracemalloc.get_traced_memory()
+        peak = tracemalloc.get_traced_memory()[1] - base
     finally:
-        tracemalloc.stop()
+        if not tracing:
+            tracemalloc.stop()
     assert peak < ir.size + 24 * 1024 * 1024
 
 
@@ -289,3 +294,90 @@ def test_a_line_beside_an_edge_that_is_not_between_its_sides_is_kept(line):
     ir = np.full((80, 80), int(0.7 * FULL), np.uint16)
     ir[40, 40] = int(0.2 * FULL)
     assert defect_mask(ir, dilate_px=0, visible=visible)[40, 40]
+
+
+@pytest.mark.parametrize("block", [(4, 4), (6, 6), (4, 50), (50, 4), (12, 12)])
+@pytest.mark.parametrize("dpi", [600, 3600, 7200])
+def test_dense_plateau_specks_and_scratches_are_kept_whole(block, dpi):
+    """A speck or scratch that darkens the colour evenly is a plateau, not a single-pixel
+    minimum: every pixel has a dark neighbour inside it. Its pixels must all stay masked."""
+    rgb = np.full((140, 140, 3), 40_000, np.uint16)
+    ir = np.full((140, 140), 45_000, np.uint16)
+    rows, cols = slice(40, 40 + block[0]), slice(40, 40 + block[1])
+    rgb[rows, cols] = 5_000
+    ir[rows, cols] = 10_000
+    plain = defect_mask_for(ir, dpi)
+    assert plain[rows, cols].all()
+    assert np.array_equal(defect_mask_for(ir, dpi, visible=rgb), plain)
+
+
+def test_a_speck_beside_an_edge_is_kept():
+    """One pixel into the bright side: darker than both its neighbours, so a speck."""
+    visible = np.full((80, 80), 40_000, np.uint16)
+    visible[:, :40] = 2_000
+    visible[40, 41] = 20_000
+    ir = np.full((80, 80), 45_000, np.uint16)
+    ir[40, 41] = 10_000
+    assert defect_mask(ir, dilate_px=0, visible=visible)[40, 41]
+
+
+def test_a_speck_on_the_transition_pixel_itself_is_given_up():
+    """Known limit: dust sitting exactly on a strong edge's transition pixel looks, in the
+    colour image, like the transition itself, so it is left alone, as the edge dips are."""
+    visible = np.full((80, 80), 40_000, np.uint16)
+    visible[:, :40] = 2_000
+    visible[40, 40] = 20_000
+    ir = np.full((80, 80), 45_000, np.uint16)
+    ir[40, 40] = 10_000
+    assert defect_mask(ir, dilate_px=0)[40, 40]
+    assert not defect_mask(ir, dilate_px=0, visible=visible)[40, 40]
+
+
+@pytest.mark.parametrize(
+    "visible",
+    [
+        np.zeros((10, 10), np.uint8),
+        np.zeros((10, 10), np.float32),
+        np.zeros((10, 10, 4), np.uint16),
+        np.zeros((10, 10, 3, 1), np.uint16),
+    ],
+    ids=["uint8", "float", "4-channel", "4-d"],
+)
+def test_visible_planes_off_the_16_bit_scale_or_shape_are_refused(visible):
+    ir = np.full((10, 10), 45_000, np.uint16)
+    with pytest.raises(ValueError, match="visible"):
+        defect_mask(ir, visible=visible)
+
+
+def test_a_faint_speck_two_pixels_from_an_edge_is_kept():
+    """5% darker than the bright side, so the plateau rescue does not apply; but darker than
+    each of its four neighbours, which is enough for a speck that a reach of 2 px puts on the
+    edge."""
+    visible = np.full((80, 80), 40_000, np.uint16)
+    visible[:, :40] = 2_000
+    visible[40, 41] = 38_000
+    ir = np.full((80, 80), 45_000, np.uint16)
+    ir[40, 41] = 10_000
+    assert defect_mask(ir, dilate_px=0, visible=visible)[40, 41]
+
+
+def _rescued(inside: int, around: int, size: int = 4, widest: int = 21) -> bool:
+    """Is a ``size`` square defect of visible level ``inside`` on ``around``, all of it flagged
+    as on an edge, rescued as a speck?"""
+    visible = np.full((60, 60), around, np.uint16)
+    mask = np.zeros((60, 60), np.uint8)
+    cell = (slice(20, 20 + size), slice(20, 20 + size))
+    visible[cell], mask[cell] = inside, 1
+    return bool(dust._in_darker_regions(visible, mask, mask.astype(bool), widest)[cell].all())
+
+
+def test_only_a_clearly_darker_defect_is_rescued_as_a_speck():
+    assert _rescued(34_000, 40_000)  # 15% darker
+    assert not _rescued(37_000, 40_000)  # 7.5%: within what noise and shading do
+    assert not _rescued(1_500, 2_000)  # 25% darker, but by less than SPECK_FLOOR near black
+    assert _rescued(500, 2_000)
+
+
+def test_defects_wider_than_the_median_window_both_ways_are_not_rescued():
+    assert _rescued(5_000, 40_000, size=21, widest=21)
+    assert not _rescued(5_000, 40_000, size=22, widest=21)

@@ -36,9 +36,10 @@ PATCH_BUDGET_BYTES = 256 * 1024 * 1024
 EDGE_REACH_PX = (1, 2)
 EDGE_CONTRAST = 0.5  # the brighter neighbour is at least twice the darker one
 EDGE_FLOOR = 0.02 * 65535  # and brighter by 2% of full scale, so near-black noise is no edge
-EDGE_RIM_PX = 2 * max(EDGE_REACH_PX)  # an edge-like rim this wide, joined to a speck, is kept
 _SQUARE_3 = np.ones((3, 3), np.uint8)
 EDGE_STRIP_ROWS = 64
+SPECK_DEPTH = 0.1  # a defect darkening the colour by 10% or more...
+SPECK_FLOOR = 0.01 * 65535  # ...and by more than noise in dark areas does is dust, edge or not
 Box = tuple[int, int, int, int]
 Repaired = tuple[tuple[slice, slice], np.ndarray, np.ndarray]
 
@@ -59,24 +60,66 @@ def defect_mask(
 
     Given the ``visible`` image (colour or grey, registered to ``ir``), a dip that sits on a strong
     step of the visible image is not dust (see ``_on_visible_edges``) and is left out."""
-    if visible is not None and visible.shape[:2] != ir.shape:
-        raise ValueError(f"visible image {visible.shape[:2]} does not match infrared {ir.shape}")
+    if visible is not None:
+        _check_visible(visible, ir.shape)
     ir8 = (ir >> 8).astype(np.uint8)
     median = cv2.medianBlur(ir8, _odd(median_px))
     drop = median.astype(np.int16) - ir8.astype(np.int16)
     found = drop > sensitivity * 255
     mask = found.astype(np.uint8)
     if visible is not None and found.any():
-        kept = (found & ~_on_visible_edges(visible, found)).astype(np.uint8)
-        # A large speck's own rim is a visible step too: grow the kept pixels back through found
-        # ones only, EDGE_RIM_PX steps, so a speck is masked whole while an edge dip that does
-        # not touch it (even one a few pixels away) stays out.
-        for _ in range(EDGE_RIM_PX):
-            kept = cv2.dilate(kept, _SQUARE_3) & mask
-        mask = kept
+        edges = _on_visible_edges(visible, found)
+        if edges.any():
+            edges &= ~_in_darker_regions(visible, mask, edges, _odd(median_px))
+        mask = (found & ~edges).astype(np.uint8)
     if dilate_px > 0 and mask.any():
         mask = cv2.dilate(mask, _disc(dilate_px))
     return mask.astype(bool)
+
+
+def _check_visible(visible: np.ndarray, shape: tuple[int, ...]) -> None:
+    """The edge thresholds are on the scanner's 16-bit scale, grey or three colour channels."""
+    if visible.dtype != np.uint16 or not (
+        visible.ndim == 2 or (visible.ndim == 3 and visible.shape[2] == 3)
+    ):
+        raise ValueError(
+            f"visible image must be 16-bit grey or RGB, not {visible.dtype} {visible.shape}"
+        )
+    if visible.shape[:2] != shape:
+        raise ValueError(f"visible image {visible.shape[:2]} does not match infrared {shape}")
+
+
+def _in_darker_regions(
+    visible: np.ndarray, mask: np.ndarray, edges: np.ndarray, widest_px: int
+) -> np.ndarray:
+    """The ``edges`` pixels whose connected defect is clearly darker, in the visible image, than
+    the pixels around it: a speck or scratch that darkens the colour evenly (a plateau, so no
+    single pixel is a local minimum), not a dip along an edge, which lies between the edge's
+    dark and bright sides. "Clearly darker": the defect's median is below the 10th percentile
+    of its one-pixel ring by SPECK_DEPTH of it and by SPECK_FLOOR. A defect whose bounding box
+    is wider than ``widest_px`` both ways is no speck or scratch (the median window finds only
+    defects narrower than itself; edges joined into networks can span the frame), which also
+    bounds the work per defect."""
+    out = np.zeros(edges.shape, bool)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    height, width = mask.shape
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if min(w, h) > widest_px or not edges[y : y + h, x : x + w].any():
+            continue
+        y0, y1, x0, x1 = max(0, y - 1), min(height, y + h + 1), max(0, x - 1), min(width, x + w + 1)
+        region = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.drawContours(region, [contour], -1, 1, cv2.FILLED, offset=(-x0, -y0))
+        region &= mask[y0:y1, x0:x1]
+        inside = region.astype(bool)
+        ring = cv2.dilate(region, _SQUARE_3).astype(bool) & ~mask[y0:y1, x0:x1].astype(bool)
+        if not ring.any():
+            continue
+        level = _visible_level(visible[y0:y1, x0:x1])
+        around = float(np.percentile(level[ring], 10))
+        if np.median(level[inside]) < around - max(SPECK_DEPTH * around, SPECK_FLOOR):
+            out[y0:y1, x0:x1] |= inside & edges[y0:y1, x0:x1]
+    return out
 
 
 def _disc(radius: int) -> np.ndarray:
