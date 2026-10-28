@@ -22,6 +22,8 @@ DEFAULT_MAX_POLL_TIMEOUTS = 1
 PARKED_STATUS = "f855"
 
 _POSITION_RE = re.compile(r"completion poll settled \w+ \(captured \w+\) after (\d+(?:\.\d+)?)s")
+_POSITIONING_RE = re.compile(r"positioning to frame \d+")
+_EXACT_RE = re.compile(r"completion poll settled \w+ \(exact\) after (\d+(?:\.\d+)?)s")
 _CAL_WARNING_RE = re.compile(r"WARNING.*(?:cc55.*ad55|ad55.*cc55)", re.IGNORECASE)
 _RESULT_EXIT_RE = re.compile(r"\bexit(?:ed)?\s*(?:code\s*)?[:=]?\s*([+-]?\d[\w.]*)", re.IGNORECASE)
 
@@ -130,13 +132,33 @@ def _check_position(log: str | None, target: float, tolerance: float) -> Result:
     if log is None:
         return Result("position-wait", "FAIL", "no driver log to read the POSITION wait from")
     waits = [float(m.group(1)) for m in _POSITION_RE.finditer(log)]
+    exact = _exact_position_settles(log)
+    if not waits and not exact:
+        return Result("position-wait", "FAIL", "no POSITION completion line in the log")
     if not waits:
-        return Result("position-wait", "FAIL", "no strict POSITION completion line in the log")
+        shown = ", ".join(f"{x:.2f} s" for x in exact)
+        return Result("position-wait", "PASS", f"settled exactly after {shown} (no wait expected)")
     longest = max(waits)
     window = f"{target - tolerance:.2f}..{target + tolerance:.2f} s"
+    extra = f"; {len(exact)} exact settle(s)" if exact else ""
     if abs(longest - target) <= tolerance + 1e-9:
-        return Result("position-wait", "PASS", f"longest strict wait {longest:.2f} s in {window}")
-    return Result("position-wait", "FAIL", f"longest strict wait {longest:.2f} s outside {window}")
+        return Result(
+            "position-wait", "PASS", f"longest strict wait {longest:.2f} s in {window}{extra}"
+        )
+    return Result(
+        "position-wait", "FAIL", f"longest strict wait {longest:.2f} s outside {window}{extra}"
+    )
+
+
+def _exact_position_settles(log: str) -> list[float]:
+    """Exact settles on the line right after a 'positioning to frame' line (not jog settles)."""
+    lines = log.splitlines()
+    found = []
+    for prev, line in zip(lines, lines[1:], strict=False):
+        match = _EXACT_RE.search(line)
+        if match and _POSITIONING_RE.search(prev):
+            found.append(float(match.group(1)))
+    return found
 
 
 def _check_park(diags: dict[str, dict | None], log: str | None) -> Result:
