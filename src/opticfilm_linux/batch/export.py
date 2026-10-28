@@ -127,7 +127,7 @@ def _export_tray(
     for record in pending:
         if cancel is not None and cancel.is_set():
             return False
-        options = options_for(defaults, tray.mode, record.settings)
+        options = options_for(defaults, tray.mode, record.settings, record.position)
         image = enhance_slide(slides[record.position - 1], options, sweep.dpi)
         path = write_slide(image, spec)
         report(path)

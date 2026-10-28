@@ -87,6 +87,34 @@ class TrayRecord:
 
 
 @dataclass(frozen=True)
+class SlotOrientation:
+    """How the slide in one holder slot of every tray is turned, on top of the batch's own.
+
+    Slots are often loaded the same way tray after tray, so this saves fixing each slide by hand.
+    It is applied when a slide is rendered, never copied into the slide's own settings.
+    """
+
+    position: int  # 1-based holder slot
+    rotation: int = 0
+    mirror: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.position) is not int or self.position < 1:
+            raise ValueError(f"slot numbers start at 1, got {self.position!r}")
+        _check_orientation(self.rotation, self.mirror)
+        if self.rotation == 0 and not self.mirror:
+            raise ValueError(f"slot {self.position} would not change anything; leave it out")
+
+
+def _check_slots(slots: object) -> None:
+    if type(slots) is not tuple or not all(type(s) is SlotOrientation for s in slots):
+        raise ValueError("slots must be a tuple of SlotOrientation")
+    positions = [s.position for s in slots]
+    if any(a >= b for a, b in zip(positions, positions[1:], strict=False)):
+        raise ValueError(f"slots must be in order, each slot only once, got {positions}")
+
+
+@dataclass(frozen=True)
 class BatchDefaults:
     dpi: int = 3600
     infrared: bool = True
@@ -98,9 +126,11 @@ class BatchDefaults:
     sharpen_amount: float = 0.5
     rotation: int = 0  # how every slide of the batch is turned (see ``options_for``)
     mirror: bool = False  # whether every slide of the batch is flipped left-right
+    slots: tuple[SlotOrientation, ...] = ()  # per holder slot, applied after the above
 
     def __post_init__(self) -> None:
         _check_orientation(self.rotation, self.mirror)
+        _check_slots(self.slots)
 
 
 @dataclass(frozen=True)

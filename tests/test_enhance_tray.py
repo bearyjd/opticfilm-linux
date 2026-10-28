@@ -147,7 +147,7 @@ def test_negative_mode_tray_reaches_review(tmp_path):
 def test_options_for_prefers_slide_overrides_and_falls_back():
     defaults = BatchDefaults(grain_strength=0.3, sharpen_amount=0.5, color_strength=1.0)
     settings = SlideSettings(rotation=180, brightness_ev=-1.0, grain_strength=0.0)
-    options = options_for(defaults, "negative", settings)
+    options = options_for(defaults, "negative", settings, 1)
     assert options.grain_strength == 0.0 and options.sharpen_amount == 0.5
     assert options.color_strength == 1.0 and options.mode == "negative"
     assert (options.rotation, options.brightness_ev) == (180, -1.0)

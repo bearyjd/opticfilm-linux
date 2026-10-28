@@ -24,6 +24,7 @@ from opticfilm_linux.app.prefs import (
 from opticfilm_linux.app.qt.models import DictListModel
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
+from opticfilm_linux.batch.slots import slot_orientations
 
 TICK_MS = 500
 DEBOUNCE_MS = 300
@@ -230,7 +231,7 @@ class Bridge(QObject):
 
     # -- batch ---------------------------------------------------------------------------
 
-    @Slot(str, str, str, str, int, int, bool)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList")
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -240,12 +241,24 @@ class Bridge(QObject):
         dpi: int,
         rotation: int = 0,
         mirror: bool = False,
+        slot_rotations: list[int] | None = None,
+        slot_mirrors: list[bool] | None = None,
     ) -> None:
+        """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
+        rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
+        mirrored = [i for i, m in enumerate(slot_mirrors or (), start=1) if m]
         folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
         self._pending.clear()
         self._opening = self._last_attempt = folder
         self._controller.new_batch(
-            folder, name.strip() or folder.name, album, date or None, dpi, rotation, mirror
+            folder,
+            name.strip() or folder.name,
+            album,
+            date or None,
+            dpi,
+            rotation,
+            mirror,
+            slot_orientations(rotations, mirrored),
         )
 
     @Slot(str, bool)

@@ -29,7 +29,13 @@ from opticfilm_linux.app.state import (
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.manifest import ManifestFormatError
-from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatus, TrayStage
+from opticfilm_linux.batch.model import (
+    BatchDefaults,
+    SlideSettings,
+    SlideStatus,
+    SlotOrientation,
+    TrayStage,
+)
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format
@@ -132,10 +138,11 @@ class Controller(HolderCommands):
         dpi: int,
         rotation: int = 0,
         mirror: bool = False,
+        slots: tuple[SlotOrientation, ...] = (),
     ) -> None:
         def job() -> None:
             self._detach()
-            defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror)
+            defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror, slots=slots)
             self._attach(BatchStore.create(directory, name, album, date, defaults), False)
 
         self._cancel_queued_holder()
