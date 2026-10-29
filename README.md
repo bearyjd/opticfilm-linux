@@ -29,16 +29,26 @@ Verified natively on Linux:
 - One slide (slide 4) at 600 dpi.
 - All four slides at 600 dpi.
 - One slide (slide 1) at 3600 dpi.
+- One slide (slide 4) at 3600 dpi, with the driver's calibration stop gate on
+  (`--cal-wait-scanstop enforce`): finished TIFFs, calibration integrity clean.
+- The scanner's front-panel Eject button, through the driver's `watch` command: one press, one
+  eject.
 
 Not verified, or known problems:
 
-- A full four-slide tray at 3600 dpi has not been completed. A single-slide scan of slide 4 at
-  3600 dpi was interrupted after calibration warnings and produced no finished TIFF.
+- A full four-slide tray at 3600 dpi has not been completed. An earlier single-slide scan of
+  slide 4 at 3600 dpi, without the stop gate, was interrupted after calibration warnings and
+  produced no finished TIFF.
 - A full tray at 7200 dpi is untested.
 - Ejecting the holder from a cold start timed out twice during homing.
 - The driver's startup recovery is experimental and opt-in.
-- Calibration warnings and a default dark-level fallback appeared in the successful runs, so
-  image quality on real slides is not established.
+- The calibration stop gate is opt-in in the driver. At 600 dpi, all eight frames scanned without
+  it were degraded by a default dark-level fallback, and all eight scanned with it were clean
+  (one unit). Other runs with the gate on showed no fallback, but the gate has not been
+  compared against gate-off runs at 3600 dpi, so image quality on real slides is not
+  established.
+- The app's Eject-button handling (on by default; `OPTICFILM_EJECT_BUTTON=0` turns it off) has
+  fake-scanner tests only and has not been run on hardware.
 
 Do not treat the word "ejected" in any output as proof that the holder was released; check the
 holder physically.
