@@ -23,7 +23,7 @@ from synthetic import (
     make_sweep,
     truth_boxes,
 )
-from test_enhance_tray import _store, _tray
+from test_enhance_tray import _set_slide, _store, _tray
 
 NEUTRAL = (1.0, 1.0, 1.0)
 PLAIN = {"remove_dust": False, "grain_strength": 0.0, "sharpen_amount": 0.0}
@@ -78,8 +78,9 @@ def test_inversion_survives_clipped_shadows_and_highlights():
     negative[:, -16:] = 0  # opaque
     out = invert_negative(negative)
     assert out.dtype == np.uint16 and out.shape == negative.shape
-    assert out[:, :16].max() <= out[:, 16:-16].min() + 1
-    assert out[:, -16:].min() >= out[:, 16:-16].max() - 1
+    assert (out[:, :16] == 0).all() and (out[:, -16:] == FULL).all()
+    interior = out[:, 16:-16].astype(np.float64) / FULL
+    assert interior.max() - interior.min() > 0.2 and 0 < interior.mean() < 1
 
 
 def test_negative_mode_recovers_the_scene_and_positive_mode_does_not():
@@ -91,6 +92,11 @@ def test_negative_mode_recovers_the_scene_and_positive_mode_does_not():
     uninverted = _luma(enhance_slide(neg, ProcessOptions(mode="positive", **PLAIN), 600))
     assert _corr(inverted, scene) > 0.9
     assert _corr(uninverted, scene) < 0.0
+    # Channel by channel too, so a swapped or mixed channel cannot hide in the average.
+    fixed = enhance_slide(neg, ProcessOptions(mode="negative", **PLAIN), 600)
+    reference = enhance_slide(pos, ProcessOptions(**PLAIN), 600)
+    for channel in range(3):
+        assert _corr(fixed[..., channel], reference[..., channel]) > 0.9
 
 
 def test_negative_output_has_no_colour_cast_from_the_base():
@@ -127,6 +133,21 @@ def test_negative_dust_is_repaired_before_inversion_not_turned_into_white_spots(
     assert checked
     assert unrepaired_worst > 0.3  # without repair a speck is a bright spot after inversion
     assert repaired_worst < 0.15
+
+
+def test_negative_dust_repair_lands_near_the_dust_free_picture_and_leaves_the_rest():
+    dpi, seed = 600, 3
+    clean = split_slides(make_negative_sweep(dpi=dpi, seed=seed))
+    dusty = split_slides(make_negative_sweep(dpi=dpi, dust=10, seed=seed))
+    options = ProcessOptions(mode="negative", grain_strength=0.0, sharpen_amount=0.0)
+    worst_share = 0.0
+    for clean_slide, dusty_slide in zip(clean, dusty, strict=True):
+        want = _luma(enhance_slide(clean_slide, options, dpi))
+        got = _luma(enhance_slide(dusty_slide, options, dpi))
+        assert np.abs(got - want).mean() < 0.01  # most pixels are untouched
+        worst_share = max(worst_share, float((np.abs(got - want) > 0.1).mean()))
+        assert _corr(got, want) > 0.99
+    assert worst_share < 0.005
 
 
 def test_negative_windows_split_by_infrared_where_the_mount_is_opaque():
@@ -178,12 +199,15 @@ def test_a_good_negative_is_not_flagged(tmp_path):
     assert all(s.status is SlideStatus.ACCEPTED for s in _tray(store).slides)
 
 
-def test_reenhancing_a_negative_slide_keeps_it_inverted(tmp_path):
+def test_reenhancing_a_negative_slide_with_new_settings_stays_inverted(tmp_path):
     store = _store(tmp_path, make_negative_sweep(dpi=600), mode="negative")
     enhance_tray(store, 1)
     first = _after_preview(store)
+    _set_slide(store, 1, settings=SlideSettings(brightness_ev=1.0), owner_decided=True)
     reenhance_slide(store, 1, 1)
-    assert np.array_equal(first, _after_preview(store))
+    second = _after_preview(store)
+    assert second.mean() > first.mean() + 0.02  # the new setting took effect
+    assert _corr(second, first) > 0.8  # and the picture is still the inverted scene
 
 
 def test_options_for_carries_the_negative_mode_with_slide_settings():
