@@ -39,7 +39,7 @@ from opticfilm_linux.batch.model import (
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format
-from opticfilm_linux.scanner.base import HolderControl, Scanner, ScannerStatus
+from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 
 SLIDES_PER_TRAY = 4
 STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
@@ -122,7 +122,11 @@ class Controller(HolderCommands):
 
     def _act_on_eject_button(self, poller: StatusPoller) -> None:
         # A press is always taken, so one the app cannot act on now is dropped, never queued.
-        if poller.take_eject_press() and self._eject_button and self.state().can_eject:
+        if not poller.take_eject_press() or not self._eject_button:
+            return
+        # ``state()`` is a poll behind: also ask the poller's own answer, so a scanner that has just
+        # gone to an error or interrupted state is not moved.
+        if self.state().can_eject and poller.current() in BUTTON_STATUSES:
             self.eject_holder()
 
     def preview_path(self, number: int, position: int, kind: Literal["before", "after"]):
