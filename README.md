@@ -47,8 +47,10 @@ Not verified, or known problems:
   (one unit). Other runs with the gate on showed no fallback, but the gate has not been
   compared against gate-off runs at 3600 dpi, so image quality on real slides is not
   established.
-- The app's Eject-button handling (on by default; `OPTICFILM_EJECT_BUTTON=0` turns it off) has
-  fake-scanner tests only and has not been run on hardware.
+- The app's Eject-button handling (on by default; `OPTICFILM_EJECT_BUTTON=0` turns it off) was
+  run on the real scanner by the owner on 2026-10-28 (one unit). No logs of that run are kept in
+  this repository, and the cases that must do nothing (a press during a scan, a held press) are
+  covered by fake-scanner tests only.
 
 Do not treat the word "ejected" in any output as proof that the holder was released; check the
 holder physically.

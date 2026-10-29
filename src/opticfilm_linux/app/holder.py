@@ -20,7 +20,7 @@ from opticfilm_linux.scanner.interrupted import ScannerInterrupted, ScannerRefus
 ANOTHER_PROGRAM = "Another program is using the scanner. Close it or wait for it to finish."
 WAIT_SCAN = "Wait for the scan to finish"
 WAIT_HOLDER = "Wait for the eject/load to finish"
-WAIT_EXPORT = "Wait for the export to finish, then press Eject again"
+WAIT_EXPORT = "Wait for the export to finish, then try again"
 SCANNER_INTERRUPTED = (
     "A scan or holder move was cut off, so nothing moves the scanner until you confirm it was "
     "reset: power-cycle it, load the holder again, then press Confirm scanner reset."
