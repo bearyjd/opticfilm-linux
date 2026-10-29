@@ -9,7 +9,7 @@ from test_app_controller_holder import build  # noqa: F401 - the fixture
 
 WAIT_SCAN = "Wait for the scan to finish"
 WAIT_HOLDER = "Wait for the eject/load to finish"
-WAIT_EXPORT = "Wait for the export to finish, then press Eject again"
+WAIT_EXPORT = "Wait for the export to finish, then try again"
 
 
 def _block(pool) -> threading.Event:
@@ -65,6 +65,19 @@ def test_eject_during_an_export_is_refused_at_once(build, tmp_path):  # noqa: F8
     assert WAIT_EXPORT in _banner(c)
     gate.set()
     assert scanner.calls == [] and not c._holder_busy
+
+
+def test_load_next_during_an_export_does_not_tell_the_owner_to_press_eject(build, tmp_path):  # noqa: F811
+    c, scanner = build(next_strip=True)
+    open_new(c, tmp_path / "b")
+    wait_until(c, lambda: c.state().can_eject)
+    gate = threading.Event()
+    c._run(lambda: gate.wait(30), "export stand-in", pool=c._jobs)
+    c.load_next_holder()
+    banner = _banner(c)
+    gate.set()
+    assert "Eject" not in banner and "export" in banner
+    assert scanner.calls == []
 
 
 def test_eject_behind_a_queued_export_is_refused(build, tmp_path):  # noqa: F811
