@@ -94,3 +94,36 @@ def make_sweep(
     rgb16 = np.clip(rgb, 0, FULL).astype(np.uint16)
     ir16 = np.clip(ir_plane, 0, FULL).astype(np.uint16) if ir else None
     return RawSweep(rgb=rgb16, ir=ir16, dpi=dpi, holder=HolderKind.SLIDE4)
+
+
+ORANGE_BASE = (1.0, 0.6, 0.35)  # a colour negative's film base: transmits red most, blue least
+NEGATIVE_DENSITY = 1.5
+
+
+def make_negative_sweep(
+    dpi: int = 600,
+    filled: tuple[bool, ...] = ALL_FILLED,
+    dust: int = 0,
+    ir: bool = True,
+    seed: int = 0,
+    base: tuple[float, float, float] = ORANGE_BASE,
+) -> RawSweep:
+    """``make_sweep`` seen as a colour negative: each filled window is the clean positive scene
+    turned into transmittance ``base * 10 ** (-density * scene)``; dust then blocks light (dark
+    in the negative too) and the infrared shows it. Clear windows and the mount are unchanged."""
+    clean = make_sweep(dpi=dpi, filled=filled, dust=0, ir=ir, seed=seed)
+    rgb = clean.rgb.astype(np.float32)
+    ir_plane = None if clean.ir is None else clean.ir.astype(np.float32)
+    for box, is_filled in zip(truth_boxes(dpi, len(filled)), filled, strict=True):
+        if is_filled:
+            rows = slice(box.y, box.y + box.h)
+            scene = rgb[rows] / FULL
+            rgb[rows] = FULL * np.array(base, np.float32) * 10.0 ** (-NEGATIVE_DENSITY * scene)
+    for y, x, r in _specks(dpi, filled, dust, seed):
+        rgb[y - r : y + r + 1, x - r : x + r + 1] *= 0.1
+        if ir_plane is not None:
+            ir_plane[y - r : y + r + 1, x - r : x + r + 1] *= 0.35
+    ir16 = None if ir_plane is None else np.clip(ir_plane, 0, FULL).astype(np.uint16)
+    return RawSweep(
+        rgb=np.clip(rgb, 0, FULL).astype(np.uint16), ir=ir16, dpi=dpi, holder=HolderKind.SLIDE4
+    )
