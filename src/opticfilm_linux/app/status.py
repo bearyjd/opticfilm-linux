@@ -9,7 +9,9 @@ import threading
 from collections.abc import Callable
 
 from opticfilm_linux.model import RawSweep, ScanSettings
-from opticfilm_linux.scanner.base import Scanner, ScannerStatus
+from opticfilm_linux.scanner.base import BUTTON_STATUSES, Scanner, ScannerStatus, StatusReading
+
+PRESS_TTL_S = 2.0  # a press not taken within a few polls is stale: a paused UI must not act later
 
 
 class StatusPoller:
@@ -19,6 +21,7 @@ class StatusPoller:
         clock: Callable[[], float],
         timeout_s: float,
         on_problem: Callable[[str, str], None],
+        press_ttl_s: float = PRESS_TTL_S,
     ) -> None:
         self._scanner = scanner
         self._clock = clock
@@ -29,6 +32,9 @@ class StatusPoller:
         self._started: float | None = None  # set while a request is out
         self._reported_error = False
         self._closed = False
+        self._button: bool | None = None  # last eject-button reading; None: no baseline yet
+        self._press_at: float | None = None  # when a new press was seen, until it is taken
+        self._press_ttl_s = press_ttl_s
 
     def close(self) -> None:
         """The batch is gone: a request still out must not report to whatever is open next."""
@@ -43,6 +49,13 @@ class StatusPoller:
             self._started = self._clock()
         threading.Thread(target=self._ask, name="app-scanner-status", daemon=True).start()
 
+    def take_eject_press(self) -> bool:
+        """True once per new press of the Eject button. The first reading after a start, and the
+        first after any poll that read nothing, only set the baseline: it may be a stale press."""
+        with self._lock:
+            seen, self._press_at = self._press_at, None
+            return seen is not None and self._clock() - seen <= self._press_ttl_s
+
     def current(self) -> ScannerStatus:
         with self._lock:
             started, status = self._started, self._status
@@ -52,12 +65,20 @@ class StatusPoller:
         return ScannerStatus.ERROR
 
     def _ask(self) -> None:
+        pressed: bool | None = None
         try:
-            status, problem = self._scanner.status(), None
+            ask = getattr(self._scanner, "status_reading", None)
+            reading = ask() if callable(ask) else StatusReading(self._scanner.status())
+            status, problem = reading.status, None
+            if status in BUTTON_STATUSES:  # a press beside any other status is not acted on
+                pressed = reading.eject_pressed
         except Exception as exc:  # the backend may raise anything; show it, keep polling
             status, problem = ScannerStatus.ERROR, f"{type(exc).__name__}: {exc}"
         with self._lock:
             self._status, self._started = status, None
+            if pressed is not None and self._button is not None and pressed and not self._button:
+                self._press_at = self._clock()
+            self._button = pressed  # None (no usable reading) also drops the baseline
             if status is not ScannerStatus.ERROR:
                 self._reported_error = False
         if problem is not None:

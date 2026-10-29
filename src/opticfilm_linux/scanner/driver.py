@@ -33,7 +33,12 @@ import tifffile
 
 from opticfilm_linux.model import HolderKind, RawSweep, ScanSettings
 from opticfilm_linux.scanner import interrupted
-from opticfilm_linux.scanner.base import ScanError, ScannerStatus
+from opticfilm_linux.scanner.base import (
+    BUTTON_STATUSES,
+    ScanError,
+    ScannerStatus,
+    StatusReading,
+)
 from opticfilm_linux.scanner.interrupted import ScanInterrupted, ScannerRefused
 
 log = logging.getLogger(__name__)
@@ -130,6 +135,21 @@ def parse_doctor(text: str) -> ScannerStatus:
         return ScannerStatus.NOT_READY
     loaded = int(word.group(1), 16) >> 8 == LOADED_STATUS_HIGH_BYTE
     return ScannerStatus.READY if loaded else ScannerStatus.NOT_READY
+
+
+def parse_doctor_button(text: str) -> bool:
+    """True when the ``== Button ==`` section of the ``doctor`` report says ``eject``.
+
+    A missing or garbled section, and every other button name, read as not pressed.
+    """
+    in_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("== ") and stripped.endswith(" =="):
+            in_section = stripped == "== Button =="
+        elif in_section and stripped == "eject":
+            return True
+    return False
 
 
 # One lock for the whole process: every batch gets its own DriverScanner, but the driver allows
@@ -399,7 +419,7 @@ class DriverScanner:
         self._scanning = threading.Event()
         self._status_lock = threading.Lock()
         self._hw_lock = _HW_LOCK
-        self._status_cache: tuple[float, ScannerStatus] | None = None
+        self._status_cache: tuple[float, StatusReading] | None = None
         self._needs_power_cycle = False  # set when the driver failed; cleared by a power cycle
         self._failed_address: str | None = None  # the USB address it failed on
         self._last_address: str | None = None
@@ -467,24 +487,28 @@ class DriverScanner:
             log.warning("could not keep the driver's sidecar files in %s", directory)
 
     def status(self) -> ScannerStatus:
+        return self.status_reading().status
+
+    def status_reading(self) -> StatusReading:
+        """The status together with the Eject button from the same doctor report."""
         if self._scanning.is_set():
-            return ScannerStatus.BUSY
+            return StatusReading(ScannerStatus.BUSY)
         with self._status_lock:
             if self._scanning.is_set():  # a scan began while this call waited for the lock
-                return ScannerStatus.BUSY
+                return StatusReading(ScannerStatus.BUSY)
             if not self._hw_lock.acquire(blocking=False):
-                return ScannerStatus.BUSY  # a scan or eject holds the driver
+                return StatusReading(ScannerStatus.BUSY)  # a scan or eject holds the driver
             try:
                 if interrupted.is_pending():  # checked under the lock: never a live command's
-                    return ScannerStatus.INTERRUPTED  # not cached, and no driver is run
+                    return StatusReading(ScannerStatus.INTERRUPTED)  # not cached, no driver run
                 cached = self._status_cache
                 if cached is not None and time.monotonic() - cached[0] < STATUS_MAX_AGE_S:
                     return cached[1]
-                status = self._read_status()
-                self._status_cache = (time.monotonic(), status)  # before the lock is released
+                reading = self._read_status()
+                self._status_cache = (time.monotonic(), reading)  # before the lock is released
             finally:
                 self._hw_lock.release()
-            return status
+            return reading
 
     def eject(self) -> None:
         self._holder_command(["eject"], "eject failed.")
@@ -551,15 +575,15 @@ class DriverScanner:
                 f"set {DRIVER_ENV} to a checkout of opticfilm135i-linux"
             )
 
-    def _read_status(self) -> ScannerStatus:
+    def _read_status(self) -> StatusReading:
         try:
             self._require_driver()
             result = self._run(["doctor"], STATUS_TIMEOUT_S, keep_log=False, tail=DOCTOR_TAIL_BYTES)
         except ScanError:
-            return ScannerStatus.ERROR
+            return StatusReading(ScannerStatus.ERROR)
         status = parse_doctor(result.output)
         if result.returncode != 0 and status is ScannerStatus.READY:
-            return ScannerStatus.ERROR  # a report that ends in failure is not a ready scanner
+            return StatusReading(ScannerStatus.ERROR)  # a failing report is not a ready scanner
         if self._needs_power_cycle:
             address = re.search(r"addr=(\d+)", result.output)
             moved = bool(
@@ -568,8 +592,10 @@ class DriverScanner:
             if _register(result.output) == 0x00 or moved:  # cold, or re-enumerated on USB
                 self._needs_power_cycle = False
             else:
-                return ScannerStatus.ERROR  # the driver said only a power cycle recovers it
-        return status
+                return StatusReading(ScannerStatus.ERROR)  # only a power cycle recovers it
+        if status not in BUTTON_STATUSES:
+            return StatusReading(status)  # a press seen with anything else going on is not acted on
+        return StatusReading(status, parse_doctor_button(result.output))
 
     def _run(
         self, args: Sequence[str], timeout: int, keep_log: bool, tail: int = OUTPUT_TAIL_BYTES

@@ -184,6 +184,9 @@ not yet proven on this scanner, so it stays disabled unless the app is started w
 power-cycle the scanner (off until its lights go out, then on), load the holder again and rescan
 that tray. The driver's own message is under **Details**.
 
+The scanner's front-panel Eject button ejects the holder, like Plustek's app, while the window is
+idle (not while scanning or moving the holder); set `OPTICFILM_EJECT_BUTTON=0` to switch it off.
+
 ## Development
 
 ```sh

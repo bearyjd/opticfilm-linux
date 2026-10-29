@@ -29,6 +29,21 @@ class ScannerStatus(StrEnum):
     INTERRUPTED = "interrupted"  # a command was cut off: the owner must confirm a reset
 
 
+# The only statuses in which an Eject press may be acted on (a holder may be absent, as in the UI).
+BUTTON_STATUSES = (ScannerStatus.READY, ScannerStatus.NOT_READY)
+
+
+@dataclass(frozen=True)
+class StatusReading:
+    """One status answer and, from the same read, whether the Eject button was pressed.
+
+    ``eject_pressed`` is None when this answer read no button (busy, error, not asked).
+    """
+
+    status: ScannerStatus
+    eject_pressed: bool | None = None
+
+
 @dataclass(frozen=True)
 class DeviceInfo:
     vendor_id: int
