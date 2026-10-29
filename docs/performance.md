@@ -42,11 +42,67 @@ afterwards unless `--keep` is given. A 7200 dpi run needs about 9 GB of free dis
 
 ## Results
 
-The machine has 22 cores and 62 GB of RAM, and other work was running on it (load average
-9 to 23), so expect about ±30 % noise in the times. The scan stages time the fake driver, which
+The 2026-10-22 runs (further down) were made on the same 22-core, 62 GB machine, with other
+work running (load average 9 to 23), so expect about ±30 % noise in the times. The scan stages time the fake driver, which
 only generates frames. Real scan time is set by the scanner.
 
-### After the fixes in this change
+### Re-profile, 2026-10-29
+
+Main at 5c4709d, after the dust 16-bit, tone, sharpen/grain-by-dpi and dust-edge changes.
+Machine: Intel Core Ultra 9 185H, 22 logical cores, 62 GB RAM, work folder on a disk (not
+RAM-backed). Other work was running (load average 4 to 15), so expect large noise. Runs
+used `scripts/rehearse.py --dpi N`, no code change.
+
+| dpi | script TOTAL (all stages) | scan + stitch | enhance 1 slide (batch work) | batch enhance (4) | export tiff16 (4) | peak anon | peak rss |
+|---|---|---|---|---|---|---|---|
+| 3600 | 41.5 s | 11.1 s | 2.2 s | 8.9 s | 6.7 s | 0.66 GB | 1.73 GB |
+| 7200 | 194.5 s | 47.5 s | 12.3 s | 42.1 s | 31.7 s | 2.40 GB | 5.40 GB |
+
+A second 7200 dpi run (busier machine) gave 233 s total, 10.3 s per slide, 68 s batch enhance,
+38.8 s export, 2.40 GB anon, 5.16 GB rss: batch enhance swings by more than 50 % between runs.
+"TOTAL" includes the standalone one-slide stages, as before; the stages a real tray pays
+(batch scan + save, enhance, load + split, export) sum to 26.3 s at 3600 dpi (10.6 + 8.9 + 0.1 +
+6.7) and 122.2 s at 7200 dpi (47.9 + 42.1 + 0.5 + 31.7) in the first runs.
+
+Peak anonymous memory per stage (anon / rss, GB):
+
+| stage | 3600 | 7200 |
+|---|---|---|
+| driver scan + stitch | 0.24 / 1.07 | 0.90 / 3.13 |
+| save_sweep | 0.03 / 0.93 | 0.02 / 3.44 |
+| enhance_slide (1) | 0.48 / 1.72 | 1.66 / 5.40 |
+| batch scan + save | 0.27 / 1.10 | 1.38 / 4.43 |
+| batch enhance (4) | 0.50 / 1.21 | 1.95 / 4.56 |
+| load + split (tray) | 0.20 / 0.46 | 0.70 / 1.62 |
+| export tiff16 (4) | 0.66 / 1.37 | 2.40 / 5.04 |
+
+Compared with 2026-10-22 (below): totals are unchanged within noise (3600: 37 to 41 s; 7200:
+191 to 194 s). The export stage is now the memory peak (2.40 GB anon at 7200 dpi, up from 2.0
+GB); the 7200 dpi RSS peak is 5.4 GB, under the 14 GB budget, and the whole 7200 dpi tray ran
+with about 43 GB of RAM available. Per-slide batch work at 7200 dpi was slower in both runs
+(12.3 s and 10.3 s, against 8.1 s on 2026-10-22), while `enhance_slide` timed alone on a quieter
+machine took 7.4 to 8.6 s, level with before. So the slowdown shows under load; whether the
+16-bit dust and tone changes contribute was not isolated. The tray's enhancement against one
+slide's batch work: 4.0x at 3600 dpi and 3.4x at 7200 dpi in the first runs, but 6.6x (68.3 s
+against 10.3 s) in the second 7200 dpi run, so the 4x budget is not reliably met on a loaded
+machine.
+
+Hotspot inside one 7200 dpi slide (`enhance_slide`, two timed repetitions, 7.4 to 8.6 s each):
+
+| step | seconds |
+|---|---|
+| sharpen | 3.3 to 3.7 |
+| tone (exposure and colour) | 1.6 to 2.3 |
+| remove_dust | 2.0 |
+| reduce_grain | 0.5 to 0.7 |
+
+`sharpen` is the largest step (about 40 to 45 % of the slide) but not dominant enough to justify
+changing it without a bit-identical replacement; nothing was changed. Not profiled: export
+(31.7 s at 7200 dpi, the other large stage) and the driver stitch (fake driver, not real scan
+time). The real scan time is set by the scanner; these figures are only
+the computer's share.
+
+### After the fixes in this change (2026-10-22)
 
 | dpi | tray total | scan + stitch | enhance 1 slide (batch work) | batch enhance (4) | export tiff16 (4) | peak anon | peak rss | raw sweep on disk | disk peak | 4 TIFFs |
 |---|---|---|---|---|---|---|---|---|---|---|
