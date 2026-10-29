@@ -61,8 +61,8 @@ used `scripts/rehearse.py --dpi N`, no code change.
 A second 7200 dpi run (busier machine) gave 233 s total, 10.3 s per slide, 68 s batch enhance,
 38.8 s export, 2.40 GB anon, 5.16 GB rss: batch enhance swings by more than 50 % between runs.
 "TOTAL" includes the standalone one-slide stages, as before; the stages a real tray pays
-(batch scan + save, enhance, load + split, export) sum to 26 s at 3600 dpi and 122 s at 7200 dpi
-in the first runs.
+(batch scan + save, enhance, load + split, export) sum to 26.3 s at 3600 dpi (10.6 + 8.9 + 0.1 +
+6.7) and 122.2 s at 7200 dpi (47.9 + 42.1 + 0.5 + 31.7) in the first runs.
 
 Peak anonymous memory per stage (anon / rss, GB):
 
@@ -79,10 +79,13 @@ Peak anonymous memory per stage (anon / rss, GB):
 Compared with 2026-10-22 (below): totals are unchanged within noise (3600: 37 to 41 s; 7200:
 191 to 194 s). The export stage is now the memory peak (2.40 GB anon at 7200 dpi, up from 2.0
 GB); the 7200 dpi RSS peak is 5.4 GB, under the 14 GB budget, and the whole 7200 dpi tray ran
-with about 43 GB of RAM available. Per-slide enhancement at 7200 dpi looks slower (12.3 s
-against 8.1 s), which is within the run-to-run swing seen here (10.3 to 13.7 s) but may also
-reflect the 16-bit dust and tone changes; this was not isolated. The tray's enhancement is 4.0x
-one slide at 3600 dpi and 3.4x at 7200 dpi in the first runs.
+with about 43 GB of RAM available. Per-slide batch work at 7200 dpi was slower in both runs
+(12.3 s and 10.3 s, against 8.1 s on 2026-10-22), while `enhance_slide` timed alone on a quieter
+machine took 7.4 to 8.6 s, level with before. So the slowdown shows under load; whether the
+16-bit dust and tone changes contribute was not isolated. The tray's enhancement against one
+slide's batch work: 4.0x at 3600 dpi and 3.4x at 7200 dpi in the first runs, but 6.6x (68.3 s
+against 10.3 s) in the second 7200 dpi run, so the 4x budget is not reliably met on a loaded
+machine.
 
 Hotspot inside one 7200 dpi slide (`enhance_slide`, two timed repetitions, 7.4 to 8.6 s each):
 
@@ -95,8 +98,8 @@ Hotspot inside one 7200 dpi slide (`enhance_slide`, two timed repetitions, 7.4 t
 
 `sharpen` is the largest step (about 40 to 45 % of the slide) but not dominant enough to justify
 changing it without a bit-identical replacement; nothing was changed. Not profiled: export
-(31.7 s, of which the defect mask's median blur is about 1.5 s) and the driver stitch (fake
-driver, not real scan time). The real scan time is set by the scanner; these figures are only
+(31.7 s at 7200 dpi, the other large stage) and the driver stitch (fake driver, not real scan
+time). The real scan time is set by the scanner; these figures are only
 the computer's share.
 
 ### After the fixes in this change (2026-10-22)
