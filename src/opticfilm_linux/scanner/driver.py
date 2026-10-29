@@ -132,6 +132,21 @@ def parse_doctor(text: str) -> ScannerStatus:
     return ScannerStatus.READY if loaded else ScannerStatus.NOT_READY
 
 
+def parse_doctor_button(text: str) -> bool:
+    """True when the ``== Button ==`` section of the ``doctor`` report says ``eject``.
+
+    A missing or garbled section, and every other button name, read as not pressed.
+    """
+    in_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("== ") and stripped.endswith(" =="):
+            in_section = stripped == "== Button =="
+        elif in_section and stripped == "eject":
+            return True
+    return False
+
+
 # One lock for the whole process: every batch gets its own DriverScanner, but the driver allows
 # only one process on the scanner at a time, so a move still running for a closed batch must
 # also hold off the next batch's scan and status checks.
@@ -400,6 +415,8 @@ class DriverScanner:
         self._status_lock = threading.Lock()
         self._hw_lock = _HW_LOCK
         self._status_cache: tuple[float, ScannerStatus] | None = None
+        self._button: bool | None = None  # eject pressed in the last status answer; None: unread
+        self._cached_button: bool | None = None
         self._needs_power_cycle = False  # set when the driver failed; cleared by a power cycle
         self._failed_address: str | None = None  # the USB address it failed on
         self._last_address: str | None = None
@@ -466,7 +483,12 @@ class DriverScanner:
         except OSError:
             log.warning("could not keep the driver's sidecar files in %s", directory)
 
+    def eject_pressed(self) -> bool | None:
+        """The front-panel Eject button as the last ``status()`` saw it; None if it read nothing."""
+        return self._button
+
     def status(self) -> ScannerStatus:
+        self._button = None
         if self._scanning.is_set():
             return ScannerStatus.BUSY
         with self._status_lock:
@@ -479,8 +501,10 @@ class DriverScanner:
                     return ScannerStatus.INTERRUPTED  # not cached, and no driver is run
                 cached = self._status_cache
                 if cached is not None and time.monotonic() - cached[0] < STATUS_MAX_AGE_S:
+                    self._button = self._cached_button
                     return cached[1]
                 status = self._read_status()
+                self._cached_button = self._button
                 self._status_cache = (time.monotonic(), status)  # before the lock is released
             finally:
                 self._hw_lock.release()
@@ -558,6 +582,7 @@ class DriverScanner:
         except ScanError:
             return ScannerStatus.ERROR
         status = parse_doctor(result.output)
+        self._button = parse_doctor_button(result.output)
         if result.returncode != 0 and status is ScannerStatus.READY:
             return ScannerStatus.ERROR  # a report that ends in failure is not a ready scanner
         if self._needs_power_cycle:

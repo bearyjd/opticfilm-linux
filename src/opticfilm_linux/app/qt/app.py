@@ -17,7 +17,7 @@ from opticfilm_linux.scanner.driver import (
     install_signal_cleanup,
 )
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.select import next_strip_enabled
+from opticfilm_linux.scanner.select import eject_button_enabled, next_strip_enabled
 from opticfilm_linux.sweepstore import SweepFormatError, sweep_dpi
 
 EXIT_MISSING_QT = 3
@@ -118,7 +118,11 @@ def main(argv: list[str] | None = None) -> int:
     QGuiApplication.setDesktopFileName(APP_ID)
     configure_style()
     install_signal_cleanup()  # the driver runs in its own session: stop it if the app is killed
-    controller = Controller(scanner_factory(args.fake), next_strip=next_strip_enabled())
+    controller = Controller(
+        scanner_factory(args.fake),
+        next_strip=next_strip_enabled(),
+        eject_button=eject_button_enabled(),
+    )
     bridge = Bridge(controller, QSettingsPrefs(), demo_dpi, load_command_text=load_command_text())
     provider = PreviewProvider(lambda n, p, kind: controller.preview_path(n, p, kind))
     engine, warnings = create_engine(bridge, provider)

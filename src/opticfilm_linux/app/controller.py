@@ -64,9 +64,11 @@ class Controller(HolderCommands):
         scanner_factory: Callable[[int], Scanner],
         clock: Callable[[], float] = time.monotonic,
         next_strip: bool = False,
+        eject_button: bool = True,
     ) -> None:
         self._factory = scanner_factory
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
+        self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
         self._holder_busy = False  # an eject or load is queued or running
         self._holder_future: Future | None = None  # that eject or load, while it may not start
         self._holder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-holder")
@@ -107,6 +109,7 @@ class Controller(HolderCommands):
         session = self._session
         if session is not None and session.poller is not None:
             session.poller.poll()
+            self._act_on_eject_button(session.poller)
         with self._lock:
             start = not self._refreshing
             self._refreshing = True
@@ -116,6 +119,11 @@ class Controller(HolderCommands):
             changed = self._state is not self._reported
             self._reported = self._state
         return changed
+
+    def _act_on_eject_button(self, poller: StatusPoller) -> None:
+        # A press is always taken, so one the app cannot act on now is dropped, never queued.
+        if poller.take_eject_press() and self._eject_button and self.state().can_eject:
+            self.eject_holder()
 
     def preview_path(self, number: int, position: int, kind: Literal["before", "after"]):
         session = self._session

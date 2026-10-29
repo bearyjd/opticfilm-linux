@@ -29,6 +29,8 @@ class StatusPoller:
         self._started: float | None = None  # set while a request is out
         self._reported_error = False
         self._closed = False
+        self._button: bool | None = None  # last eject-button reading; None: no baseline yet
+        self._press = False  # a new press seen and not yet taken
 
     def close(self) -> None:
         """The batch is gone: a request still out must not report to whatever is open next."""
@@ -43,6 +45,13 @@ class StatusPoller:
             self._started = self._clock()
         threading.Thread(target=self._ask, name="app-scanner-status", daemon=True).start()
 
+    def take_eject_press(self) -> bool:
+        """True once per new press of the Eject button. The first reading after a start, and the
+        first after any poll that read nothing, only set the baseline: it may be a stale press."""
+        with self._lock:
+            press, self._press = self._press, False
+            return press
+
     def current(self) -> ScannerStatus:
         with self._lock:
             started, status = self._started, self._status
@@ -52,12 +61,18 @@ class StatusPoller:
         return ScannerStatus.ERROR
 
     def _ask(self) -> None:
+        pressed: bool | None = None
         try:
             status, problem = self._scanner.status(), None
+            reader = getattr(self._scanner, "eject_pressed", None)
+            pressed = reader() if callable(reader) else None
         except Exception as exc:  # the backend may raise anything; show it, keep polling
             status, problem = ScannerStatus.ERROR, f"{type(exc).__name__}: {exc}"
         with self._lock:
             self._status, self._started = status, None
+            if pressed is not None and self._button is not None and pressed and not self._button:
+                self._press = True
+            self._button = pressed
             if status is not ScannerStatus.ERROR:
                 self._reported_error = False
         if problem is not None:

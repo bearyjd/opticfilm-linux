@@ -11,10 +11,15 @@ from opticfilm_linux.scanner.driver import (
 )
 
 NEXT_STRIP_ENV = "OPTICFILM_NEXT_STRIP"  # "1" allows the hardware-unproven ``load --next-strip``
+EJECT_BUTTON_ENV = "OPTICFILM_EJECT_BUTTON"  # "0" switches the front-panel Eject button off
 
 
 def next_strip_enabled() -> bool:
     return os.environ.get(NEXT_STRIP_ENV) == "1"
+
+
+def eject_button_enabled() -> bool:
+    return os.environ.get(EJECT_BUTTON_ENV) != "0"
 
 
 def real_scanner() -> DriverScanner:
