@@ -42,7 +42,7 @@ Goal: scan trays of slides natively on Linux, get enhanced results comparable to
 | Buttons | Eject, Scan x3 (Positive, Negative, Custom) |
 | Speed | ~6 min at 3600 dpi with IR; ~25 min at 7200 dpi with IR |
 | Vendor app features | Positive/Negative/Custom profiles, auto exposure, ICC profile, IR scratch/dust removal, Edit screen with unspecified filters, JPEG/TIFF/PNG/BMP output, hand-off to Photoshop/GIMP |
-| Installer | `OpticFilm_135i_x64_12L_V6.2.0.1.exe`, InstallShield-style wrapper holding a self-extracting RAR v5 of ~101 MB; contents not yet listed (may be password-protected) |
+| Installer | The vendor's Windows installer (contents not inspected in this repository) |
 
 Observed on the owner's unit, 2026-10-21, powered on and plugged into the dev machine (read from sysfs, no commands sent to it):
 
@@ -61,7 +61,7 @@ Captured on 2026-10-21: the vendor software (QuickScan Plus, Windows 11 VM, scan
 - The scanner is driven through a standard register interface of the Genesys family: control transfers carrying lists of register/value pairs, buffer transfers, and end-of-access commands. This matches the community driver's documentation.
 - The timeline is: long idle status polling, setup and table upload, **one continuous image sweep of about 50 s** (700 bulk transfers, 33 MB, no gap over 0.41 s), then a park/eject sequence of about 48 s. The sweep time matches the manual's 52 s at 600 dpi with infrared.
 - There is **no per-slide positioning**. The whole holder is scanned in place in a single sweep; separating the four slides is a software crop. The community driver's author reached the same conclusion independently from an empty-holder test.
-- The vendor software's 600 dpi register values match the saved vendor config's "Speed2" table (32 of 39 registers; the 7 mismatches come from one sub-table whose format is not understood). Positive-profile registers match 6 of 8, with two plausibly dynamic ones differing.
+- The vendor software's 600 dpi register values were compared with the vendor's own saved settings for that mode; most matched, and the differences were not understood. That comparison is not reproduced here.
 - Not captured: a scan with real slides, 3600 dpi, and any infrared or exposure behaviour on film.
 
 Not yet known: how the vendor software finds the four slide windows (fixed geometry vs. detection on the image), the exact Edit-screen filters, and whether other units behave the same.
