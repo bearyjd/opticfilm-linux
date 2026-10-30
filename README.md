@@ -44,9 +44,11 @@ Not verified, or known problems:
 - The driver's startup recovery is experimental and opt-in.
 - The calibration stop gate is opt-in in the driver. At 600 dpi, all eight frames scanned without
   it were degraded by a default dark-level fallback, and all eight scanned with it were clean
-  (one unit). Other runs with the gate on showed no fallback, but the gate has not been
+  (one unit). The gate-off runs were all taken before the gate-on runs, so run order and warm-up
+  are not ruled out, and a gate-off run at 3600 dpi once came out clean, so the problem does not
+  show up every time. Other runs with the gate on showed no fallback, but the gate has not been
   compared against gate-off runs at 3600 dpi, so image quality on real slides is not
-  established.
+  established. See [the combined review](docs/hardware-day-2026-10-28-review.md).
 - The app's Eject-button handling (on by default; `OPTICFILM_EJECT_BUTTON=0` turns it off) was
   run on the real scanner by the owner on 2026-10-28 (one unit). No logs of that run are kept in
   this repository, and the cases that must do nothing (a press during a scan, a held press) are
