@@ -5,8 +5,8 @@ Where the project stands and what to do next. Written 2026-10-27. Update it as i
 ## Where things stand
 
 - The batch engine (scan, enhance, review, export, eject and load, scanner lock, interrupted-scan mark) is done and tested against the fake scanner.
-- Real scanning has worked in limited tests on one unit: single slide at 600 dpi, all four slides at 600 dpi, single slide 1 at 3600 dpi.
-- Not verified: the full four-slide tray at 3600 dpi, any full tray at 7200 dpi, and the native cold eject (the homing move has timed out twice).
+- Real scanning has worked in limited tests on one unit: single slide at 600 dpi, all four slides at 600 dpi, single slide 1 at 3600 dpi, and (2026-10-31, one run, driver stop gate on) all four slides in one tray scan at 3600 dpi.
+- Not verified: a second full four-slide tray at 3600 dpi (reliability), any full tray at 7200 dpi, and the native cold eject (the homing move has timed out twice).
 - Nothing in the driver changes below has been run on the scanner.
 
 ## Next work, in order
