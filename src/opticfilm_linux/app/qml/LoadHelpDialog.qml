@@ -71,6 +71,14 @@ Kirigami.Dialog {
                 }
             }
             QQC2.Label {
+                objectName: "loadRunnerNote"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                opacity: 0.7
+                visible: text !== ""
+                text: bridge.loadRunnerNote
+            }
+            QQC2.Label {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 text: qsTr("4. When the terminal asks, pull the holder fully out, push it back in until it stops, and press Enter.")

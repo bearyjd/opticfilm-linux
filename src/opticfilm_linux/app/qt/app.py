@@ -9,7 +9,7 @@ from typing import Any
 
 from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.eject_watch import EjectWatch
-from opticfilm_linux.app.messages import load_command
+from opticfilm_linux.app.messages import load_command, runner_note
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -59,6 +59,13 @@ def load_command_text() -> str:
         return custom
     directory = os.environ.get(DRIVER_ENV)
     return load_command(Path(directory) if directory else None)
+
+
+def load_runner_note() -> str:
+    """The help dialog's line on which runner the shown command assumes."""
+    if os.environ.get(LOAD_COMMAND_ENV, "").strip():
+        return f"This is the command set in {LOAD_COMMAND_ENV}."
+    return runner_note()
 
 
 def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
@@ -125,7 +132,13 @@ def main(argv: list[str] | None = None) -> int:
         eject_button=eject_button_enabled(),
         eject_watch=None if args.fake is not None else EjectWatch(),  # demo mode: no scanner
     )
-    bridge = Bridge(controller, QSettingsPrefs(), demo_dpi, load_command_text=load_command_text())
+    bridge = Bridge(
+        controller,
+        QSettingsPrefs(),
+        demo_dpi,
+        load_command_text=load_command_text(),
+        load_runner_note=load_runner_note(),
+    )
     provider = PreviewProvider(lambda n, p, kind: controller.preview_path(n, p, kind))
     engine, warnings = create_engine(bridge, provider)
     if not engine.rootObjects():
