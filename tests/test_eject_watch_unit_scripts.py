@@ -397,3 +397,17 @@ def test_the_rendered_unit_is_readable_by_everyone_who_can_read_the_folder(tmp_p
     done, unit, _ = _install(tmp_path, str(driver))
     assert done.returncode == 0, done.stderr
     assert stat.S_IMODE(unit.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["opticfilm-eject-watch.service", "opticfilm-eject-watch-host.service"],
+)
+def test_a_failed_eject_exit_code_is_not_restarted(template: str) -> None:
+    """`of135i watch` exits 75 after a failed or interrupted eject; systemd must not restart it
+    (a new watcher would act on the next press), while exit 1 (scanner off) keeps retrying."""
+    text = (UNIT.parent / template).read_text()
+    lines = [x.strip() for x in text.splitlines() if not x.lstrip().startswith("#")]
+    assert "RestartPreventExitStatus=75" in lines
+    assert "Restart=always" in lines  # exit 1 is still retried
+    assert not any(x.startswith("SuccessExitStatus=") and "75" in x for x in lines)

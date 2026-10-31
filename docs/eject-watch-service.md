@@ -237,14 +237,17 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   5. Only with `--enable` and only after all of that passed: `systemctl --user enable`.
 
   </details>
-- **A restart after a failed eject.** The driver deliberately sends nothing on a further button
-  press once an eject has failed and left the scanner not idle-homed (state `0x22`). But both
-  units use `Restart=always`: when `watch` exits, systemd starts a new one after 30 seconds, and
-  that new `watch` reads the scanner afresh. If it accepts the scanner's state (it refuses
-  unless idle-homed), it acts on the next press. So the driver's "a further press must not send
-  anything" holds inside one `watch` process, not across the 30-second restart. This has not
-  been tested on hardware; if it worries you, stop the unit after a failed eject
-  (`systemctl --user stop opticfilm-eject-watch.service`) until you have looked at the scanner.
+- **After a failed eject the watcher stays stopped.** When an eject fails or is interrupted
+  mid-move, `of135i watch` exits with code 75 and prints that the scanner state is unknown and
+  needs a power cycle. Both units set `RestartPreventExitStatus=75`, so systemd does not start a
+  new watcher that could act on the next press; the unit shows `failed` and the Eject button is
+  inactive. After you have looked at the scanner and power-cycled it, run
+  `systemctl --user reset-failed opticfilm-eject-watch.service` and then
+  `systemctl --user start opticfilm-eject-watch.service`. Exit 1 (scanner off, refused, or not
+  idle-homed) is still retried every 30 seconds, backing off to 2 minutes. **Unverified:** the
+  code 75 path has only run against the fake device. For the distrobox unit it is also untested
+  that the exit code survives `distrobox-enter` and `podman exec`; the host unit gets it directly
+  from the Python process. Needs a driver that returns 75 (see the driver's `watch --help`).
 - **Not idle-homed at power-on.** If the scanner is not idle-homed when `watch` starts, `watch`
   refuses (its start-state check) and exits, and the unit just retries. The unit does not use
   `--cold-homing-rounds` and relaxes no guard or timeout. The button therefore stays inactive
