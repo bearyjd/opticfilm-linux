@@ -170,6 +170,9 @@ is ready, keep loading trays, and review the results as they arrive or all at th
   explicit **Free disk space** dialog that says what it removes before it does.
 - Nothing is lost on a crash or a closed window, and a second window on the same batch opens it
   read-only.
+- Optional: a systemd user service keeps the front-panel Eject button working with the app
+  closed, and the app steps it aside while it uses the scanner; see
+  [Eject button without the app](docs/eject-watch-service.md).
 
 ```sh
 opticfilm --fake demo-sweep      # demo mode: runs on the fake scanner, no hardware needed
