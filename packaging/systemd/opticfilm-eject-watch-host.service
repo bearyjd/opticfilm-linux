@@ -1,0 +1,36 @@
+# Keeps the driver's `of135i watch` running on the host (no container) so the scanner's
+# front-panel Eject button works whenever the scanner is on, with no app open. See
+# docs/eject-watch-service.md.
+#
+# Do not edit by hand: scripts/install-eject-watch.sh fills in the placeholders (the driver
+# checkout, the absolute path of the host python3, the PYTHONPATH) and writes the result to
+# ~/.config/systemd/user. The host python3 needs pyusb. Every word of ExecStart stays a plain
+# path or option (a test enforces this).
+
+[Unit]
+Description=OpticFilm 135i front-panel Eject button watcher
+# Retrying is deliberately unbounded (the scanner may be switched on at any time), so the
+# rate is kept low by the restart delay below instead.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@DRIVER_DIR@
+Environment=PYTHONPATH=@PYTHONPATH@
+ExecStart=@PYTHON@ -m of135i watch
+# The main process is python itself, so systemd's own stop reaches it: SIGINT to that process
+# only (KillMode=process), never SIGKILL. No ExecStop is needed.
+KillSignal=SIGINT
+KillMode=process
+SendSIGKILL=no
+TimeoutStopSec=120
+# `watch` refuses to start unless the scanner is idle-homed, and exits when it is off. Each
+# retry touches USB, so wait 30 s, backing off to 2 minutes (RestartSteps needs systemd 254;
+# older versions ignore it and retry every 30 s).
+Restart=always
+RestartSec=30
+RestartSteps=3
+RestartMaxDelaySec=120
+
+[Install]
+WantedBy=default.target

@@ -77,6 +77,7 @@ echo "${JOURNAL_LINE-of135i: Scanner 07b3:1436 not found on the host USB bus}"
 
 INSTALLER_STUB = """#!/bin/bash
 echo "installer $*" >>"$STUB_LOG"
+echo "runner: ${STUB_RUNNER:-distrobox:dev} (stub)"
 exit "${INSTALL_RC:-0}"
 """
 
@@ -267,7 +268,34 @@ def test_unknown_cgroup_is_skipped_with_a_note(rig):
 def test_driver_dir_from_env(rig):
     r, calls = rig.run(OPTICFILM_DRIVER_DIR=rig.driver)
     assert r.returncode == 0
-    assert f"installer {rig.driver}" in calls
+    assert f"installer --runner auto {rig.driver}" in calls
+
+
+@pytest.mark.parametrize("flag", [["--runner", "host"], ["--runner=host"]])
+def test_runner_is_passed_to_the_installer(rig, flag):
+    r, calls = rig.run(*flag, rig.driver, STUB_RUNNER="host")
+    assert r.returncode == 0, r.stdout
+    assert f"installer --runner host {rig.driver}" in calls
+    assert "(runner: host)" in r.stdout
+
+
+def test_runner_needs_a_value(rig):
+    r, calls = rig.run(rig.driver, "--runner")
+    assert r.returncode == 2 and calls == []
+
+
+def test_host_live_requires_mainpid_to_be_the_watcher(rig):
+    _scanner_on(rig)
+    r, _ = rig.run("--live", rig.driver, STUB_RUNNER="host")
+    assert r.returncode == 0, r.stdout
+    r, _ = rig.run("--live", rig.driver, STUB_RUNNER="host", MAINPID="1")  # /proc/1 is init
+    assert r.returncode == 1
+    assert "is not 'of135i watch'" in r.stdout
+
+
+def test_host_scanner_off_pass(rig):
+    r, _ = rig.run(rig.driver, STUB_RUNNER="host", NO_PROC="1")
+    assert r.returncode == 0, r.stdout
 
 
 def test_usage_errors(rig):

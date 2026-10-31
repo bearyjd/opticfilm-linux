@@ -5,15 +5,26 @@ interrupt endpoint. That is either the driver's `of135i watch` command or the ru
 optional systemd **user** unit keeps `of135i watch` running, so the button works whenever the
 scanner is on, without the app open and without typing a command.
 
-The unit is `packaging/systemd/opticfilm-eject-watch.service`. It starts `of135i watch` inside
-the distrobox container `dev` (where the driver's `pyusb` lives) through `distrobox-enter`,
-which must be on the user manager's `PATH`, and the container needs `bash`, `python3`, `pkill`
-and `pgrep` (the `procps` package). It uses `Restart=always` and retries every 30 seconds
+It runs `of135i watch` in one of two ways, chosen by the installer (`--runner`):
+
+- **Host (bare metal, no container; the default when it works).** The unit
+  `packaging/systemd/opticfilm-eject-watch-host.service` runs the host's `python3 -m of135i
+  watch` from the driver checkout. The host `python3` needs `pyusb` (Fedora: `sudo dnf install
+  python3-pyusb`; otherwise `python3 -m pip install --user pyusb`) and your user needs access to
+  the USB device (a udev ACL does this on a desktop). The main process is Python itself, so
+  systemd's own stop sends it SIGINT; there is no `ExecStop`, no `SIGKILL` (`KillMode=process`,
+  `SendSIGKILL=no`) and no container needed.
+- **Distrobox (optional).** The unit `packaging/systemd/opticfilm-eject-watch.service` starts
+  `of135i watch` inside a distrobox container (default `dev`, where the driver's `pyusb` lives)
+  through `distrobox-enter`, which must be on the user manager's `PATH`, and the container needs
+  `bash`, `python3`, `pkill` and `pgrep` (the `procps` package). Details below.
+
+Both use `Restart=always` and retries every 30 seconds
 (backing off to 2 minutes on systemd 254 or newer), so it picks the scanner up within a minute
 or two of switching it on; no udev rule is needed. The wait is deliberate: each retry starts a
 container shell and touches USB.
 
-The work is done by two small scripts that run inside the container:
+For the distrobox runner the work is done by two small scripts that run inside the container:
 `packaging/systemd/eject-watch-run.sh <driver_dir>` runs `of135i watch` from the driver
 checkout, and `packaging/systemd/eject-watch-stop.sh` stops it (see "SIGINT only" below). The
 checkout and the driver folder must both be visible inside the container at the same path, which
@@ -24,12 +35,16 @@ is the case for anything under your home folder.
 1. Render the unit for this checkout and your driver folder:
 
    ```sh
-   scripts/install-eject-watch.sh /path/to/opticfilm135i-linux
+   scripts/install-eject-watch.sh [--runner auto|host|distrobox[:NAME]] /path/to/opticfilm135i-linux
    ```
 
-   With no argument it uses `OPTICFILM_DRIVER_DIR`. Both folders must be absolute and made only
-   of letters, digits and `_ . / -`; anything else (spaces, `%`, `$`, quotes) is refused with a
-   message and nothing is written. The installer writes
+   With no folder it uses `OPTICFILM_DRIVER_DIR`. `--runner` defaults to `auto`: host if the
+   host `python3` can import `pyusb`, else `distrobox:dev` if `distrobox-enter` exists, else a
+   clear error. The installer prints which runner it chose and why; the names match the app's
+   `OPTICFILM_DRIVER_RUNNER` (`host`, `distrobox:<name>`). `OF135I_DEPS_OVERLAY` (optional) adds
+   a folder of extra Python packages to the host unit's `PYTHONPATH`. All folders and the
+   `python3` path must be absolute and made only of letters, digits and `_ . / -`; anything else
+   (spaces, `%`, `$`, quotes) is refused with a message and nothing is written. The installer writes
    `~/.config/systemd/user/opticfilm-eject-watch.service` (it shows a diff when it replaces an
    older one) and runs `systemctl --user daemon-reload`. It does **not** enable or start the
    unit. Change the container name `dev` in the written unit if yours differs.
@@ -139,9 +154,14 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   `--enable` runs `systemctl --user enable` only after a full `PASS` of the mode that ran, and
   never starts the unit.
 
+  `--runner` (default `auto`) is passed to the installer, so the check works for both runners.
+  With the host runner the watcher is the unit's `MainPID`, and `--live` also checks that
+  `/proc/<MainPID>/cmdline` is `of135i watch`.
+
   What each mode proves:
 
-  - **Scanner OFF (default).** Proves the start path through `distrobox-enter` works (the driver's
+  - **Scanner OFF (default).** Proves the start path works (through `distrobox-enter` for that
+    runner; for the host runner that the unit starts `python3 -m of135i watch`; the driver's
     own output is in the journal and none of the old failure signatures such as `null directory`
     or `syntax error`) and that the stop from the failed/restarting state is fast, leaves
     `inactive` and never needs SIGKILL. It does **not** prove the SIGINT stop of a live watcher:
@@ -185,3 +205,12 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   until the scanner is loaded or power-cycled into a clean idle state.
 - If the app is killed outright, it cannot start the watcher again; run
   `systemctl --user start opticfilm-eject-watch.service` yourself.
+
+## What has been verified on a real system
+
+- Distrobox runner: one system, 2026-10-31. The scanner-off start path, and the `--live` test
+  (SIGINT stop of a live watcher, driver printed "stopped", about 1.75 s, unit `inactive`, no
+  SIGKILL).
+- Host runner: **not verified on a real system** until you run
+  `scripts/eject-watch-check.sh` (and then `--live`) on it. The offline tests cover the rendered
+  unit, the installer's runner choice and the check script against stubs only.

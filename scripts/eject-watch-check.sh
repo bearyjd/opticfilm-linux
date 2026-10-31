@@ -3,7 +3,9 @@
 # INCONCLUSIVE line. Exit codes: 0 PASS, 1 FAIL, 2 usage, 3 refused (scanner state wrong or
 # unknown), 4 refused (an `of135i watch` already runs, or /proc cannot be read), 5 INCONCLUSIVE.
 #
-# Usage: eject-watch-check.sh [--live] [--enable] [DRIVER_DIR]   (default: $OPTICFILM_DRIVER_DIR)
+# Usage: eject-watch-check.sh [--live] [--enable] [--runner auto|host|distrobox[:NAME]] [DRIVER_DIR]
+#        (DRIVER_DIR defaults to $OPTICFILM_DRIVER_DIR; --runner is passed to the installer and
+#        defaults to auto: host python3 with pyusb if it has it, else distrobox:dev)
 #
 # Default mode (scanner OFF, lights out): proves the start path through distrobox-enter works and
 # that the stop from the failed/restarting state is clean and fast. It does NOT prove the SIGINT
@@ -231,7 +233,7 @@ step_start_off_mode() {
 }
 
 step_start_live() {
-    local i state pid
+    local i state pid cmd
     wait_for_process || inconclusive "the watcher process never appeared within ${START_WAIT_SECS}s"
     for ((i = 0; i < LIVE_HOLD_SECS; i++)); do
         sleep 1
@@ -242,6 +244,12 @@ step_start_live() {
     pid=$(sc_out show -p MainPID "$UNIT" | sed -n 's/^MainPID=//p')
     if [[ -z "$pid" || "$pid" == 0 || ! -d "$PROC_ROOT/$pid" ]]; then
         fail "step 2: the unit has no live MainPID (got '${pid:-none}'); the watcher is not tied to the unit"
+    fi
+    if [[ "$runner_kind" == host ]]; then # the host unit's main process IS the watcher
+        cmd=$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)
+        if [[ "$cmd" != *of135i*" watch "* ]]; then
+            fail "step 2: MainPID $pid is not 'of135i watch' (command line: '$cmd'); the watcher is not tied to the unit"
+        fi
     fi
     echo "step 2: OK the watcher stayed up ${LIVE_HOLD_SECS}s under the unit (MainPID $pid)"
 }
@@ -305,16 +313,25 @@ step_stop_and_verify() {
 live=0
 enable=0
 driver_dir=""
-for arg in "$@"; do
-    case "$arg" in
+runner_req=auto
+runner_kind=unknown
+while (($#)); do
+    case "$1" in
     --live) live=1 ;;
     --enable) enable=1 ;;
+    --runner)
+        (($# >= 2)) || usage
+        runner_req=$2
+        shift
+        ;;
+    --runner=*) runner_req=${1#--runner=} ;;
     -*) usage ;;
     *)
         [[ -z "$driver_dir" ]] || usage
-        driver_dir=$arg
+        driver_dir=$1
         ;;
     esac
+    shift
 done
 driver_dir=${driver_dir:-${OPTICFILM_DRIVER_DIR:-}}
 [[ -n "$driver_dir" ]] || usage
@@ -348,8 +365,10 @@ echo "step 0: OK no other of135i watch process"
 
 # Step 1: install (renders the unit and daemon-reloads only).
 sc_wait 30 reset-failed "$UNIT"
-if out=$("$here/install-eject-watch.sh" "$driver_dir" 2>&1); then
-    echo "step 1: OK unit installed"
+if out=$("$here/install-eject-watch.sh" --runner "$runner_req" "$driver_dir" 2>&1); then
+    runner_kind=$(sed -n 's/^runner: \([^ ]*\).*/\1/p' <<<"$out" | head -1)
+    runner_kind=${runner_kind:-unknown}
+    echo "step 1: OK unit installed (runner: $runner_kind)"
 else
     echo "$out"
     fail "step 1: the installer failed"

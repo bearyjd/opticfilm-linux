@@ -182,20 +182,49 @@ def test_run_script_without_a_folder_says_so(tmp_path):
 # -- the installer -------------------------------------------------------------------------
 
 
-def _install(tmp_path: Path, driver: str | None, *, script=INSTALL, env=None):
+_TOOLS = ("dirname", "grep", "mkdir", "mktemp", "install", "cmp", "diff", "rm", "bash")
+
+
+def _install(
+    tmp_path: Path,
+    driver: str | None,
+    *,
+    script=INSTALL,
+    env=None,
+    runner: str | None = "distrobox",
+    pyusb: bool | None = None,
+    distrobox_enter: bool = False,
+    path_prefix: str = "",
+):
+    """Run the installer with a PATH of stubs and symlinks to the few real tools it needs, so the
+    presence of python3/pyusb/distrobox-enter is decided by the test, not by this machine."""
     bin_dir = tmp_path / "ibin"
+    tools = tmp_path / "itools"
     bin_dir.mkdir(exist_ok=True)
+    tools.mkdir(exist_ok=True)
+    for name in _TOOLS:
+        if not (tools / name).exists():
+            (tools / name).symlink_to(shutil.which(name) or "/bin/false")
     log = tmp_path / "systemctl.log"
     stub = bin_dir / "systemctl"
     stub.write_text(f'#!/bin/bash\necho "$*" >> "{log}"\n')
     stub.chmod(0o755)
+    if pyusb is not None:  # python3 present; `import usb` works or not
+        py = bin_dir / "python3"
+        py.write_text(f"#!/bin/bash\nexit {0 if pyusb else 1}\n")
+        py.chmod(0o755)
+    if distrobox_enter:
+        (bin_dir / "distrobox-enter").write_text("#!/bin/bash\n")
+        (bin_dir / "distrobox-enter").chmod(0o755)
     units = tmp_path / "units"
     run_env = {k: v for k, v in os.environ.items() if k != "OPTICFILM_DRIVER_DIR"}
     run_env.update(
-        PATH=f"{bin_dir}:{os.environ['PATH']}", EJECT_WATCH_UNIT_DIR=str(units), HOME=str(tmp_path)
+        PATH=f"{path_prefix}{bin_dir}:{tools}",
+        EJECT_WATCH_UNIT_DIR=str(units),
+        HOME=str(tmp_path),
     )
     run_env.update(env or {})
-    args = [] if driver is None else [driver]
+    args = ([] if runner is None else ["--runner", runner]) + ([] if driver is None else [driver])
     done = subprocess.run(
         [str(script), *args], capture_output=True, text=True, env=run_env, check=False, timeout=60
     )

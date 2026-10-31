@@ -35,8 +35,9 @@
 | `python scripts/check_spike.py DIR` | Offline verdict for a hardware-run folder |
 | `python scripts/poll_report.py DIR...` | Offline poll-timeout report for run folders |
 | `python scripts/rehearse.py --dpi N [--work DIR] [--keep]` | Rehearse one tray with the fake driver and measure what it costs |
+| `scripts/install-eject-watch.sh [--runner auto\|host\|distrobox[:NAME]] [DRIVER_DIR]` | Render the Eject-watcher systemd user unit (host python3 or distrobox); never enables or starts it |
 | `scripts/opticfilm-here` | Start the app from this checkout on the real scanner (dev container) |
-| `scripts/eject-watch-check.sh [--live] [--enable] [DRIVER_DIR]` | One-command check of the Eject-watcher unit: scanner OFF proves the start path and a clean stop; `--live` (scanner ON) proves the live stop; `--enable` enables it after a PASS |
+| `scripts/eject-watch-check.sh [--live] [--enable] [--runner R] [DRIVER_DIR]` | One-command check of the Eject-watcher unit: scanner OFF proves the start path and a clean stop; `--live` (scanner ON) proves the live stop; `--runner host\|distrobox[:NAME]` picks the container-free or distrobox unit (default auto); `--enable` enables it after a PASS |
 
 Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage at least 80 %,
 `ruff check` and `ruff format --check` (line length 100, Python 3.11 target).

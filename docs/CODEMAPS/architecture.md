@@ -8,6 +8,7 @@ Single Python package `src/opticfilm_linux`, no server, no database (state = JSO
 ofscan   -> opticfilm_linux.cli:main            (batch/cli.py adds `ofscan batch ...`)
 opticfilm-> opticfilm_linux.app.qt.app:main     (`--fake SWEEP_DIR` = fake scanner)
 scripts/ check_spike.py, poll_report.py, rehearse.py, opticfilm-here,
+         install-eject-watch.sh (renders the host or distrobox unit),
          eject-watch-check.sh (check of the Eject-watcher unit; --live for the live stop)
 
 ## Layers (imports point downward only)
