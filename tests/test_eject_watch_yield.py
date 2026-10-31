@@ -255,6 +255,12 @@ def test_finds_a_watch_process(tmp_path):
     assert watch_process_running(tmp_path)
 
 
+def test_finds_the_host_unit_form(tmp_path):
+    # What the host (no container) unit runs: an absolute interpreter, `-m of135i watch`.
+    _proc(tmp_path, "10", "/usr/bin/python3", "-m", "of135i", "watch")
+    assert watch_process_running(tmp_path)
+
+
 def test_finds_the_console_script_form(tmp_path):
     _proc(tmp_path, "10", "/usr/bin/python3", "/home/x/bin/of135i", "watch")
     assert watch_process_running(tmp_path)

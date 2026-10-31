@@ -24,11 +24,11 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env distrobox-enter --no-tty -n dev -- @SCRIPT_DIR@/eject-watch-run.sh @DRIVER_DIR@
+ExecStart=/usr/bin/env distrobox-enter --no-tty -n @CONTAINER@ -- @SCRIPT_DIR@/eject-watch-run.sh @DRIVER_DIR@
 # A signal sent to the host-side distrobox-enter does not reach the Python process in the
 # container. So the stop sends SIGINT to it from inside the container and waits (at most about
 # 100 s, under TimeoutStopSec) for it to exit. It never sends SIGKILL.
-ExecStop=/usr/bin/env distrobox-enter --no-tty -n dev -- @SCRIPT_DIR@/eject-watch-stop.sh
+ExecStop=/usr/bin/env distrobox-enter --no-tty -n @CONTAINER@ -- @SCRIPT_DIR@/eject-watch-stop.sh
 # `watch` refuses to start unless the scanner is idle-homed, and exits when it is off. Each
 # retry starts a container shell and touches USB, so wait 30 s, backing off to 2 minutes
 # (RestartSteps needs systemd 254; older versions ignore it and retry every 30 s).

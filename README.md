@@ -184,7 +184,7 @@ is ready, keep loading trays, and review the results as they arrive or all at th
 - Nothing is lost on a crash or a closed window, and a second window on the same batch opens it
   read-only.
 - Optional: a systemd user service keeps the front-panel Eject button working with the app
-  closed, and the app steps it aside while it uses the scanner; see
+  closed (on the bare host, no container needed; a distrobox runner is also supported), and the app steps it aside while it uses the scanner; see
   [Eject button without the app](docs/eject-watch-service.md).
 
 ```sh

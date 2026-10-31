@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -182,20 +183,82 @@ def test_run_script_without_a_folder_says_so(tmp_path):
 # -- the installer -------------------------------------------------------------------------
 
 
-def _install(tmp_path: Path, driver: str | None, *, script=INSTALL, env=None):
+_TOOLS = (
+    "dirname",
+    "grep",
+    "mkdir",
+    "mktemp",
+    "install",
+    "cmp",
+    "diff",
+    "rm",
+    "bash",
+    "env",
+    "timeout",
+    "realpath",
+)
+
+
+def _install(
+    tmp_path: Path,
+    driver: str | None,
+    *,
+    script=INSTALL,
+    env=None,
+    runner: str | None = "distrobox",
+    pyusb: bool | str | None = None,
+    distrobox_enter: bool = False,
+    path_prefix: str = "",
+):
+    """Run the installer with a PATH of stubs and symlinks to the few real tools it needs, so the
+    presence of python3/pyusb/distrobox-enter is decided by the test, not by this machine."""
     bin_dir = tmp_path / "ibin"
+    tools = tmp_path / "itools"
     bin_dir.mkdir(exist_ok=True)
+    tools.mkdir(exist_ok=True)
+    for name in _TOOLS:
+        if not (tools / name).exists():
+            (tools / name).symlink_to(shutil.which(name) or "/bin/false")
     log = tmp_path / "systemctl.log"
     stub = bin_dir / "systemctl"
-    stub.write_text(f'#!/bin/bash\necho "$*" >> "{log}"\n')
+    stub.write_text(
+        "#!/bin/bash\n"
+        'if [[ "$2" == is-active ]]; then echo "${STUB_ACTIVE:-inactive}"; exit 0; fi\n'
+        f'echo "$*" >> "{log}"\n'
+    )
     stub.chmod(0o755)
+    if pyusb is not None:
+        # python3 is present. `pyusb` True/False: `import usb` works or not. A string: it works
+        # only when PYTHONPATH is exactly that string (a probe that is not run like the unit fails).
+        # The app's own helper (`-I`) is passed through to the real interpreter.
+        cond = (
+            "true"
+            if pyusb is True
+            else "false"
+            if pyusb is False
+            else f'[[ "${{PYTHONPATH:-}}" == {pyusb} && -z "${{PYTHONSTARTUP:-}}" ]]'
+        )
+        py = bin_dir / "python3"
+        py.write_text(
+            f'#!/bin/bash\nif [[ "$1" == -I ]]; then exec {sys.executable} "$@"; fi\n{cond}\n'
+        )
+        py.chmod(0o755)
+    if distrobox_enter:
+        (bin_dir / "distrobox-enter").write_text("#!/bin/bash\n")
+        (bin_dir / "distrobox-enter").chmod(0o755)
     units = tmp_path / "units"
+    proc_root = tmp_path / "iproc"  # no real process of this machine may influence the tests
+    proc_root.mkdir(exist_ok=True)
     run_env = {k: v for k, v in os.environ.items() if k != "OPTICFILM_DRIVER_DIR"}
     run_env.update(
-        PATH=f"{bin_dir}:{os.environ['PATH']}", EJECT_WATCH_UNIT_DIR=str(units), HOME=str(tmp_path)
+        PATH=f"{path_prefix}{bin_dir}:{tools}",
+        EJECT_WATCH_UNIT_DIR=str(units),
+        HOME=str(tmp_path),
+        EJECT_WATCH_CHECK_TESTING="1",
+        PROC_ROOT=str(proc_root),
     )
     run_env.update(env or {})
-    args = [] if driver is None else [driver]
+    args = ([] if runner is None else ["--runner", runner]) + ([] if driver is None else [driver])
     done = subprocess.run(
         [str(script), *args], capture_output=True, text=True, env=run_env, check=False, timeout=60
     )
@@ -220,6 +283,44 @@ def test_installer_renders_the_unit_and_only_reloads_systemd(tmp_path):
 def _exec_lines_of(text: str) -> dict[str, list[str]]:
     lines = [x for x in text.splitlines() if x.startswith(("ExecStart=", "ExecStop="))]
     return {x.split("=", 1)[0]: x.split("=", 1)[1].split() for x in lines}
+
+
+def test_installer_ignores_unit_dir_override_in_production(tmp_path):
+    driver = tmp_path / "drv"
+    driver.mkdir()
+    config = tmp_path / "config"
+    done, overridden_unit, _ = _install(
+        tmp_path,
+        str(driver),
+        env={"EJECT_WATCH_CHECK_TESTING": "", "XDG_CONFIG_HOME": str(config)},
+    )
+    assert done.returncode == 0, done.stderr
+    assert not overridden_unit.exists()
+    assert (config / "systemd" / "user" / "opticfilm-eject-watch.service").is_file()
+
+
+@pytest.mark.parametrize("runner", ["host", "distrobox"])
+def test_installer_resolves_driver_symlink_before_rendering(tmp_path, runner):
+    target = tmp_path / "real-driver"
+    target.mkdir()
+    link = tmp_path / "driver-link"
+    link.symlink_to(target, target_is_directory=True)
+    done, unit, _ = _install(tmp_path, str(link), runner=runner, pyusb=True)
+    assert done.returncode == 0, done.stderr
+    assert str(link) not in unit.read_text()
+    assert str(target.resolve()) in unit.read_text()
+
+
+@pytest.mark.parametrize("runner", ["host", "distrobox"])
+def test_installer_rejects_hostile_resolved_driver_symlink_target(tmp_path, runner):
+    target = tmp_path / "bad target"
+    target.mkdir()
+    link = tmp_path / "driver-link"
+    link.symlink_to(target, target_is_directory=True)
+    done, unit, calls = _install(tmp_path, str(link), runner=runner, pyusb=True)
+    assert done.returncode != 0, done.stdout
+    assert "not allowed" in done.stderr
+    assert not unit.exists() and calls == []
 
 
 def test_installer_takes_the_driver_folder_from_the_environment(tmp_path):
