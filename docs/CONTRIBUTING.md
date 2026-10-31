@@ -36,7 +36,7 @@
 | `python scripts/poll_report.py DIR...` | Offline poll-timeout report for run folders |
 | `python scripts/rehearse.py --dpi N [--work DIR] [--keep]` | Rehearse one tray with the fake driver and measure what it costs |
 | `scripts/opticfilm-here` | Start the app from this checkout on the real scanner (dev container) |
-| `scripts/eject-watch-check.sh [--enable] [DRIVER_DIR]` | One-command no-motor check of the Eject-watcher unit (scanner OFF); `--enable` enables it after a PASS |
+| `scripts/eject-watch-check.sh [--live] [--enable] [DRIVER_DIR]` | One-command check of the Eject-watcher unit: scanner OFF proves the start path and a clean stop; `--live` (scanner ON) proves the live stop; `--enable` enables it after a PASS |
 
 Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage at least 80 %,
 `ruff check` and `ruff format --check` (line length 100, Python 3.11 target).

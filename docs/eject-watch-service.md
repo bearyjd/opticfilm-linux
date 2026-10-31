@@ -125,39 +125,60 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   and `pgrep`). Nothing about `distrobox-enter` itself is verified: that these arguments are
   accepted, that SIGINT sent this way ends `watch` cleanly, and that `pkill` exists in your
   container all wait for the no-motor check below, run with the scanner switched off.
-- **No-motor check of the stop path** (scanner switched OFF, so `watch` cannot move anything).
-  Switch the scanner off, wait until its lights go out, then run one command:
+- **Checking the unit with one command** (`scripts/eject-watch-check.sh`). Two modes:
 
   ```sh
-  scripts/eject-watch-check.sh /path/to/opticfilm135i-linux            # or set OPTICFILM_DRIVER_DIR
-  scripts/eject-watch-check.sh --enable /path/to/opticfilm135i-linux   # also enable on PASS
+  scripts/eject-watch-check.sh [--enable] /path/to/opticfilm135i-linux         # scanner OFF
+  scripts/eject-watch-check.sh --live [--enable] /path/to/opticfilm135i-linux  # scanner ON
   ```
 
-  It prints one line per step and ends with a single `PASS` or `FAIL` (exit 0 only on `PASS`).
-  It refuses to run while the scanner is on the USB bus (no flag bypasses this). `--enable` only
-  runs `systemctl --user enable` after a `PASS` and never starts the unit; then switch the
-  scanner on and wait one to two minutes. On `FAIL` it prints the journal tail and stops the
-  unit, never sending SIGKILL: paste the output.
+  The driver folder defaults to `OPTICFILM_DRIVER_DIR`. Output is one line per step and a single
+  last line, `PASS`, `FAIL` or `INCONCLUSIVE` (exit 0, 1 and 5; 2 usage; 3 the scanner state is
+  wrong or unknown; 4 an `of135i watch` already runs or `/proc` cannot be read). It never sends a
+  command to the scanner, never presses or simulates a button, and never sends any signal.
+  `--enable` runs `systemctl --user enable` only after a full `PASS` of the mode that ran, and
+  never starts the unit.
+
+  What each mode proves:
+
+  - **Scanner OFF (default).** Proves the start path through `distrobox-enter` works (the driver's
+    own output is in the journal and none of the old failure signatures such as `null directory`
+    or `syntax error`) and that the stop from the failed/restarting state is fast, leaves
+    `inactive` and never needs SIGKILL. It does **not** prove the SIGINT stop of a live watcher:
+    with the scanner off `watch` exits within a second, so there is no live process to stop.
+  - **`--live` (scanner ON, idle-homed).** Do not press the Eject button during it. The watcher
+    must stay up for 10 seconds under the unit (its `MainPID` is alive), then the stop must be
+    clean and fast. If `watch` exits by itself (for example the scanner is not idle-homed) the
+    result is `INCONCLUSIVE`, never `PASS`. This is the only mode that proves the live stop path.
+
+  The scanner-state guard cannot be bypassed by a flag or by the environment: the test overrides
+  (`SYSFS_USB_ROOT` and the like) are ignored unless `EJECT_WATCH_CHECK_TESTING=1`, an unreadable
+  or empty USB listing counts as "cannot tell" and refuses, and a refusal makes no `systemctl`
+  call.
+
+  On `FAIL` or `INCONCLUSIVE` it prints the journal tail, runs `systemctl --user disable` and a
+  further bounded `stop` if the unit is still up, then reports the states it actually read
+  (`is-active`, `is-enabled`, watcher process). If something is still running, end it with
+  Ctrl-C or `kill -INT`, never `kill -9`, and paste the output.
 
   <details>
   <summary>What it does</summary>
 
-  1. Refuses if `07b3:1436` is on the USB bus. Runs `systemctl --user reset-failed`, then
-     `scripts/install-eject-watch.sh` (renders the unit and daemon-reloads).
-  2. Starts the unit and waits up to about 20 seconds for a process whose command line has
-     `python3 -m of135i watch`. With the scanner off the unit may restart every 30 seconds, so
-     seeing the process once is enough.
-  3. Times `systemctl --user stop` (hard limit about 130 s). Over 30 s is a `FAIL`, over 10 s a
-     warning.
-  4. Checks that no watcher process remains, that `systemctl --user is-active` prints exactly
-     `inactive` (not `failed`), and that the journal since the start has no SIGKILL or
-     "killed".
+  1. Refuses by the scanner-state rule above, and if another `of135i watch` already runs. Runs
+     `systemctl --user reset-failed`, then `scripts/install-eject-watch.sh`.
+  2. Starts the unit. Scanner OFF: waits up to about 20 s for driver output in the journal since
+     the start (or `ExecMainStartTimestamp`), and fails on `null directory`, `syntax error`,
+     `No such file`, `command not found` or `Permission denied`. `--live`: waits for the process
+     and holds it for 10 s.
+  3. Times `systemctl --user stop` (hard limit about 130 s; over 30 s is a `FAIL`, over 10 s a
+     warning).
+  4. Checks no watcher process remains, `is-active` prints exactly `inactive`, this run's journal
+     has no `SIGKILL`, `status=9/KILL` or `code=killed`, and the unit's cgroup holds no leftover
+     process (skipped with a note if unreadable). "Unit process ... remains running after unit
+     stopped" lines are tolerated.
   5. Only with `--enable` and only after all of that passed: `systemctl --user enable`.
 
   </details>
-
-  If it fails, do not use the unit during an eject; end any leftover `watch` with Ctrl-C or
-  `kill -INT`, never `kill -9`.
 - **Not idle-homed at power-on.** If the scanner is not idle-homed when `watch` starts, `watch`
   refuses (its start-state check) and exits, and the unit just retries. The unit does not use
   `--cold-homing-rounds` and relaxes no guard or timeout. The button therefore stays inactive
