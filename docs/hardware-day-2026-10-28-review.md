@@ -148,3 +148,10 @@ Scrub checklist (verified by grep on this file): no hex register values, no `dec
 
 - PROVEN (this unit, this setup): every gate-off run showed the stale-read signature (calibration re-armed 5.7-11.9 ms after the previous clear while the acquisition still read as running) and ended in the `default_offset_codes` dark_b fallback; every gate-on run was clean. Gate-off runs 4 and 5 came after gate-on runs 2 and 3, so the earlier order confound does not explain it.
 - UNPROVEN: three runs per arm; one scanner; 600 dpi only. Image quality was not re-compared. `cal_bufempty_waits` was empty because arm C was not enabled, so its engagement is still open.
+
+## Arm C alone and the full tray, 2026-10-31
+
+- PROVEN (one unit): all four slides in one tray scan at 3600 dpi with the stop gate on finished with `cal_integrity` clean on every frame, 0 poll timeouts and 7 stop-gate waits per frame, in about 296 s. The log shows two "poll timed out 0.3 s, continuing" warnings that the per-frame diagnostics do not count.
+- PROVEN (one run): with the stop gate off and `--cal-wait-bufempty enforce` at 600 dpi, slide 4, the scan aborted in `cal_dark_b` after the poll's 0.3 s budget (last status `cc55`, buffer-empty bit still set) and the scanner needed a power cycle. The remaining three arm C scans were not run.
+- SUGGESTED: the gate waits for the buffer-empty bit (0x40) to clear, which in healthy runs happens about 1.0-1.4 s after the execute write (`ad55`), far beyond the 0.3 s non-strict poll floor the gate inherits; the status word itself stayed well-formed throughout, so this is a budget mismatch rather than a stale read.
+- UNPROVEN: that a longer, separate budget would let arm C complete, and whether arm C adds anything over the stop gate. Decision: arm C stays off and unfixed; the stop gate already prevents the stale-read signature.
