@@ -163,18 +163,21 @@ class Controller(HolderCommands):
             defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror, slots=slots)
             self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
 
-        self._cancel_queued_holder()
+        if self._holder_move_running():
+            return
         self._run(job, "Could not create the batch", droppable=True)
 
     def open_batch(self, directory: Path, readonly: bool = False) -> None:
         def job() -> None:
             self._replace_batch(lambda: BatchStore.open(directory, readonly=readonly), readonly)
 
-        self._cancel_queued_holder()
+        if self._holder_move_running():
+            return
         self._run(job, "Could not open the batch", droppable=True)
 
     def close_batch(self) -> None:
-        self._cancel_queued_holder()
+        if self._holder_move_running():
+            return
         self._run(self._detach, "Could not close the batch", droppable=True)
 
     # -- scanning ------------------------------------------------------------------------
@@ -632,6 +635,7 @@ class Controller(HolderCommands):
                 holder_control=session is not None and session.holder is not None,
                 holder_busy=self._holder_busy,
                 next_strip=self._next_strip,
+                jobs_running=bool(self._long_jobs or self._job_futures),
             )
 
     @staticmethod

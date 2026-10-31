@@ -161,10 +161,15 @@ def build_state(
     holder_control: bool = False,
     holder_busy: bool = False,
     next_strip: bool = False,
+    jobs_running: bool = False,
 ) -> AppState:
     trays = manifest.trays if manifest is not None else ()
     current = next((t for t in trays if t.number == selected), None)
-    idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
+    idle = (
+        manifest is not None
+        and holder_control
+        and not (holder_busy or scan_pending or readonly or jobs_running)
+    )
     return AppState(
         batch_name=manifest.name if manifest is not None else None,
         readonly=readonly,
@@ -190,6 +195,6 @@ def build_state(
         can_load_next=idle and next_strip and scanner is ScannerStatus.NOT_READY,
         next_strip_enabled=next_strip,
         can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED
-        and not (holder_busy or scan_pending or readonly),
+        and not (holder_busy or scan_pending or readonly or jobs_running),
         holder_busy=holder_busy,
     )
