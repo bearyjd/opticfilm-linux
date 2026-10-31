@@ -32,6 +32,11 @@ Restart=always
 RestartSec=30
 RestartSteps=3
 RestartMaxDelaySec=120
+# `of135i watch` exits 75 when an eject failed or was interrupted mid-move: the scanner needs a
+# power cycle, so systemd must NOT start a new watcher that would act on the next button press.
+# Exit 1 (scanner off, refused, unsafe start state) is still retried. The unit then stays
+# `failed` until you reset it: `systemctl --user reset-failed` and `systemctl --user start`.
+RestartPreventExitStatus=75
 
 [Install]
 WantedBy=default.target
