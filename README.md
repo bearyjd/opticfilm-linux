@@ -37,6 +37,12 @@ Verified natively on Linux:
   one scanner is not a reliability figure.
 - The scanner's front-panel Eject button, through the driver's `watch` command: one press, one
   eject.
+- The same button through the always-on watcher service (2026-10-31, one unit, one press, scanner
+  just switched on with a holder inside, no app and no command): the driver ran its cold-start
+  sequence (three homing rounds, about 18 s), ended idle-homed, and ejected. The owner saw the
+  holder come out during the first homing round; the later rounds and the final eject move added
+  nothing visible. A cold eject timed out twice on 2026-10-26, so one clean run is not a
+  reliability figure.
 
 Not verified, or known problems:
 
