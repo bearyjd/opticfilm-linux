@@ -77,3 +77,21 @@ def test_batch_change_is_refused_while_a_holder_move_runs(build, tmp_path, actio
     c.close_batch()
     wait_until(c, lambda: c.state().batch_name is None)
     assert scanner.calls == ["eject"]
+
+
+def test_close_cancels_a_holder_move_that_has_not_started(build, tmp_path):  # noqa: F811
+    c, scanner = build()
+    open_new(c, tmp_path / "b")
+    wait_until(c, lambda: c.state().can_eject)
+    hold = threading.Event()
+    started = threading.Event()
+    c._holder_pool.submit(lambda: (started.set(), hold.wait(30)))  # a first move in progress
+    assert started.wait(10)
+    c.eject_holder()  # queued behind it, not started
+    assert c._holder_busy
+    c.close_batch()
+    wait_until(c, lambda: c.state().batch_name is None)
+    assert not c._holder_busy
+    hold.set()
+    c._holder_pool.submit(lambda: None).result(10)  # anything queued has had its turn
+    assert scanner.calls == [] and c.state().banner is None
