@@ -10,6 +10,7 @@ from opticfilm_linux.app.messages import (
     flag_text,
     holder_failed_text,
     load_command,
+    runner_note,
     scanner_text,
     slide_status_text,
     stage_text,
@@ -159,3 +160,108 @@ def test_a_failed_holder_move_says_to_power_cycle_and_reload(action, words):
 def test_the_load_command_cannot_mistake_a_dash_folder_for_an_option(folder):
     inner = shlex.split(shlex.split(load_command(Path(folder)))[-1])
     assert inner[:3] == ["cd", "--", folder]
+
+
+_DIR = Path("/home/me/driver")
+_DEFAULT = (
+    "distrobox enter dev -- bash -lc 'cd -- /home/me/driver && PYTHONPATH=. python3 -m of135i load'"
+)
+
+
+def test_the_host_runner_runs_the_driver_directly():
+    assert load_command(_DIR, runner="host") == (
+        "bash -lc 'cd -- /home/me/driver && PYTHONPATH=. python3 -m of135i load'"
+    )
+
+
+def test_a_named_distrobox_runner_uses_that_container():
+    assert load_command(_DIR, runner="distrobox:photo-box.1") == _DEFAULT.replace(
+        "dev", "photo-box.1", 1
+    )
+
+
+def test_an_empty_runner_is_the_default():
+    assert load_command(_DIR, runner="") == _DEFAULT
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        "docker",
+        "distrobox:",
+        "distrobox:a b",
+        "distrobox:x;rm -rf ~",
+        "distrobox:$(id)",
+        "Host",
+        "distrobox:-h",
+        "distrobox:--root",
+        "distrobox:.",
+        "distrobox:..",
+    ],
+)
+def test_an_unknown_runner_or_unsafe_name_falls_back_to_the_default_and_logs(runner, caplog):
+    with caplog.at_level("WARNING"):
+        assert load_command(_DIR, runner=runner) == _DEFAULT
+    assert "OPTICFILM_DRIVER_RUNNER" in caplog.text
+
+
+def test_the_runner_is_read_from_the_environment_when_not_given(monkeypatch):
+    monkeypatch.setenv("OPTICFILM_DRIVER_RUNNER", "host")
+    assert load_command(_DIR).startswith("bash -lc ")
+
+
+def test_the_note_says_which_runner_and_how_to_change_it():
+    note = runner_note(runner=None, which=lambda _name: "/usr/bin/distrobox")
+    assert 'container "dev"' in note and "OPTICFILM_DRIVER_RUNNER" in note
+    assert "directly on this computer" in runner_note(runner="host", which=lambda _n: None)
+    assert 'container "box"' in runner_note(runner="distrobox:box", which=lambda _n: "/x")
+
+
+def test_the_note_warns_when_distrobox_is_missing():
+    note = runner_note(runner="distrobox:dev", which=lambda _name: None)
+    assert (
+        "distrobox command was not found" in note
+        and "install" in note
+        and "OPTICFILM_DRIVER_RUNNER=host" in note
+    )
+
+
+def test_the_host_runner_never_warns_about_distrobox():
+    assert "not found" not in runner_note(runner="host", which=lambda _name: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_runner_env(monkeypatch):
+    monkeypatch.delenv("OPTICFILM_DRIVER_RUNNER", raising=False)
+
+
+def test_surrounding_whitespace_is_ignored():
+    assert load_command(_DIR, runner="host ").startswith("bash -lc ")
+    assert load_command(_DIR, runner="distrobox:x\n") == _DEFAULT.replace("dev", "x", 1)
+
+
+def test_the_note_warns_when_only_distrobox_enter_is_present():
+    only_enter = {"distrobox-enter": "/usr/bin/distrobox-enter"}.get
+    assert "not found" in runner_note(runner="distrobox:dev", which=only_enter)
+
+
+def test_the_note_is_quiet_when_distrobox_is_present():
+    assert "not found" not in runner_note(runner="distrobox:dev", which=lambda _n: "/x")
+
+
+def test_a_rejected_runner_is_named_in_the_note_not_presented_as_chosen():
+    note = runner_note(runner="docker", which=lambda _n: "/x")
+    assert 'OPTICFILM_DRIVER_RUNNER="docker" was not understood; using "dev"' in note
+
+
+def test_a_rejected_runner_is_shortened_and_cleaned_for_display():
+    note = runner_note(runner="distrobox:" + "a b\n\x1b[31m" * 30, which=lambda _n: "/x")
+    assert "\n" not in note and "\x1b" not in note
+    assert len(note) < 400
+
+
+def test_a_rejected_runner_is_logged_once_for_command_and_note(caplog):
+    with caplog.at_level("WARNING"):
+        load_command(_DIR, runner="docker")
+        runner_note(runner="docker", which=lambda _n: "/x")
+    assert caplog.text.count("OPTICFILM_DRIVER_RUNNER") == 1

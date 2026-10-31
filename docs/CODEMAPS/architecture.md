@@ -26,4 +26,4 @@ Raw sweeps stay on disk (sweepstore .npy + meta.json); deleted only by the expli
 ## External
 Driver: bearyjd/opticfilm135i-linux checkout via env OPTICFILM_DRIVER_DIR (or importable pkg)
 Deps: numpy, pillow, tifffile, opencv-python-headless. PySide6 + Kirigami come from the distro.
-Env: OPTICFILM_DRIVER_DIR, OPTICFILM_EJECT_BUTTON (0/false/no/off disables the button)
+Env: OPTICFILM_DRIVER_DIR, OPTICFILM_DRIVER_RUNNER, OPTICFILM_EJECT_BUTTON (0/false/no/off disables the button)
