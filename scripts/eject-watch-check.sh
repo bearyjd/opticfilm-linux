@@ -20,7 +20,7 @@
 set -u
 
 OVERRIDES="SYSTEMCTL JOURNALCTL PROC_ROOT SYSFS_USB_ROOT CGROUP_ROOT START_WAIT_SECS SETTLE_SECS
-LIVE_HOLD_SECS STOP_WARN_SECS STOP_FAIL_SECS STOP_WALL_SECS CGROUP_WAIT_SECS"
+LIVE_HOLD_SECS STOP_WARN_SECS STOP_FAIL_SECS STOP_WALL_SECS CGROUP_WAIT_SECS EJECT_WATCH_UNIT_DIR"
 if [[ "${EJECT_WATCH_CHECK_TESTING:-}" != 1 ]]; then
     for v in $OVERRIDES; do
         if [[ -n "${!v:-}" ]]; then
@@ -43,7 +43,7 @@ STOP_WALL_SECS=${STOP_WALL_SECS:-130}
 CGROUP_WAIT_SECS=${CGROUP_WAIT_SECS:-5}
 UNIT=opticfilm-eject-watch.service
 # Positive evidence is the driver's own startup output only; any failure signature wins over it.
-EVIDENCE_RE='not found on the host USB bus|watching for button events|opened device'
+EVIDENCE_RE='not found on the host USB bus'
 BAD_START_RE='null directory|syntax error|No such file|command not found|Permission denied|Traceback|ModuleNotFoundError|ImportError|No module named|SyntaxError|status=127|status=203'
 BAD_STOP_RE='SIGKILL|status=9/KILL|code=killed'
 
@@ -56,15 +56,36 @@ sys.path.insert(0, sys.argv[1])
 from opticfilm_linux.app.eject_watch import watch_process_running
 print("yes" if watch_process_running(Path(sys.argv[2])) else "no")'
 
+PYUNITHELPER='import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from opticfilm_linux.app.eject_watch import _runs_watch
+root, group = Path(sys.argv[2]), sys.argv[3]
+found = False
+for entry in root.iterdir():
+    if not entry.name.isdigit() or not _runs_watch(entry):
+        continue
+    try:
+        groups = (entry / "cgroup").read_text().splitlines()
+    except OSError:
+        continue
+    if any(line.startswith("0::") and (line[3:] == group or line[3:].startswith(group + "/")) for line in groups):
+        found = True
+print("yes" if found else "no")'
+
 probe_host_python() { # <python> <pythonpath> <driver dir>: imports as the host unit will run it
     (cd -- "$3" && env -i PATH=/usr/local/bin:/usr/bin:/bin PYTHONPATH="$2" "$1" -c 'import usb; import of135i.cli') >/dev/null 2>&1
 }
 
 enabled_before=unknown
 started=0
-stop_tried=0
+shutdown_verified=0
 reported=0
 start_ts=""
+cleaning=0
+skip_diagnostics=0
+in_sc_wait=0
+interrupted=0
 
 usage() {
     echo "usage: eject-watch-check.sh [--live] [--enable] [--runner auto|host|distrobox[:NAME]] [DRIVER_DIR]" >&2
@@ -73,22 +94,50 @@ usage() {
 }
 
 sc_wait() { # <secs> <verb> [args]: bounded; background + wait so a signal's trap runs at once
-    local secs=$1
+    local secs=$1 child rc
     shift
-    timeout "$secs" "$SYSTEMCTL" --user "$@" >/dev/null 2>&1 &
-    wait $!
+    in_sc_wait=1
+    timeout -k 2 "$secs" "$SYSTEMCTL" --user "$@" >/dev/null 2>&1 &
+    child=$!
+    # A trapped signal interrupts wait, not the operation. Settle an in-flight start before
+    # cleanup stops the unit, and finish safety operations even after a second signal.
+    while :; do
+        wait "$child"
+        rc=$?
+        kill -0 "$child" 2>/dev/null || break
+    done
+    in_sc_wait=0
+    if ((interrupted && !cleaning)); then fail "interrupted by a signal; stopping the unit (the script sends no signals itself)"; fi
+    return "$rc"
 }
 
 sc_out() { # <verb> [args]: stdout and stderr of a quick systemctl call
-    timeout 20 "$SYSTEMCTL" --user "$@" 2>&1
+    timeout -k 2 20 "$SYSTEMCTL" --user "$@" 2>&1
 }
 
 journal_tail() {
-    "$JOURNALCTL" --user -u "$UNIT" --since "-2min" --no-pager 2>&1 | tail -20
+    local output
+    output=$(timeout -k 2 20 "$JOURNALCTL" --user -u "$UNIT" --since "-2min" --no-pager) || {
+        echo "journal tail unavailable: journalctl failed or timed out"
+        return 1
+    }
+    if ! grep -Ev '^[[:space:]]*$|^-- No entries --$' <<<"$output" | grep -q .; then
+        echo "journal tail unavailable: empty or unreadable output"
+        return 1
+    fi
+    printf '%s\n' "$output" | tail -20
 }
 
 journal_since_start() {
-    "$JOURNALCTL" --user -u "$UNIT" --since "$start_ts" --no-pager 2>&1
+    local output
+    output=$(timeout -k 2 20 "$JOURNALCTL" --user -u "$UNIT" --since "$start_ts" --no-pager) || return 1
+    # stderr is diagnostic, never driver evidence. An empty journal is not a clean journal.
+    grep -Ev '^[[:space:]]*$|^-- No entries --$' <<<"$output" | grep -q . || return 1
+    printf '%s\n' "$output"
+}
+
+read_run_journal() { # sets run_journal in this shell; callers must not use a pipeline/subshell
+    run_journal=$(journal_since_start) || fail "journal is unreadable, empty, or journalctl failed for this run"
 }
 
 unit_state() {
@@ -100,7 +149,6 @@ unit_state() {
 is_running_state() { [[ "$1" == active || "$1" == activating || "$1" == deactivating || "$1" == reloading ]]; }
 
 stop_unit() {
-    stop_tried=1
     sc_wait "$STOP_WALL_SECS" stop "$UNIT"
 }
 
@@ -116,16 +164,19 @@ watcher_status() { # yes | no | unknown
 
 cleanup_report() { # never claims a state it did not read
     local state enabled wp
-    echo "--- journal tail ---"
-    journal_tail
-    echo "--- end journal ---"
-    if ((started && !stop_tried)); then stop_unit; fi
+    cleaning=1
+    if ((started && !shutdown_verified)); then stop_unit; fi
+    sc_wait 30 disable "$UNIT"
+    ((skip_diagnostics)) && return
     state=$(unit_state)
     if is_running_state "$state"; then stop_unit; fi
-    sc_wait 30 disable "$UNIT"
+    ((skip_diagnostics)) && return
     state=$(unit_state)
+    ((skip_diagnostics)) && return
     enabled=$(sc_out is-enabled "$UNIT" | head -1)
+    ((skip_diagnostics)) && return
     wp=$(watcher_status)
+    ((skip_diagnostics)) && return
     echo "final state: is-active=$state, is-enabled=${enabled:-unknown}, watcher process=$wp"
     if is_running_state "$state" || [[ "$wp" != no ]]; then
         echo "STILL RUNNING (or not known to be stopped): the unit or an of135i watch process may be alive."
@@ -137,6 +188,10 @@ cleanup_report() { # never claims a state it did not read
     if [[ "$enabled_before" == enabled && "$enabled" != enabled ]]; then
         echo "The unit was enabled before this check and is now disabled; re-enable it yourself if you want it."
     fi
+    ((skip_diagnostics)) && return
+    echo "--- journal tail ---"
+    journal_tail
+    echo "--- end journal ---"
 }
 
 fail() { # <message>
@@ -151,8 +206,6 @@ fail() { # <message>
 inconclusive() { # <message>
     reported=1
     echo "INCONCLUSIVE ($1); the live stop path was NOT tested"
-    echo "--- journal lines since the start ---"
-    journal_since_start | tail -8
     cleanup_report
     echo "INCONCLUSIVE"
     exit 5
@@ -160,7 +213,8 @@ inconclusive() { # <message>
 
 # shellcheck disable=SC2329 # run by trap
 on_signal() {
-    trap '' INT TERM HUP
+    if ((cleaning)); then skip_diagnostics=1; return; fi
+    if ((in_sc_wait)); then interrupted=1; return; fi
     fail "interrupted by a signal; stopping the unit (the script sends no signals itself)"
 }
 
@@ -203,10 +257,11 @@ scanner_bus_state() { # present | absent | unknown (fail closed: anything unread
 wait_for_process() { # polls up to START_WAIT_SECS; fails on a previous-failure signature
     local i
     for ((i = 0; i < START_WAIT_SECS; i++)); do
-        if journal_since_start | grep -Eiq "$BAD_START_RE"; then
+        read_run_journal
+        if grep -Eiq "$BAD_START_RE" <<<"$run_journal"; then
             fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
         fi
-        if [[ $(watcher_status) == yes ]]; then return 0; fi
+        if [[ $(watcher_status) == yes ]] && grep -Fiq 'watching for button events' <<<"$run_journal"; then return 0; fi
         sleep 1
     done
     return 1
@@ -216,11 +271,12 @@ step_start_off_mode() {
     local i seen=0 evidence=0 j state ts
     for ((i = 0; i < START_WAIT_SECS; i++)); do
         [[ $(watcher_status) == yes ]] && seen=1
-        j=$(journal_since_start)
+        read_run_journal
+        j=$run_journal
         if grep -Eiq "$BAD_START_RE" <<<"$j"; then
             fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
         fi
-        if ((seen)) || grep -Eiq "$EVIDENCE_RE" <<<"$j"; then
+        if grep -Eiq "$EVIDENCE_RE" <<<"$j"; then
             evidence=1
             break
         fi
@@ -228,11 +284,12 @@ step_start_off_mode() {
     done
     if ((!evidence)); then
         ts=$(sc_out show -p ExecMainStartTimestamp -p ExecMainStatus "$UNIT" | grep '^ExecMainStartTimestamp=.' || true)
-        [[ -n "$ts" ]] || fail "step 2: no sign that ExecStart ran: no driver output in the journal and no ExecMainStartTimestamp"
-        echo "step 2: note: ExecStart ran ($ts) but the journal has no driver output yet"
+        [[ -z "$ts" ]] || echo "step 2: note: ExecStart timestamp ($ts) is diagnostic information only"
+        fail "step 2: no sign that ExecStart ran correctly: missing this run's 'not found on the host USB bus' driver output"
     fi
     sleep "$SETTLE_SECS"
-    if journal_since_start | grep -Eiq "$BAD_START_RE"; then
+    read_run_journal
+    if grep -Eiq "$BAD_START_RE" <<<"$run_journal"; then
         fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
     fi
     if ((seen)); then
@@ -242,29 +299,45 @@ step_start_off_mode() {
     echo "step 2: OK the start path ran through the container (watcher process seen: $seen)"
 }
 
-step_start_live() {
-    local i state pid cmd
-    wait_for_process || inconclusive "the watcher process never appeared within ${START_WAIT_SECS}s"
-    for ((i = 0; i < LIVE_HOLD_SECS; i++)); do
-        sleep 1
-        [[ $(watcher_status) == yes ]] || inconclusive "watcher refused to run: scanner not idle-homed, or it exited by itself"
-    done
-    if journal_since_start | grep -Eiq "$BAD_START_RE"; then
-        fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
-    fi
+verify_live_identity() {
+    local state pid cmd info cg tied
     state=$(unit_state)
     is_running_state "$state" || fail "step 2: the watcher is up but the unit is '$state'"
-    pid=$(sc_out show -p MainPID "$UNIT" | sed -n 's/^MainPID=//p')
-    if [[ -z "$pid" || "$pid" == 0 || ! -d "$PROC_ROOT/$pid" ]]; then
+    info=$(sc_out show -p MainPID "$UNIT") || fail "step 2: cannot read MainPID"
+    pid=$(sed -n 's/^MainPID=//p' <<<"$info")
+    if [[ ! "$pid" =~ ^[1-9][0-9]*$ || ! -d "$PROC_ROOT/$pid" ]]; then
         fail "step 2: the unit has no live MainPID (got '${pid:-none}'); the watcher is not tied to the unit"
     fi
+    [[ -z "$live_pid" || "$pid" == "$live_pid" ]] || fail "step 2: MainPID changed from $live_pid to $pid during the live window"
+    live_pid=$pid
     if [[ "$runner_kind" == host ]]; then # the host unit's main process IS the watcher
         cmd=$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)
         if [[ "$cmd" != *of135i*" watch "* ]]; then
             fail "step 2: MainPID $pid is not 'of135i watch' (command line: '$cmd'); the watcher is not tied to the unit"
         fi
+    else
+        info=$(sc_out show -p ControlGroup "$UNIT") || inconclusive "cannot read the unit cgroup; watcher identity is only name-matched"
+        cg=$(sed -n 's/^ControlGroup=//p' <<<"$info")
+        [[ "$cg" == /* && "$cg" != / ]] || inconclusive "no unit cgroup; watcher identity is only name-matched"
+        tied=$(python3 -I -c "$PYUNITHELPER" "$helper_src" "$PROC_ROOT" "$cg" 2>/dev/null) || tied=unknown
+        [[ "$tied" == yes ]] || inconclusive "watcher identity is only name-matched, not tied to the unit cgroup"
     fi
-    echo "step 2: OK the watcher stayed up ${LIVE_HOLD_SECS}s under the unit (MainPID $pid)"
+}
+
+step_start_live() {
+    local i live_pid=""
+    wait_for_process || inconclusive "watcher refused to run: no watcher with 'watching for button events' readiness within ${START_WAIT_SECS}s"
+    verify_live_identity
+    for ((i = 0; i < LIVE_HOLD_SECS; i++)); do
+        sleep 1
+        [[ $(watcher_status) == yes ]] || inconclusive "watcher refused to run: scanner not idle-homed, or it exited by itself"
+        verify_live_identity
+        read_run_journal
+        if grep -Eiq "$BAD_START_RE" <<<"$run_journal"; then
+            fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
+        fi
+    done
+    echo "step 2: OK the watcher stayed up ${LIVE_HOLD_SECS}s under the unit (MainPID $live_pid)"
 }
 
 cgroup_dir() {
@@ -305,6 +378,7 @@ step_stop_and_verify() {
     rc=$?
     elapsed=$((SECONDS - t0))
     ((rc != 124)) || fail "step 3: stop did not finish within ${STOP_WALL_SECS}s"
+    ((rc == 0)) || fail "step 3: systemctl stop failed (status $rc); shutdown is not verified"
     ((elapsed <= STOP_FAIL_SECS)) || fail "step 3: stop took ${elapsed}s (limit ${STOP_FAIL_SECS}s)"
     if ((elapsed > STOP_WARN_SECS)); then
         echo "step 3: WARN stop took ${elapsed}s (expected under ${STOP_WARN_SECS}s)"
@@ -316,11 +390,13 @@ step_stop_and_verify() {
     state=$(unit_state)
     [[ "$state" == inactive ]] || fail "step 4: unit state is '$state', expected exactly 'inactive'"
     echo "step 4: OK unit state is inactive"
-    if journal_since_start | grep -Eiq "$BAD_STOP_RE"; then
+    read_run_journal
+    if grep -Eiq "$BAD_STOP_RE" <<<"$run_journal"; then
         fail "step 4: this run's journal shows SIGKILL / status=9/KILL / code=killed"
     fi
     echo "step 4: OK no SIGKILL in this run's journal"
     step_cgroup_clear "$cg"
+    shutdown_verified=1
 }
 
 live=0
@@ -387,6 +463,13 @@ else
     echo "$out"
     fail "step 1: the installer failed"
 fi
+unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+if [[ "${EJECT_WATCH_CHECK_TESTING:-}" == 1 ]]; then unit_dir=${EJECT_WATCH_UNIT_DIR:-$unit_dir}; fi
+expected_unit=$unit_dir/$UNIT
+fragment_info=$(sc_out show -p FragmentPath "$UNIT") || fail "step 1: cannot read the loaded unit's FragmentPath"
+fragment=$(sed -n 's/^FragmentPath=//p' <<<"$fragment_info")
+[[ "$fragment" == "$expected_unit" ]] || fail "step 1: loaded FragmentPath '$fragment' differs from the installed unit '$expected_unit'"
+echo "step 1: OK loaded FragmentPath matches the installed unit"
 if [[ "$runner_kind" == host ]]; then
     host_py=$(sed -n 's/^host-python: //p' <<<"$out" | head -1)
     host_pp=$(sed -n 's/^host-pythonpath: //p' <<<"$out" | head -1)
@@ -400,7 +483,7 @@ if [[ "$runner_kind" == host ]]; then
 fi
 
 # Step 2: start.
-start_ts=$(date '+%Y-%m-%d %H:%M:%S')
+start_ts=$(date '+%Y-%m-%d %H:%M:%S.%6N')
 started=1
 sc_wait 60 start "$UNIT" || fail "step 2: systemctl start failed"
 if ((live)); then step_start_live; else step_start_off_mode; fi

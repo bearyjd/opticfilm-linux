@@ -183,7 +183,20 @@ def test_run_script_without_a_folder_says_so(tmp_path):
 # -- the installer -------------------------------------------------------------------------
 
 
-_TOOLS = ("dirname", "grep", "mkdir", "mktemp", "install", "cmp", "diff", "rm", "bash", "env")
+_TOOLS = (
+    "dirname",
+    "grep",
+    "mkdir",
+    "mktemp",
+    "install",
+    "cmp",
+    "diff",
+    "rm",
+    "bash",
+    "env",
+    "timeout",
+    "realpath",
+)
 
 
 def _install(
@@ -270,6 +283,44 @@ def test_installer_renders_the_unit_and_only_reloads_systemd(tmp_path):
 def _exec_lines_of(text: str) -> dict[str, list[str]]:
     lines = [x for x in text.splitlines() if x.startswith(("ExecStart=", "ExecStop="))]
     return {x.split("=", 1)[0]: x.split("=", 1)[1].split() for x in lines}
+
+
+def test_installer_ignores_unit_dir_override_in_production(tmp_path):
+    driver = tmp_path / "drv"
+    driver.mkdir()
+    config = tmp_path / "config"
+    done, overridden_unit, _ = _install(
+        tmp_path,
+        str(driver),
+        env={"EJECT_WATCH_CHECK_TESTING": "", "XDG_CONFIG_HOME": str(config)},
+    )
+    assert done.returncode == 0, done.stderr
+    assert not overridden_unit.exists()
+    assert (config / "systemd" / "user" / "opticfilm-eject-watch.service").is_file()
+
+
+@pytest.mark.parametrize("runner", ["host", "distrobox"])
+def test_installer_resolves_driver_symlink_before_rendering(tmp_path, runner):
+    target = tmp_path / "real-driver"
+    target.mkdir()
+    link = tmp_path / "driver-link"
+    link.symlink_to(target, target_is_directory=True)
+    done, unit, _ = _install(tmp_path, str(link), runner=runner, pyusb=True)
+    assert done.returncode == 0, done.stderr
+    assert str(link) not in unit.read_text()
+    assert str(target.resolve()) in unit.read_text()
+
+
+@pytest.mark.parametrize("runner", ["host", "distrobox"])
+def test_installer_rejects_hostile_resolved_driver_symlink_target(tmp_path, runner):
+    target = tmp_path / "bad target"
+    target.mkdir()
+    link = tmp_path / "driver-link"
+    link.symlink_to(target, target_is_directory=True)
+    done, unit, calls = _install(tmp_path, str(link), runner=runner, pyusb=True)
+    assert done.returncode != 0, done.stdout
+    assert "not allowed" in done.stderr
+    assert not unit.exists() and calls == []
 
 
 def test_installer_takes_the_driver_folder_from_the_environment(tmp_path):

@@ -15,7 +15,7 @@
 # Every path ends up in the unit as a bare word (distrobox-enter even evals them), so each must
 # be absolute and made only of letters, digits and _ . / - (no spaces, %, $, quotes or the like).
 # OF135I_DEPS_OVERLAY (optional) adds a folder of extra Python packages to the host unit's
-# PYTHONPATH. Set EJECT_WATCH_UNIT_DIR to write somewhere other than ~/.config/systemd/user.
+# PYTHONPATH. EJECT_WATCH_UNIT_DIR is a test hook, gated by EJECT_WATCH_CHECK_TESTING=1.
 set -euo pipefail
 
 die() {
@@ -68,6 +68,8 @@ PYUSB_HINT="install pyusb for the host python3 (Fedora: sudo dnf install python3
 
 check_path "the script folder" "$script_dir"
 check_path "the driver folder" "$driver_dir"
+driver_dir=$(realpath -- "$driver_dir") || die "cannot resolve the driver folder"
+check_path "the resolved driver folder" "$driver_dir"
 for name in eject-watch-run.sh eject-watch-stop.sh; do
     [[ -x "$script_dir/$name" ]] || die "$script_dir/$name is missing or not executable"
 done
@@ -137,7 +139,12 @@ else
 fi
 [[ -f "$template" ]] || die "unit template not found: $template"
 
-unit_dir=${EJECT_WATCH_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}
+unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+if [[ "${EJECT_WATCH_CHECK_TESTING:-}" == 1 ]]; then
+    unit_dir=${EJECT_WATCH_UNIT_DIR:-$unit_dir}
+elif [[ -n "${EJECT_WATCH_UNIT_DIR:-}" ]]; then
+    echo "note: ignoring the test override EJECT_WATCH_UNIT_DIR (EJECT_WATCH_CHECK_TESTING is not 1)"
+fi
 unit=$unit_dir/opticfilm-eject-watch.service
 
 content=$(<"$template")
@@ -158,7 +165,8 @@ printf '%s\n' "$content" >"$new"
 # Both runners share one unit name. Rewriting the unit under a running watcher of the other
 # runner would leave it alive where `stop` cannot reach it, so refuse unless nothing changes.
 if ! { [[ -f "$unit" ]] && cmp -s -- "$unit" "$new"; }; then
-    state=$(systemctl --user is-active opticfilm-eject-watch.service 2>/dev/null || true)
+    state=$(timeout -k 2 20 systemctl --user is-active opticfilm-eject-watch.service 2>/dev/null || true)
+    [[ -n "$state" ]] || die "cannot determine the unit state (systemctl failed or timed out)"
     case "$state" in
     active | activating | deactivating | reloading)
         die "the unit is $state and would be changed: stop it first with 'systemctl --user stop opticfilm-eject-watch.service', make sure no of135i watch process is left, then run this again"
@@ -189,7 +197,7 @@ fi
 install -m 0644 -- "$new" "$unit" # not mktemp's 0600, and an old 0600 unit is fixed too
 
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user daemon-reload
+    timeout -k 2 20 systemctl --user daemon-reload
     echo "ran: systemctl --user daemon-reload"
 else
     echo "systemctl not found; run 'systemctl --user daemon-reload' yourself" >&2

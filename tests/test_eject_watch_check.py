@@ -32,11 +32,18 @@ start)
     if [[ -z "${NO_PROC:-}" ]]; then
         mkdir -p "$PROC_ROOT/4242"
         printf 'python3\\0-m\\0of135i\\0watch\\0' >"$PROC_ROOT/4242/cmdline"
+        printf '0::%s\\n' "${WATCH_CGROUP:-/test-unit}" >"$PROC_ROOT/4242/cgroup"
         [[ -z "${PROC_EXIT_AFTER:-}" ]] ||
             (sleep "$PROC_EXIT_AFTER"; rm -rf "$PROC_ROOT/4242") >/dev/null 2>&1 &
     fi
     ;;
 stop)
+    touch "$S/stopped"
+    if [[ -n "${FAIL_FIRST_STOP:-}" && ! -f "$S/stop-failed" ]]; then
+        touch "$S/stop-failed"
+        [[ -z "${FAILED_STOP_STATE:-}" ]] || echo "$FAILED_STOP_STATE" >"$S/active"
+        exit 1
+    fi
     sleep "${STOP_SLEEP:-0}"
     if [[ -z "${STOP_KEEPS:-}" ]]; then
         echo "${STOP_STATE:-inactive}" >"$S/active"
@@ -53,8 +60,18 @@ is-enabled)
     ;;
 show)
     case "$*" in
+    *FragmentPath*)
+        echo "FragmentPath=${FRAGMENT_PATH-$EJECT_WATCH_UNIT_DIR/opticfilm-eject-watch.service}"
+        exit "${FRAGMENT_RC:-0}"
+        ;;
     *ControlGroup*) echo "ControlGroup=${CG:-}" ;;
-    *MainPID*) echo "MainPID=${MAINPID-4242}" ;;
+    *MainPID*)
+        n=0; [[ ! -f "$S/pid-reads" ]] || n=$(cat "$S/pid-reads")
+        echo $((n + 1)) >"$S/pid-reads"
+        if [[ -n "${PID_CHANGES:-}" && "$n" -gt 0 ]]; then
+            echo "MainPID=1"
+        else echo "MainPID=${MAINPID-4242}"; fi
+        ;;
     *ExecMainStartTimestamp*)
         echo "ExecMainStartTimestamp=${SHOW_START_TS-Sat 2026-10-31 10:00:00 UTC}"
         echo "ExecMainStatus=1"
@@ -67,12 +84,19 @@ exit 0
 
 JOURNALCTL_STUB = """#!/bin/bash
 echo "journalctl $*" >>"$STUB_LOG"
+if [[ -n "${JOURNAL_FAIL_AFTER_STOP:-}" && -f "$STUB_STATE/stopped" ]]; then exit 1; fi
+[[ -z "${JOURNAL_STDERR:-}" ]] || echo "$JOURNAL_STDERR" >&2
 if [[ "$*" == *'--since -2min'* ]]; then
     [[ -z "${JOURNAL_STALE:-}" ]] || echo "$JOURNAL_STALE"
 elif ! [[ "$*" =~ --since\\ [0-9]{4}-[0-9]{2}-[0-9]{2}\\  ]]; then
     echo "journalctl stub: unexpected --since form" >&2
 fi
-echo "${JOURNAL_LINE-of135i: Scanner 07b3:1436 not found on the host USB bus}"
+if [[ -n "${JOURNAL_OLD_SAME_SECOND:-}" && "${@: -2:1}" != *.* ]]; then
+    echo "old: of135i: not found on the host USB bus"
+else
+    echo "${JOURNAL_LINE-of135i: Scanner 07b3:1436 not found on the host USB bus}"
+fi
+exit "${JOURNAL_RC:-0}"
 """
 
 INSTALLER_STUB = """#!/bin/bash
@@ -136,6 +160,7 @@ def rig(tmp_path: Path):
         "CGROUP_ROOT": str(cgroot),
         "STUB_LOG": str(log),
         "STUB_STATE": str(state),
+        "EJECT_WATCH_UNIT_DIR": str(tmp_path / "units"),
         "START_WAIT_SECS": "3",
         "SETTLE_SECS": "0",
         "LIVE_HOLD_SECS": "2",
@@ -173,6 +198,7 @@ def rig(tmp_path: Path):
         cgroot=cgroot,
         log=log,
         tmp=tmp_path,
+        env=env,
     )
 
 
@@ -190,6 +216,8 @@ def _verbs(calls: list[str]) -> list[str]:
 
 def _scanner_on(rig) -> None:
     _add_device(rig.sysfs, "2-3", "07b3", "1436")
+    rig.env["JOURNAL_LINE"] = "of135i: watching for button events"
+    rig.env["CG"] = "/test-unit"
 
 
 # -- default (scanner OFF) mode ------------------------------------------------------------
@@ -214,10 +242,14 @@ def test_pass_when_process_never_seen_but_driver_output_is_in_the_journal(rig):
     assert "watcher process seen: 0" in r.stdout
 
 
-def test_pass_via_execmain_timestamp_when_journal_has_no_driver_line(rig):
-    r, _ = rig.run(rig.driver, NO_PROC="1", JOURNAL_LINE="Started the thing")
-    assert r.returncode == 0, r.stdout
-    assert "ExecStart ran" in r.stdout
+@pytest.mark.parametrize(
+    "line", ["Started the thing", "error: unrecognized arguments", "RuntimeError: failed", ""]
+)
+@pytest.mark.parametrize("no_proc", ["", "1"])
+def test_timestamp_or_process_without_scanner_off_driver_output_fails(rig, line, no_proc):
+    r, _ = rig.run(rig.driver, NO_PROC=no_proc, JOURNAL_LINE=line)
+    assert r.returncode == 1, r.stdout
+    assert "PASS" not in r.stdout
 
 
 def test_no_sign_of_execstart_fails(rig):
@@ -349,14 +381,27 @@ def test_leftover_process_fails(rig):
 
 @pytest.mark.parametrize("line", ["Main process SIGKILL sent", "code=killed, status=9/KILL"])
 def test_sigkill_in_this_runs_journal_fails(rig, line):
-    r, _ = rig.run(rig.driver, JOURNAL_LINE=f"of135i: x\n{line}")
+    r, _ = rig.run(rig.driver, JOURNAL_LINE=f"of135i: not found on the host USB bus\n{line}")
     assert r.returncode == 1
+    assert "step 4: this run's journal shows SIGKILL" in r.stdout
 
 
 def test_stale_killed_line_before_the_start_is_ignored(rig):
     r, calls = rig.run(rig.driver, JOURNAL_STALE="old: code=killed, status=9/KILL")
     assert r.returncode == 0, r.stdout
     assert any(" --since 20" in c for c in calls)
+
+
+def test_scanner_off_evidence_from_earlier_in_same_second_is_not_this_run(rig):
+    r, _ = rig.run(
+        rig.driver,
+        NO_PROC="1",
+        JOURNAL_LINE="unrelated",
+        JOURNAL_OLD_SAME_SECOND="1",
+        START_WAIT_SECS="1",
+    )
+    assert r.returncode == 1, r.stdout
+    assert "PASS" not in r.stdout
 
 
 # -- enable gating --------------------------------------------------------------------------
@@ -507,6 +552,54 @@ def test_sigint_runs_the_stop_path(rig):
     assert "interrupted" in out
     assert "final state:" in out
     assert out.strip().splitlines()[-1] == "FAIL"
+    assert (rig.tmp / "state" / "active").read_text().strip() == "inactive"
+    assert not (rig.proc / "4242").exists()
+
+
+def _short_timeouts(rig):
+    real_timeout = shutil.which("timeout")
+    _exe(
+        rig.tmp / "bin" / "timeout",
+        '#!/bin/bash\necho "timeout $*" >>"$STUB_LOG"\n'
+        '[[ "$1" != -k ]] || shift 2\nshift\n'
+        f'exec {real_timeout} -k 0.1 0.3 "$@"\n',
+    )
+
+
+def test_cleanup_stops_and_disables_before_journal_diagnostics(rig):
+    r, calls = rig.run(rig.driver, JOURNAL_LINE="Traceback")
+    assert r.returncode == 1
+    tail = next(i for i, call in enumerate(calls) if "--since -2min" in call)
+    assert next(i for i, call in enumerate(calls) if call == f"--user stop {UNIT}") < tail
+    assert next(i for i, call in enumerate(calls) if call == f"--user disable {UNIT}") < tail
+
+
+def test_journal_calls_are_bounded_even_when_the_tool_hangs(rig):
+    _short_timeouts(rig)
+    journal = rig.tmp / "bin" / "journalctl"
+    _exe(journal, '#!/bin/bash\ntrap "" TERM\nsleep 5\n')
+    before = time.monotonic()
+    r, _ = rig.run(rig.driver)
+    assert time.monotonic() - before < 4
+    assert r.returncode == 1
+
+
+def test_second_signal_during_cleanup_skips_diagnostics_but_finishes_safety_ops(rig):
+    p = rig.popen(rig.driver, JOURNAL_LINE="Traceback", STOP_SLEEP="1")
+    for _ in range(200):
+        if f"--user stop {UNIT}" in rig.log.read_text().splitlines():
+            break
+        time.sleep(0.05)
+    else:
+        p.kill()
+        pytest.fail("cleanup stop not reached")
+    p.send_signal(signal.SIGTERM)
+    p.send_signal(signal.SIGHUP)
+    out, _ = p.communicate(timeout=10)
+    calls = rig.log.read_text().splitlines()
+    assert f"--user disable {UNIT}" in calls
+    assert not any("--since -2min" in call for call in calls)
+    assert p.returncode == 1, out
 
 
 # -- --live ---------------------------------------------------------------------------------
@@ -529,6 +622,29 @@ def test_live_pass(rig):
     assert (
         verbs.index("stop") < verbs.index("enable") == len(verbs) - 1 - verbs[::-1].index("enable")
     )
+
+
+@pytest.mark.parametrize("line", ["opened device", "not found on the host USB bus", "unrelated"])
+def test_live_requires_readiness_before_hold(rig, line):
+    _scanner_on(rig)
+    r, _ = rig.run("--live", rig.driver, JOURNAL_LINE=line)
+    assert r.returncode != 0, r.stdout
+    assert "PASS" not in r.stdout
+
+
+def test_live_pid_must_remain_identical(rig):
+    _scanner_on(rig)
+    r, _ = rig.run("--live", rig.driver, PID_CHANGES="1")
+    assert r.returncode != 0, r.stdout
+    assert "MainPID changed" in r.stdout
+
+
+@pytest.mark.parametrize("extra", [{"CG": ""}, {"WATCH_CGROUP": "/unrelated"}])
+def test_live_distrobox_name_match_without_unit_membership_never_passes(rig, extra):
+    _scanner_on(rig)
+    r, _ = rig.run("--live", rig.driver, **extra)
+    assert r.returncode != 0, r.stdout
+    assert "PASS" not in r.stdout
 
 
 def test_live_inconclusive_when_watcher_exits_by_itself(rig):
@@ -608,7 +724,7 @@ def test_the_word_of135i_alone_is_not_evidence(rig):
 @pytest.mark.parametrize("line", ["watching for button events", "opened device 07b3:1436"])
 def test_driver_startup_lines_are_evidence(rig, line):
     r, _ = rig.run(rig.driver, NO_PROC="1", SHOW_START_TS="", JOURNAL_LINE=line)
-    assert r.returncode == 0, r.stdout
+    assert r.returncode == 1, r.stdout
 
 
 def _fake_python(path: Path, ok_when: str) -> str:
@@ -631,6 +747,47 @@ def test_host_mode_probes_the_python_exactly_as_the_unit_will_run(rig):
 def test_usage_text_lists_runner(rig):
     r, _ = rig.run()
     assert "--runner" in r.stderr
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"JOURNAL_RC": "1"},
+        {"JOURNAL_LINE": "", "JOURNAL_STDERR": "not found on the host USB bus"},
+        {"JOURNAL_LINE": "   "},
+        {"JOURNAL_LINE": "-- No entries --"},
+        {"JOURNAL_FAIL_AFTER_STOP": "1"},
+    ],
+)
+def test_journal_must_be_readable_and_successful_before_any_clean_claim(rig, extra):
+    r, _ = rig.run(rig.driver, **extra)
+    assert r.returncode == 1, r.stdout
+    assert "journal" in r.stdout.lower()
+    assert "OK no SIGKILL" not in r.stdout
+    assert "PASS" not in r.stdout
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"FAIL_FIRST_STOP": "1", "IS_ACTIVE": "unknown"},
+        {"FAIL_FIRST_STOP": "1", "FAILED_STOP_STATE": "inactive"},
+        {"STOP_STATE": "unknown"},
+    ],
+)
+def test_cleanup_retries_stop_until_shutdown_has_been_verified(rig, extra):
+    r, calls = rig.run(rig.driver, NO_PROC="1", **extra)
+    assert r.returncode == 1, r.stdout
+    assert _verbs(calls).count("stop") >= 2
+    assert "disable" in _verbs(calls)
+
+
+@pytest.mark.parametrize("extra", [{"FRAGMENT_PATH": "/some/other/unit"}, {"FRAGMENT_RC": "1"}])
+def test_loaded_unit_must_be_the_unit_just_installed(rig, extra):
+    r, calls = rig.run(rig.driver, **extra)
+    assert r.returncode == 1, r.stdout
+    assert "FragmentPath" in r.stdout
+    assert "start" not in _verbs(calls)
 
 
 def test_fail_says_when_the_unit_was_enabled_before_the_check(rig):
