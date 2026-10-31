@@ -61,17 +61,31 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from opticfilm_linux.app.eject_watch import _runs_watch
 root, group = Path(sys.argv[2]), sys.argv[3]
-found = False
+identities = []
+def identity(entry):
+    # comm may contain spaces and parentheses; starttime is field 22, after comm.
+    stat = (entry / "stat").read_text()
+    pid, rest = stat.split(" (", 1)
+    starttime = rest.rsplit(")", 1)[1].split()[19]
+    if pid != entry.name or not starttime.isdigit():
+        raise ValueError("invalid process identity")
+    return pid + ":" + starttime
 for entry in root.iterdir():
-    if not entry.name.isdigit() or not _runs_watch(entry):
+    if not entry.name.isdigit():
         continue
     try:
+        before = identity(entry)
+        if not _runs_watch(entry):
+            continue
         groups = (entry / "cgroup").read_text().splitlines()
-    except OSError:
+        after = identity(entry)
+    except (OSError, ValueError, IndexError):
         continue
+    if before != after:
+        raise ValueError("process changed during identity probe")
     if any(line.startswith("0::") and (line[3:] == group or line[3:].startswith(group + "/")) for line in groups):
-        found = True
-print("yes" if found else "no")'
+        identities.append(before)
+print(identities[0] if len(identities) == 1 else "unknown")'
 
 probe_host_python() { # <python> <pythonpath> <driver dir>: imports as the host unit will run it
     (cd -- "$3" && env -i PATH=/usr/local/bin:/usr/bin:/bin PYTHONPATH="$2" "$1" -c 'import usb; import of135i.cli') >/dev/null 2>&1
@@ -154,7 +168,7 @@ stop_unit() {
 
 watcher_status() { # yes | no | unknown
     local out
-    out=$(python3 -I -c "$PYHELPER" "$helper_src" "$PROC_ROOT" 2>/dev/null) || out=""
+    out=$(timeout -k 1 3 python3 -I -c "$PYHELPER" "$helper_src" "$PROC_ROOT" 2>/dev/null) || out=""
     case "$out" in
     yes | no) echo "$out" ;;
     *) echo unknown ;;
@@ -163,13 +177,13 @@ watcher_status() { # yes | no | unknown
 
 
 cleanup_report() { # never claims a state it did not read
-    local state enabled wp
+    local state enabled wp stop_failed=0
     cleaning=1
-    if ((started && !shutdown_verified)); then stop_unit; fi
+    if ((started && !shutdown_verified)); then stop_unit || stop_failed=1; fi
     sc_wait 30 disable "$UNIT"
-    ((skip_diagnostics)) && return
+    # Signals may skip reporting, but never this bounded safety retry or the state probe.
     state=$(unit_state)
-    if is_running_state "$state"; then stop_unit; fi
+    if ((stop_failed)) || is_running_state "$state"; then stop_unit; fi
     ((skip_diagnostics)) && return
     state=$(unit_state)
     ((skip_diagnostics)) && return
@@ -319,13 +333,16 @@ verify_live_identity() {
         info=$(sc_out show -p ControlGroup "$UNIT") || inconclusive "cannot read the unit cgroup; watcher identity is only name-matched"
         cg=$(sed -n 's/^ControlGroup=//p' <<<"$info")
         [[ "$cg" == /* && "$cg" != / ]] || inconclusive "no unit cgroup; watcher identity is only name-matched"
-        tied=$(python3 -I -c "$PYUNITHELPER" "$helper_src" "$PROC_ROOT" "$cg" 2>/dev/null) || tied=unknown
-        [[ "$tied" == yes ]] || inconclusive "watcher identity is only name-matched, not tied to the unit cgroup"
+        tied=$(timeout -k 1 3 python3 -I -c "$PYUNITHELPER" "$helper_src" "$PROC_ROOT" "$cg" 2>/dev/null) || tied=unknown
+        [[ "$tied" =~ ^[1-9][0-9]*:[0-9]+$ ]] || inconclusive "watcher identity is unverified (missing, ambiguous, unreadable, or timed out); not tied to the unit cgroup"
+        [[ -z "$live_watcher_identity" || "$tied" == "$live_watcher_identity" ]] ||
+            inconclusive "watcher identity changed from $live_watcher_identity to $tied during the live window"
+        live_watcher_identity=$tied
     fi
 }
 
 step_start_live() {
-    local i live_pid=""
+    local i live_pid="" live_watcher_identity=""
     wait_for_process || inconclusive "watcher refused to run: no watcher with 'watching for button events' readiness within ${START_WAIT_SECS}s"
     verify_live_identity
     for ((i = 0; i < LIVE_HOLD_SECS; i++)); do
@@ -337,7 +354,12 @@ step_start_live() {
             fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
         fi
     done
-    echo "step 2: OK the watcher stayed up ${LIVE_HOLD_SECS}s under the unit (MainPID $live_pid)"
+    if [[ "$runner_kind" == host ]]; then
+        echo "step 2: OK the host watcher stayed up ${LIVE_HOLD_SECS}s as the unit MainPID $live_pid"
+    else
+        echo "step 2: OK container watcher PID ${live_watcher_identity%%:*}, starttime ${live_watcher_identity#*:} stayed up ${LIVE_HOLD_SECS}s in the unit cgroup (MainPID $live_pid)"
+        echo "In distrobox mode identity is the container watcher process found by name inside the unit’s cgroup, not proven to be the unit's own child."
+    fi
 }
 
 cgroup_dir() {
@@ -470,6 +492,29 @@ fragment_info=$(sc_out show -p FragmentPath "$UNIT") || fail "step 1: cannot rea
 fragment=$(sed -n 's/^FragmentPath=//p' <<<"$fragment_info")
 [[ "$fragment" == "$expected_unit" ]] || fail "step 1: loaded FragmentPath '$fragment' differs from the installed unit '$expected_unit'"
 echo "step 1: OK loaded FragmentPath matches the installed unit"
+# FragmentPath alone does not account for drop-ins or an effective ExecStart override.
+effective_info=$(sc_out show -p DropInPaths -p ExecStart -p KillSignal -p SendSIGKILL "$UNIT") ||
+    fail "step 1: cannot read the loaded unit's effective configuration"
+grep -q '^DropInPaths=' <<<"$effective_info" || fail "step 1: missing DropInPaths"
+dropins=$(sed -n 's/^DropInPaths=//p' <<<"$effective_info")
+read -r -a dropin_paths <<<"$dropins"
+for dropin in "${dropin_paths[@]}"; do
+    [[ "$dropin" =~ ^/(usr/lib|etc)/systemd/user/service[.]d/[A-Za-z0-9_.-]+[.]conf$ ]] ||
+        fail "step 1: refusing non-global or unit-specific drop-in '$dropin'"
+done
+rendered_start=$(sed -n 's/^ExecStart=//p' "$expected_unit") || fail "step 1: cannot read the rendered ExecStart"
+[[ -n "$rendered_start" && "$rendered_start" != *$'\n'* ]] || fail "step 1: expected exactly one rendered ExecStart"
+effective_start=$(sed -n 's/^ExecStart=//p' <<<"$effective_info")
+# The installer permits plain paths only, so systemctl needs no argument escaping here.
+exec_pattern='^\{ path=([^;]+) ; argv\[\]=([^;]+) ; [^{}]*\}$'
+[[ "$effective_start" =~ $exec_pattern ]] || fail "step 1: cannot verify effective ExecStart '$effective_start'"
+[[ "${BASH_REMATCH[1]}" == "${rendered_start%% *}" && "${BASH_REMATCH[2]}" == "$rendered_start" ]] ||
+    fail "step 1: effective ExecStart differs from the freshly rendered unit"
+kill_signal=$(sed -n 's/^KillSignal=//p' <<<"$effective_info")
+send_sigkill=$(sed -n 's/^SendSIGKILL=//p' <<<"$effective_info")
+[[ ( "$kill_signal" == 2 || "$kill_signal" == SIGINT ) && "$send_sigkill" == no ]] ||
+    fail "step 1: effective shutdown properties must be KillSignal=SIGINT and SendSIGKILL=no"
+echo "step 1: OK effective ExecStart and shutdown properties match; only global service defaults allowed"
 if [[ "$runner_kind" == host ]]; then
     host_py=$(sed -n 's/^host-python: //p' <<<"$out" | head -1)
     host_pp=$(sed -n 's/^host-pythonpath: //p' <<<"$out" | head -1)
@@ -500,7 +545,7 @@ else
 fi
 reported=1
 if ((live)); then
-    echo "PASS (--live mode: the watcher stayed up ${LIVE_HOLD_SECS}s and its stop was clean)"
+    echo "PASS (--live mode: the observed $runner_kind watcher stayed up ${LIVE_HOLD_SECS}s and its stop was clean)"
 else
     echo "PASS (scanner-off mode: start path and clean stop from the restarting unit; the live stop path is only proven by --live)"
 fi

@@ -166,7 +166,13 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
 
   `--runner` (default `auto`) is passed to the installer, so the check works for both runners.
   With the host runner the watcher is the unit's `MainPID`, and `--live` also checks that
-  `/proc/<MainPID>/cmdline` is `of135i watch`.
+  `/proc/<MainPID>/cmdline` is `of135i watch`. In distrobox mode identity is the container
+  watcher process found by name inside the unit’s cgroup, not proven to be the unit’s own child.
+  The check records that watcher’s PID and `/proc/<pid>/stat` starttime at the first identity
+  probe and requires both to remain unchanged through the final probe of the 10-second window.
+  A replacement PID, reused PID, ambiguous identity or timed-out identity probe makes the live
+  result `INCONCLUSIVE`. Python imports and process traversal have a fixed three-second timeout
+  with a one-second termination grace.
 
   What each mode proves:
 
@@ -177,9 +183,14 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
     `inactive` and never needs SIGKILL. It does **not** prove the SIGINT stop of a live watcher:
     with the scanner off `watch` exits within a second, so there is no live process to stop.
   - **`--live` (scanner ON, idle-homed).** Do not press the Eject button during it. The watcher
-    must stay up for 10 seconds under the unit (its `MainPID` is alive), then the stop must be
-    clean and fast. If `watch` exits by itself (for example the scanner is not idle-homed) the
-    result is `INCONCLUSIVE`, never `PASS`. This is the only mode that proves the live stop path.
+    must stay up for 10 seconds: the host watcher remains the unit’s `MainPID`; the distrobox
+    watcher retains its PID and starttime inside the unit’s cgroup while `MainPID` also stays
+    alive and unchanged. The stop must then be clean and fast. If `watch` exits by itself
+    (for example the scanner is not idle-homed) the
+    result is `INCONCLUSIVE`, never `PASS`. This mode demonstrates the observed watcher’s live
+    stop path. Residual limitation: cgroup membership and name matching do not prove a
+    parent/child relationship or that the container watcher was launched by this unit, and
+    interval polling cannot observe every event between probes.
 
   The scanner-state guard cannot be bypassed by a flag or by the environment: the test overrides
   (`SYSFS_USB_ROOT` and the like) are ignored unless `EJECT_WATCH_CHECK_TESTING=1`, an unreadable
@@ -192,9 +203,18 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   since the start fails the run even if such output is also there. For the host runner it
   first re-runs the installer's import probe.
 
-  On `FAIL` or `INCONCLUSIVE` it prints the journal tail, runs `systemctl --user disable` (and
-  says so if the unit was enabled before the check) and a
-  further bounded `stop` if the unit is still up, then reports the states it actually read
+  Before starting, it requires the loaded `FragmentPath` to match the unit just rendered,
+  rejects unit-specific drop-ins, and permits global service defaults only directly under
+  `/usr/lib/systemd/user/service.d/` or `/etc/systemd/user/service.d/`. It compares the effective
+  `ExecStart` executable and arguments to the rendered command, and requires effective
+  `KillSignal=SIGINT` and `SendSIGKILL=no`. A global timeout-abort default can therefore coexist
+  with the check while a changed command or shutdown signal cannot pass.
+
+  On `FAIL` or `INCONCLUSIVE` it first runs a bounded `stop` when shutdown is unverified and
+  `systemctl --user disable`, then probes the unit state and retries a bounded stop if the
+  first cleanup stop failed or the unit is still up. Further INT, TERM or HUP signals skip only
+  diagnostics; they cannot skip the state probe, stop retry or disable. It then prints the
+  journal tail, says if the unit was enabled before the check, and reports the states it read
   (`is-active`, `is-enabled`, watcher process). If something is still running, end it with
   Ctrl-C or `kill -INT`, never `kill -9`, and paste the output.
 
@@ -202,7 +222,8 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   <summary>What it does</summary>
 
   1. Refuses by the scanner-state rule above, and if another `of135i watch` already runs. Runs
-     `systemctl --user reset-failed`, then `scripts/install-eject-watch.sh`.
+     `systemctl --user reset-failed`, then `scripts/install-eject-watch.sh`. Verifies the loaded
+     fragment, allowed drop-ins, effective command and shutdown properties before any start.
   2. Starts the unit. Scanner OFF: waits up to about 20 s for driver output in the journal since
      the start (or `ExecMainStartTimestamp`), and fails on `null directory`, `syntax error`,
      `No such file`, `command not found` or `Permission denied`. `--live`: waits for the process

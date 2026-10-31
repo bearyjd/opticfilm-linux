@@ -32,6 +32,8 @@ start)
     if [[ -z "${NO_PROC:-}" ]]; then
         mkdir -p "$PROC_ROOT/4242"
         printf 'python3\\0-m\\0of135i\\0watch\\0' >"$PROC_ROOT/4242/cmdline"
+        printf '4242 (python3 watcher) S%s 100 0\\n' "$(printf ' 0%.0s' {1..18})" \
+            >"$PROC_ROOT/4242/stat"
         printf '0::%s\\n' "${WATCH_CGROUP:-/test-unit}" >"$PROC_ROOT/4242/cgroup"
         [[ -z "${PROC_EXIT_AFTER:-}" ]] ||
             (sleep "$PROC_EXIT_AFTER"; rm -rf "$PROC_ROOT/4242") >/dev/null 2>&1 &
@@ -41,13 +43,14 @@ stop)
     touch "$S/stopped"
     if [[ -n "${FAIL_FIRST_STOP:-}" && ! -f "$S/stop-failed" ]]; then
         touch "$S/stop-failed"
+        sleep "${FAILED_STOP_SLEEP:-0}"
         [[ -z "${FAILED_STOP_STATE:-}" ]] || echo "$FAILED_STOP_STATE" >"$S/active"
         exit 1
     fi
     sleep "${STOP_SLEEP:-0}"
     if [[ -z "${STOP_KEEPS:-}" ]]; then
         echo "${STOP_STATE:-inactive}" >"$S/active"
-        [[ -n "${LEAVE_PROC:-}" ]] || rm -rf "$PROC_ROOT/4242"
+        [[ -n "${LEAVE_PROC:-}" ]] || rm -rf "$PROC_ROOT/4242" "$PROC_ROOT/4343"
     fi
     ;;
 is-active) if [[ -n "${IS_ACTIVE:-}" ]]; then echo "$IS_ACTIVE"; else state; fi ;;
@@ -64,10 +67,29 @@ show)
         echo "FragmentPath=${FRAGMENT_PATH-$EJECT_WATCH_UNIT_DIR/opticfilm-eject-watch.service}"
         exit "${FRAGMENT_RC:-0}"
         ;;
+    *DropInPaths*)
+        echo "DropInPaths=${DROPIN_PATHS:-}"
+        rendered=$(sed -n 's/^ExecStart=//p' "$EJECT_WATCH_UNIT_DIR/opticfilm-eject-watch.service")
+        default_start="{ path=${rendered%% *} ; argv[]=$rendered ; ignore_errors=no }"
+        echo "ExecStart=${EFFECTIVE_EXECSTART-$default_start}"
+        echo "KillSignal=${KILL_SIGNAL:-2}"
+        echo "SendSIGKILL=${SEND_SIGKILL:-no}"
+        exit "${EFFECTIVE_RC:-0}"
+        ;;
     *ControlGroup*) echo "ControlGroup=${CG:-}" ;;
     *MainPID*)
         n=0; [[ ! -f "$S/pid-reads" ]] || n=$(cat "$S/pid-reads")
         echo $((n + 1)) >"$S/pid-reads"
+        if [[ "$n" -gt 0 && -n "${REPLACE_WATCHER:-}" ]]; then
+            if [[ "$REPLACE_WATCHER" == pid && -d "$PROC_ROOT/4242" ]]; then
+                mv "$PROC_ROOT/4242" "$PROC_ROOT/4343"
+                printf '4343 (python3 watcher) S%s 200 0\\n' "$(printf ' 0%.0s' {1..18})" \
+                    >"$PROC_ROOT/4343/stat"
+            elif [[ "$REPLACE_WATCHER" == reused ]]; then
+                printf '4242 (python3 watcher) S%s 200 0\\n' "$(printf ' 0%.0s' {1..18})" \
+            >"$PROC_ROOT/4242/stat"
+            fi
+        fi
         if [[ -n "${PID_CHANGES:-}" && "$n" -gt 0 ]]; then
             echo "MainPID=1"
         else echo "MainPID=${MAINPID-4242}"; fi
@@ -101,6 +123,14 @@ exit "${JOURNAL_RC:-0}"
 
 INSTALLER_STUB = """#!/bin/bash
 echo "installer $*" >>"$STUB_LOG"
+mkdir -p "$EJECT_WATCH_UNIT_DIR"
+if [[ "${STUB_RUNNER:-distrobox:dev}" == host ]]; then
+    rendered="/usr/bin/python3 -m of135i watch"
+else
+    rendered="/usr/bin/env distrobox-enter --no-tty -n dev -- /checkout/eject-watch-run.sh ${@: -1}"
+fi
+unit_path="$EJECT_WATCH_UNIT_DIR/opticfilm-eject-watch.service"
+printf '[Service]\\nExecStart=%s\\nKillSignal=SIGINT\\nSendSIGKILL=no\\n' "$rendered" >"$unit_path"
 echo "runner: ${STUB_RUNNER:-distrobox:dev} (stub)"
 if [[ -n "${STUB_HOST_PY:-}" ]]; then
     echo "host-python: $STUB_HOST_PY"
@@ -801,3 +831,117 @@ def test_live_leftover_process_after_stop_fails(rig):
     _scanner_on(rig)
     r, _ = rig.run("--live", rig.driver, LEAVE_PROC="1", IS_ACTIVE="active")
     assert r.returncode == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"DROPIN_PATHS": "/u/.config/systemd/user/opticfilm-eject-watch.service.d/override.conf"},
+        {"DROPIN_PATHS": "/etc/systemd/user/opticfilm-eject-watch.service.d/override.conf"},
+        {"DROPIN_PATHS": "/etc/systemd/user/service.d/../opticfilm-eject-watch.service.d/x.conf"},
+        {"EFFECTIVE_EXECSTART": "{ path=/bin/sh ; argv[]=/bin/sh -c exit ; ignore_errors=no }"},
+        {
+            "EFFECTIVE_EXECSTART": (
+                "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 "
+                "-m of135i scan ; ignore_errors=no }"
+            ),
+            "STUB_RUNNER": "host",
+        },
+        {"KILL_SIGNAL": "15"},
+        {"SEND_SIGKILL": "yes"},
+        {"EFFECTIVE_RC": "1"},
+    ],
+)
+def test_effective_unit_must_match_fresh_render_before_start(rig, extra):
+    r, calls = rig.run("--enable", rig.driver, **extra)
+    assert r.returncode == 1, r.stdout
+    assert "start" not in _verbs(calls)
+    assert "enable" not in _verbs(calls)
+    assert "PASS" not in r.stdout
+
+
+@pytest.mark.parametrize(
+    "dropins",
+    [
+        "",
+        "/usr/lib/systemd/user/service.d/10-timeout-abort.conf",
+        (
+            "/usr/lib/systemd/user/service.d/10-timeout-abort.conf "
+            "/etc/systemd/user/service.d/20-defaults.conf"
+        ),
+    ],
+)
+def test_global_service_defaults_allow_matching_effective_unit(rig, dropins):
+    r, calls = rig.run(rig.driver, DROPIN_PATHS=dropins)
+    assert r.returncode == 0, r.stdout
+    assert any("-p DropInPaths -p ExecStart -p KillSignal -p SendSIGKILL" in c for c in calls)
+
+
+@pytest.mark.parametrize("second_signal", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_cleanup_signal_cannot_skip_retry_after_failed_stop(rig, second_signal):
+    p = rig.popen(rig.driver, JOURNAL_LINE="Traceback", FAIL_FIRST_STOP="1", FAILED_STOP_SLEEP="1")
+    try:
+        for _ in range(200):
+            if (rig.tmp / "state" / "stop-failed").exists():
+                break
+            time.sleep(0.025)
+        else:
+            pytest.fail("first cleanup stop was never reached")
+        p.send_signal(second_signal)
+        out, _ = p.communicate(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.communicate()
+    calls = rig.log.read_text().splitlines()
+    assert _verbs(calls).count("stop") == 2, out
+    assert "disable" in _verbs(calls)
+    assert (rig.tmp / "state" / "active").read_text().strip() == "inactive"
+    assert not (rig.proc / "4242").exists()
+    assert not any("--since -2min" in c for c in calls)
+    assert p.returncode == 1
+
+
+@pytest.mark.parametrize("hang_at", ["import", "proc traversal"])
+def test_live_identity_python_probe_is_bounded_and_inconclusive(rig, hang_at):
+    _scanner_on(rig)
+    _short_timeouts(rig)
+    module = rig.tmp / "src" / "opticfilm_linux" / "app" / "eject_watch.py"
+    if hang_at == "import":
+        extra = "if len(sys.argv) == 4: time.sleep(10)\n"
+    else:
+        extra = (
+            "original_runs_watch = _runs_watch\n"
+            "def _runs_watch(entry):\n"
+            "    if len(sys.argv) == 4: time.sleep(10)\n"
+            "    return original_runs_watch(entry)\n"
+        )
+    with module.open("a") as f:
+        f.write("\nimport sys, time\n" + extra)
+    before = time.monotonic()
+    r, calls = rig.run("--live", "--enable", rig.driver, LIVE_HOLD_SECS="0")
+    assert r.returncode == 5, r.stdout
+    assert time.monotonic() - before < 8
+    assert "INCONCLUSIVE" in r.stdout and "PASS" not in r.stdout
+    assert any(c.startswith("timeout -k 1 3 python3 -I -c") for c in calls)
+    assert "stop" in _verbs(calls) and "disable" in _verbs(calls)
+    assert "enable" not in _verbs(calls)
+
+
+@pytest.mark.parametrize("replacement", ["pid", "reused"])
+def test_live_container_watcher_identity_cannot_change_behind_stable_mainpid(rig, replacement):
+    _scanner_on(rig)
+    r, calls = rig.run("--live", "--enable", rig.driver, MAINPID="1", REPLACE_WATCHER=replacement)
+    assert r.returncode == 5, r.stdout
+    assert "watcher identity changed" in r.stdout
+    assert "PASS" not in r.stdout
+    assert "enable" not in _verbs(calls)
+    assert "stop" in _verbs(calls) and "disable" in _verbs(calls)
+
+
+def test_live_distrobox_reports_identity_and_ownership_limit(rig):
+    _scanner_on(rig)
+    r, _ = rig.run("--live", rig.driver, MAINPID="1")
+    assert r.returncode == 0, r.stdout
+    assert "watcher PID 4242, starttime 100" in r.stdout
+    assert "not proven to be the unit's own child" in r.stdout
