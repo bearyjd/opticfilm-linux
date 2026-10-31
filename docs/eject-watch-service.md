@@ -7,41 +7,56 @@ scanner is on, without the app open and without typing a command.
 
 The unit is `packaging/systemd/opticfilm-eject-watch.service`. It starts `of135i watch` inside
 the distrobox container `dev` (where the driver's `pyusb` lives) through `distrobox-enter`,
-which must be on the user manager's `PATH` (see below), and the container needs `pkill` and
-`pgrep` (the `procps` package). The unit uses `Restart=always` and retries every 30 seconds
-(backing off to 2 minutes on systemd 254
-or newer), so it picks the scanner up within a minute or two of switching it on; no udev rule is
-needed. The wait is deliberate: each retry starts a container shell and touches USB.
+which must be on the user manager's `PATH`, and the container needs `bash`, `python3`, `pkill`
+and `pgrep` (the `procps` package). It uses `Restart=always` and retries every 30 seconds
+(backing off to 2 minutes on systemd 254 or newer), so it picks the scanner up within a minute
+or two of switching it on; no udev rule is needed. The wait is deliberate: each retry starts a
+container shell and touches USB.
+
+The work is done by two small scripts that run inside the container:
+`packaging/systemd/eject-watch-run.sh <driver_dir>` runs `of135i watch` from the driver
+checkout, and `packaging/systemd/eject-watch-stop.sh` stops it (see "SIGINT only" below). The
+checkout and the driver folder must both be visible inside the container at the same path, which
+is the case for anything under your home folder.
 
 ## Install
 
-1. Copy the unit and edit the driver folder:
+1. Render the unit for this checkout and your driver folder:
 
    ```sh
-   mkdir -p ~/.config/systemd/user
-   cp packaging/systemd/opticfilm-eject-watch.service ~/.config/systemd/user/
+   scripts/install-eject-watch.sh /path/to/opticfilm135i-linux
    ```
 
-   In the copy, replace `@DRIVER_DIR@` with the path of your driver checkout (the same
-   folder as `OPTICFILM_DRIVER_DIR`), keeping the double quotes, for example
-   `"/path/to/opticfilm135i-linux"`. Spaces are fine; write a literal `%` as `%%` and a literal
-   `$` as `$$`. Change the container name `dev` if yours differs.
+   With no argument it uses `OPTICFILM_DRIVER_DIR`. Both folders must be absolute and made only
+   of letters, digits and `_ . / -`; anything else (spaces, `%`, `$`, quotes) is refused with a
+   message and nothing is written. The installer writes
+   `~/.config/systemd/user/opticfilm-eject-watch.service` (it shows a diff when it replaces an
+   older one) and runs `systemctl --user daemon-reload`. It does **not** enable or start the
+   unit. Change the container name `dev` in the written unit if yours differs.
 
    The unit sets `PATH` to start with `~/.local/bin`, because the user manager's own `PATH`
    usually lacks it and a per-user distrobox lives there. Edit the `Environment=PATH=` line if
    distrobox is elsewhere.
 
-2. Load and start it:
+2. Enable and start it:
 
    ```sh
-   systemctl --user daemon-reload && systemctl --user enable --now opticfilm-eject-watch.service
+   systemctl --user enable --now opticfilm-eject-watch.service
    ```
 
 3. To have it start at boot without logging in, run `loginctl enable-linger "$USER"`
    (optional).
 
 Check it with `systemctl --user status opticfilm-eject-watch.service` and
-`journalctl --user -u opticfilm-eject-watch.service`.
+`journalctl --user -u opticfilm-eject-watch.service --since "-5min"`. If the unit has failed,
+clear that with `systemctl --user reset-failed opticfilm-eject-watch.service` before starting it
+again.
+
+**Do not put shell syntax after `--` in the unit.** `distrobox-enter` does not keep argument
+boundaries: it joins everything after `--` into one string and `eval`s it. Quotes, `$`,
+`$(...)`, parentheses, `;`, `|`, `&`, redirections, backslashes and spaces there are lost or are
+a syntax error (an earlier version of this unit failed exactly that way). So the unit passes
+only plain paths, and anything that needs logic goes in the two scripts. A test checks this.
 
 ## Uninstall
 
@@ -99,16 +114,17 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   mid-move. The unit sets `KillSignal=SIGINT`, `SendSIGKILL=no` and `TimeoutStopSec=120`, and
   never sends SIGKILL. On the host the unit's main process is `distrobox-enter`'s shell, and the
   Python process runs in the container, outside the unit's control group, so a signal sent to
-  the main process does not reach it. The unit therefore has an `ExecStop=` that runs inside the
-  container, sends SIGINT to the `of135i watch` process with `pkill -INT` and waits up to about
-  100 seconds for it to exit. Because `pkill -f` matches full command lines in the shared process
+  the main process does not reach it. The unit therefore has an `ExecStop=` that runs the stop script inside the
+  container, which sends SIGINT to the `of135i watch` process with `pkill -INT` and waits up to about
+  100 seconds for it to exit (`eject-watch-stop.sh`). Because `pkill -f` matches full command lines in the shared process
   namespace, it also signals the host-side `distrobox-enter` command line and a `watch` you
-  started by hand; SIGINT to those is the intended outcome. If a stop still times out, the unit is marked `failed` with
+  started by hand; SIGINT to those is the intended outcome. Any unrelated host process with `of135i ... watch` in its command line (an editor or `grep`, say) would be signalled the same way. If a stop still times out, the unit is marked `failed` with
   `watch` possibly alive; the app's process check above catches that.
-  **Unverified:** none of this has been run on a real system. That SIGINT sent this way ends
-  `watch` cleanly, that `distrobox-enter --no-tty -n dev` accepts these arguments, and that
-  `pkill` exists in your container are all untested. Check them with the procedure below, with
-  the scanner switched off, before relying on the unit.
+  **Verified by tests only, not on a real system:** the scripts, the installer and the rule that
+  the unit passes only plain words after `--` are tested offline (with stand-ins for `pkill`
+  and `pgrep`). Nothing about `distrobox-enter` itself is verified: that these arguments are
+  accepted, that SIGINT sent this way ends `watch` cleanly, and that `pkill` exists in your
+  container all wait for the no-motor check below, run with the scanner switched off.
 - **No-motor check of the stop path** (scanner switched OFF, so `watch` cannot move anything):
 
   1. Start the unit: `systemctl --user start opticfilm-eject-watch.service`. With the scanner
@@ -120,7 +136,8 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
      within a few seconds.
   4. Confirm the process is gone (the `ps` command from step 2 prints nothing) and that
      `systemctl --user is-active opticfilm-eject-watch.service` prints `inactive`, not `failed`.
-     The journal (`journalctl --user -u opticfilm-eject-watch.service`) should show no SIGKILL.
+     The journal (`journalctl --user -u opticfilm-eject-watch.service --since "-5min"`) should
+     show no SIGKILL and no `eval` or `cd: null directory` errors.
 
   If step 3 hangs or step 4 shows a surviving process or `failed`, do not use the unit during
   an eject; end any leftover `watch` with Ctrl-C or `kill -INT`, never `kill -9`.
