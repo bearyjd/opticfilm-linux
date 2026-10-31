@@ -1,0 +1,27 @@
+# Keeps the driver's `of135i watch` running so the scanner's front-panel Eject button works
+# whenever the scanner is on, with no app open. See docs/eject-watch-service.md.
+#
+# Before enabling, replace @DRIVER_DIR@ below with the shell-quoted path of the driver
+# checkout (the folder that holds the `of135i` package), for example '/path/to/driver'.
+# If your driver lives on the host instead of in a distrobox container named `dev`, replace
+# the whole distrobox part of ExecStart.
+
+[Unit]
+Description=OpticFilm 135i front-panel Eject button watcher
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env distrobox enter --no-tty dev -- bash -lc 'cd -- @DRIVER_DIR@ && PYTHONPATH=. exec python3 -m of135i watch'
+# `watch` refuses to start unless the scanner is idle-homed, and exits when it is off; keep
+# retrying so it picks the scanner up at power-on.
+Restart=always
+RestartSec=5
+# `watch` must only ever be stopped with SIGINT: a kill during an eject can land mid-move.
+KillSignal=SIGINT
+KillMode=process
+SendSIGKILL=no
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

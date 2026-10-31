@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from opticfilm_linux.app.controller import Controller
+from opticfilm_linux.app.eject_watch import EjectWatch
 from opticfilm_linux.app.messages import load_command
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
@@ -122,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         scanner_factory(args.fake),
         next_strip=next_strip_enabled(),
         eject_button=eject_button_enabled(),
+        eject_watch=None if args.fake is not None else EjectWatch(),  # demo mode: no scanner
     )
     bridge = Bridge(controller, QSettingsPrefs(), demo_dpi, load_command_text=load_command_text())
     provider = PreviewProvider(lambda n, p, kind: controller.preview_path(n, p, kind))

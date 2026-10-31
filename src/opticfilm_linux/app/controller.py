@@ -15,6 +15,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+from opticfilm_linux.app.eject_watch import EjectWatch
 from opticfilm_linux.app.holder import HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
 from opticfilm_linux.app.messages import failure_text
@@ -65,8 +66,10 @@ class Controller(HolderCommands):
         clock: Callable[[], float] = time.monotonic,
         next_strip: bool = False,
         eject_button: bool = True,
+        eject_watch: EjectWatch | None = None,
     ) -> None:
         self._factory = scanner_factory
+        self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
         self._holder_busy = False  # an eject or load is queued or running
@@ -448,6 +451,8 @@ class Controller(HolderCommands):
         holder = None
         try:
             if not readonly:
+                if self._eject_watch is not None:
+                    self._eject_watch.yield_to_app()  # raises if it stays up: no scanner open
                 scanner = self._factory(store.snapshot().defaults.dpi)
                 poller = StatusPoller(scanner, self._clock, STATUS_TIMEOUT_S, self._scanner_problem)
                 runner = BatchRunner(store, CachedStatusScanner(scanner, poller))
@@ -457,6 +462,7 @@ class Controller(HolderCommands):
             if runner is not None:
                 runner.stop()
             store.close()  # never leave the writer lock held after a failed open
+            self._restore_eject_watch()
             raise
         first = store.snapshot().trays[0].number if store.snapshot().trays else None
         with self._lock:
@@ -490,9 +496,20 @@ class Controller(HolderCommands):
             if session.runner is not None:
                 session.runner.stop()
             session.store.close()
+        self._restore_eject_watch()
         with self._lock:
             self._selected = None
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
+
+    def _restore_eject_watch(self) -> None:
+        """Start the background watcher again if it was running; a failure is a banner only."""
+        if self._eject_watch is None:
+            return
+        problem = self._eject_watch.restore()
+        if problem is not None:
+            log.warning(problem)
+            with self._lock:
+                self._banner = Banner(problem)
 
     def _banner_only(self) -> AppState:
         return dataclasses.replace(EMPTY_STATE, banner=self._banner)
