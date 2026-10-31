@@ -64,11 +64,32 @@ driver_dir=${driver_dir:-${OPTICFILM_DRIVER_DIR:-}}
 [[ -n "$driver_dir" ]] || die "give the driver folder as an argument or set OPTICFILM_DRIVER_DIR"
 driver_dir=${driver_dir%/}
 
-python_has_pyusb() { # <python>
-    "$1" -c 'import usb' >/dev/null 2>&1
+PYUSB_HINT="install pyusb for the host python3 (Fedora: sudo dnf install python3-pyusb; otherwise: python3 -m pip install --user pyusb), or use --runner distrobox"
+
+check_path "the script folder" "$script_dir"
+check_path "the driver folder" "$driver_dir"
+for name in eject-watch-run.sh eject-watch-stop.sh; do
+    [[ -x "$script_dir/$name" ]] || die "$script_dir/$name is missing or not executable"
+done
+
+# The host unit's PYTHONPATH: the driver folder, plus an optional folder of extra packages.
+pythonpath=$driver_dir
+if [[ -n "${OF135I_DEPS_OVERLAY:-}" ]]; then
+    check_path "OF135I_DEPS_OVERLAY" "${OF135I_DEPS_OVERLAY%/}"
+    pythonpath=$driver_dir:${OF135I_DEPS_OVERLAY%/}
+fi
+
+python_works() { # <python>: imports as the host unit will run it (clean environment, its PYTHONPATH)
+    check_plain "the python3 path" "$1"
+    (cd -- "$driver_dir" && env -i PATH=/usr/local/bin:/usr/bin:/bin PYTHONPATH="$pythonpath" "$1" -c 'import usb; import of135i.cli') >/dev/null 2>&1
 }
 
-PYUSB_HINT="install pyusb for the host python3 (Fedora: sudo dnf install python3-pyusb; otherwise: python3 -m pip install --user pyusb), or use --runner distrobox"
+# Same match logic as the app (src/opticfilm_linux/app/eject_watch.py); unreadable /proc = "yes".
+PYHELPER='import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from opticfilm_linux.app.eject_watch import watch_process_running
+print("yes" if watch_process_running(Path(sys.argv[2])) else "no")'
 
 container=dev
 python_path=""
@@ -76,20 +97,20 @@ reason=""
 case "$runner" in
 auto)
     python_path=$(command -v python3 || true)
-    if [[ -n "$python_path" ]] && python_has_pyusb "$python_path"; then
+    if [[ -n "$python_path" ]] && python_works "$python_path"; then
         runner=host
-        reason="$python_path can import pyusb"
+        reason="$python_path imports pyusb and of135i.cli as the unit will run it"
     elif command -v distrobox-enter >/dev/null 2>&1; then
         runner=distrobox
-        reason="the host python3 has no pyusb and distrobox-enter exists"
+        reason="the host python3 cannot import pyusb and of135i.cli, and distrobox-enter exists"
     else
-        die "no way to run the watcher: the host python3 has no pyusb and distrobox-enter was not found. $PYUSB_HINT"
+        die "no way to run the watcher: the host python3 cannot import pyusb and of135i.cli (PYTHONPATH=$pythonpath) and distrobox-enter was not found. $PYUSB_HINT"
     fi
     ;;
 host)
     python_path=$(command -v python3 || true)
     [[ -n "$python_path" ]] || die "python3 was not found on PATH"
-    python_has_pyusb "$python_path" || die "$python_path cannot import pyusb: $PYUSB_HINT"
+    python_works "$python_path" || die "$python_path cannot import pyusb and of135i.cli with PYTHONPATH=$pythonpath (cannot import pyusb?): $PYUSB_HINT"
     reason="requested"
     ;;
 distrobox | distrobox:*)
@@ -104,24 +125,14 @@ distrobox | distrobox:*)
 *) die "unknown runner '$runner' (use auto, host, distrobox or distrobox:NAME)" ;;
 esac
 
-check_path "the script folder" "$script_dir"
-check_path "the driver folder" "$driver_dir"
-for name in eject-watch-run.sh eject-watch-stop.sh; do
-    [[ -x "$script_dir/$name" ]] || die "$script_dir/$name is missing or not executable"
-done
-
-pythonpath=$driver_dir
 if [[ "$runner" == host ]]; then
-    check_plain "the python3 path" "$python_path"
-    [[ -x "$python_path" ]] || die "the python3 path is not executable: '$python_path'"
     template=$script_dir/opticfilm-eject-watch-host.service
-    if [[ -n "${OF135I_DEPS_OVERLAY:-}" ]]; then
-        check_path "OF135I_DEPS_OVERLAY" "${OF135I_DEPS_OVERLAY%/}"
-        pythonpath=$driver_dir:${OF135I_DEPS_OVERLAY%/}
-    fi
     echo "runner: host ($reason)"
+    echo "host-python: $python_path"
+    echo "host-pythonpath: $pythonpath"
 else
     template=$script_dir/opticfilm-eject-watch.service
+    pythonpath=$driver_dir
     echo "runner: distrobox:$container ($reason)"
 fi
 [[ -f "$template" ]] || die "unit template not found: $template"
@@ -143,6 +154,28 @@ mkdir -p -- "$unit_dir"
 new=$(mktemp)
 trap 'rm -f -- "$new"' EXIT
 printf '%s\n' "$content" >"$new"
+
+# Both runners share one unit name. Rewriting the unit under a running watcher of the other
+# runner would leave it alive where `stop` cannot reach it, so refuse unless nothing changes.
+if ! { [[ -f "$unit" ]] && cmp -s -- "$unit" "$new"; }; then
+    state=$(systemctl --user is-active opticfilm-eject-watch.service 2>/dev/null || true)
+    case "$state" in
+    active | activating | deactivating | reloading)
+        die "the unit is $state and would be changed: stop it first with 'systemctl --user stop opticfilm-eject-watch.service', make sure no of135i watch process is left, then run this again"
+        ;;
+    esac
+    proc_root=/proc
+    if [[ "${EJECT_WATCH_CHECK_TESTING:-}" == 1 ]]; then proc_root=${PROC_ROOT:-/proc}; fi # tests only
+    helper_python=$(command -v python3 || true)
+    if [[ -n "$helper_python" ]]; then
+        found=$("$helper_python" -I -c "$PYHELPER" "$script_dir/../../src" "$proc_root" 2>/dev/null || true)
+        if [[ "$found" != no ]]; then
+            die "an of135i watch process is running (or /proc cannot be read), so the unit will not be changed: end it with Ctrl-C in its terminal or kill -INT <pid> (never kill -9), then run this again"
+        fi
+    else
+        echo "note: python3 not found, so could not look for a running of135i watch process" >&2
+    fi
+fi
 if [[ -f "$unit" ]]; then
     if cmp -s -- "$unit" "$new"; then
         echo "unit already up to date: $unit"

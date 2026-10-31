@@ -42,8 +42,9 @@ STOP_FAIL_SECS=${STOP_FAIL_SECS:-30}
 STOP_WALL_SECS=${STOP_WALL_SECS:-130}
 CGROUP_WAIT_SECS=${CGROUP_WAIT_SECS:-5}
 UNIT=opticfilm-eject-watch.service
-EVIDENCE_RE='of135i|not found on the host USB bus'
-BAD_START_RE='null directory|syntax error|No such file|command not found|Permission denied'
+# Positive evidence is the driver's own startup output only; any failure signature wins over it.
+EVIDENCE_RE='not found on the host USB bus|watching for button events|opened device'
+BAD_START_RE='null directory|syntax error|No such file|command not found|Permission denied|Traceback|ModuleNotFoundError|ImportError|No module named|SyntaxError|status=127|status=203'
 BAD_STOP_RE='SIGKILL|status=9/KILL|code=killed'
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -55,13 +56,19 @@ sys.path.insert(0, sys.argv[1])
 from opticfilm_linux.app.eject_watch import watch_process_running
 print("yes" if watch_process_running(Path(sys.argv[2])) else "no")'
 
+probe_host_python() { # <python> <pythonpath> <driver dir>: imports as the host unit will run it
+    (cd -- "$3" && env -i PATH=/usr/local/bin:/usr/bin:/bin PYTHONPATH="$2" "$1" -c 'import usb; import of135i.cli') >/dev/null 2>&1
+}
+
+enabled_before=unknown
 started=0
 stop_tried=0
 reported=0
 start_ts=""
 
 usage() {
-    echo "usage: eject-watch-check.sh [--live] [--enable] [DRIVER_DIR]  (default: \$OPTICFILM_DRIVER_DIR)" >&2
+    echo "usage: eject-watch-check.sh [--live] [--enable] [--runner auto|host|distrobox[:NAME]] [DRIVER_DIR]" >&2
+    echo "       (DRIVER_DIR defaults to \$OPTICFILM_DRIVER_DIR; --runner defaults to auto)" >&2
     exit 2
 }
 
@@ -126,6 +133,9 @@ cleanup_report() { # never claims a state it did not read
     fi
     if [[ "$enabled" == enabled ]]; then
         echo "The unit is still ENABLED; run: systemctl --user disable $UNIT"
+    fi
+    if [[ "$enabled_before" == enabled && "$enabled" != enabled ]]; then
+        echo "The unit was enabled before this check and is now disabled; re-enable it yourself if you want it."
     fi
 }
 
@@ -193,10 +203,10 @@ scanner_bus_state() { # present | absent | unknown (fail closed: anything unread
 wait_for_process() { # polls up to START_WAIT_SECS; fails on a previous-failure signature
     local i
     for ((i = 0; i < START_WAIT_SECS; i++)); do
-        if [[ $(watcher_status) == yes ]]; then return 0; fi
         if journal_since_start | grep -Eiq "$BAD_START_RE"; then
             fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
         fi
+        if [[ $(watcher_status) == yes ]]; then return 0; fi
         sleep 1
     done
     return 1
@@ -239,6 +249,9 @@ step_start_live() {
         sleep 1
         [[ $(watcher_status) == yes ]] || inconclusive "watcher refused to run: scanner not idle-homed, or it exited by itself"
     done
+    if journal_since_start | grep -Eiq "$BAD_START_RE"; then
+        fail "step 2: the journal shows a start-path failure signature ($BAD_START_RE)"
+    fi
     state=$(unit_state)
     is_running_state "$state" || fail "step 2: the watcher is up but the unit is '$state'"
     pid=$(sc_out show -p MainPID "$UNIT" | sed -n 's/^MainPID=//p')
@@ -364,6 +377,7 @@ fi
 echo "step 0: OK no other of135i watch process"
 
 # Step 1: install (renders the unit and daemon-reloads only).
+enabled_before=$(sc_out is-enabled "$UNIT" | head -1)
 sc_wait 30 reset-failed "$UNIT"
 if out=$("$here/install-eject-watch.sh" --runner "$runner_req" "$driver_dir" 2>&1); then
     runner_kind=$(sed -n 's/^runner: \([^ ]*\).*/\1/p' <<<"$out" | head -1)
@@ -372,6 +386,17 @@ if out=$("$here/install-eject-watch.sh" --runner "$runner_req" "$driver_dir" 2>&
 else
     echo "$out"
     fail "step 1: the installer failed"
+fi
+if [[ "$runner_kind" == host ]]; then
+    host_py=$(sed -n 's/^host-python: //p' <<<"$out" | head -1)
+    host_pp=$(sed -n 's/^host-pythonpath: //p' <<<"$out" | head -1)
+    if [[ -n "$host_py" && -n "$host_pp" ]]; then
+        probe_host_python "$host_py" "$host_pp" "$driver_dir" ||
+            fail "step 1: $host_py cannot import usb and of135i.cli the way the unit runs it (PYTHONPATH=$host_pp)"
+        echo "step 1: OK the host python imports usb and of135i.cli as the unit will run it"
+    else
+        echo "step 1: note: the installer did not report the host python; skipped the import probe"
+    fi
 fi
 
 # Step 2: start.

@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -182,7 +183,7 @@ def test_run_script_without_a_folder_says_so(tmp_path):
 # -- the installer -------------------------------------------------------------------------
 
 
-_TOOLS = ("dirname", "grep", "mkdir", "mktemp", "install", "cmp", "diff", "rm", "bash")
+_TOOLS = ("dirname", "grep", "mkdir", "mktemp", "install", "cmp", "diff", "rm", "bash", "env")
 
 
 def _install(
@@ -192,7 +193,7 @@ def _install(
     script=INSTALL,
     env=None,
     runner: str | None = "distrobox",
-    pyusb: bool | None = None,
+    pyusb: bool | str | None = None,
     distrobox_enter: bool = False,
     path_prefix: str = "",
 ):
@@ -207,21 +208,41 @@ def _install(
             (tools / name).symlink_to(shutil.which(name) or "/bin/false")
     log = tmp_path / "systemctl.log"
     stub = bin_dir / "systemctl"
-    stub.write_text(f'#!/bin/bash\necho "$*" >> "{log}"\n')
+    stub.write_text(
+        "#!/bin/bash\n"
+        'if [[ "$2" == is-active ]]; then echo "${STUB_ACTIVE:-inactive}"; exit 0; fi\n'
+        f'echo "$*" >> "{log}"\n'
+    )
     stub.chmod(0o755)
-    if pyusb is not None:  # python3 present; `import usb` works or not
+    if pyusb is not None:
+        # python3 is present. `pyusb` True/False: `import usb` works or not. A string: it works
+        # only when PYTHONPATH is exactly that string (a probe that is not run like the unit fails).
+        # The app's own helper (`-I`) is passed through to the real interpreter.
+        cond = (
+            "true"
+            if pyusb is True
+            else "false"
+            if pyusb is False
+            else f'[[ "${{PYTHONPATH:-}}" == {pyusb} && -z "${{PYTHONSTARTUP:-}}" ]]'
+        )
         py = bin_dir / "python3"
-        py.write_text(f"#!/bin/bash\nexit {0 if pyusb else 1}\n")
+        py.write_text(
+            f'#!/bin/bash\nif [[ "$1" == -I ]]; then exec {sys.executable} "$@"; fi\n{cond}\n'
+        )
         py.chmod(0o755)
     if distrobox_enter:
         (bin_dir / "distrobox-enter").write_text("#!/bin/bash\n")
         (bin_dir / "distrobox-enter").chmod(0o755)
     units = tmp_path / "units"
+    proc_root = tmp_path / "iproc"  # no real process of this machine may influence the tests
+    proc_root.mkdir(exist_ok=True)
     run_env = {k: v for k, v in os.environ.items() if k != "OPTICFILM_DRIVER_DIR"}
     run_env.update(
         PATH=f"{path_prefix}{bin_dir}:{tools}",
         EJECT_WATCH_UNIT_DIR=str(units),
         HOME=str(tmp_path),
+        EJECT_WATCH_CHECK_TESTING="1",
+        PROC_ROOT=str(proc_root),
     )
     run_env.update(env or {})
     args = ([] if runner is None else ["--runner", runner]) + ([] if driver is None else [driver])

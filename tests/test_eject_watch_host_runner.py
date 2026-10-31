@@ -180,10 +180,98 @@ def test_bad_runner_values_are_rejected(tmp_path, runner):
     assert not unit.exists() and calls == []
 
 
-def test_host_unit_passes_systemd_analyze_verify(tmp_path):
+def test_probe_runs_python_like_the_unit_not_with_the_callers_environment(tmp_path):
+    drv = str(tmp_path / "drv")
+    kw = {
+        "runner": "auto",
+        "pyusb": drv,
+        "env": {"PYTHONPATH": "/caller/fake", "PYTHONSTARTUP": "/caller/startup.py"},
+    }
+    done, unit, _, _ = _host_install(tmp_path, **kw)
+    assert done.returncode == 0, done.stderr
+    assert "runner: host" in done.stdout
+    assert f"ExecStart={tmp_path}/ibin/python3" in unit.read_text()
+
+
+def test_probe_includes_the_overlay(tmp_path):
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    exact = f"{tmp_path / 'drv'}:{overlay}"
+    for runner in ("auto", "host"):
+        kw = {"runner": runner, "pyusb": exact, "distrobox_enter": True}
+        kw["env"] = {"OF135I_DEPS_OVERLAY": str(overlay)}
+        done, _, _, _ = _host_install(tmp_path, **kw)
+        assert done.returncode == 0, (runner, done.stderr)
+        assert "runner: host" in done.stdout
+
+
+def test_host_runner_refused_when_the_probe_fails_in_the_units_environment(tmp_path):
+    done, unit, _, _ = _host_install(tmp_path, pyusb="/never")
+    assert done.returncode != 0 and "cannot import pyusb" in done.stderr
+    assert not unit.exists()
+
+
+def test_installer_prints_what_the_check_script_needs_to_reprobe(tmp_path):
+    done, _, _, driver = _host_install(tmp_path)
+    assert f"host-python: {tmp_path}/ibin/python3" in done.stdout
+    assert f"host-pythonpath: {driver}" in done.stdout
+
+
+def _install_twice(tmp_path, *, second_runner, second_env, first_runner="distrobox"):
+    first, unit, _, _ = _host_install(tmp_path, runner=first_runner)
+    assert first.returncode == 0, first.stderr
+    before = unit.read_text()
+    second, _, calls, _ = _host_install(tmp_path, runner=second_runner, env=second_env)
+    return second, unit, before, calls
+
+
+@pytest.mark.parametrize("state", ["active", "activating", "deactivating", "reloading"])
+def test_switching_runner_over_a_running_unit_is_refused(tmp_path, state):
+    done, unit, before, calls = _install_twice(
+        tmp_path, second_runner="host", second_env={"STUB_ACTIVE": state}
+    )
+    assert done.returncode != 0
+    assert "systemctl --user stop opticfilm-eject-watch.service" in done.stderr
+    assert unit.read_text() == before
+    assert calls.count("--user daemon-reload") == 1  # only the first install's
+
+
+def test_reinstalling_the_identical_unit_over_a_running_one_is_fine(tmp_path):
+    done, _, _, _ = _install_twice(
+        tmp_path,
+        second_runner="distrobox",
+        second_env={"STUB_ACTIVE": "active"},
+    )
+    assert done.returncode == 0, done.stderr
+    assert "already up to date" in done.stdout
+
+
+def _decoy_proc(tmp_path: Path, *argv: str) -> dict[str, str]:
+    root = tmp_path / "decoy_proc"
+    (root / "77").mkdir(parents=True)
+    (root / "77" / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    return {"PROC_ROOT": str(root)}
+
+
+def test_a_leftover_watch_process_blocks_a_changed_unit(tmp_path):
+    env = _decoy_proc(tmp_path, "python3", "-m", "of135i", "watch")
+    done, unit, before, _ = _install_twice(tmp_path, second_runner="host", second_env=env)
+    assert done.returncode != 0
+    assert "of135i watch" in done.stderr and "kill -INT" in done.stderr
+    assert unit.read_text() == before
+
+
+def test_an_unrelated_process_does_not_block(tmp_path):
+    env = _decoy_proc(tmp_path, "python3", "-m", "of135i", "watchdog")
+    done, _, _, _ = _install_twice(tmp_path, second_runner="host", second_env=env)
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("runner", ["host", "distrobox"])
+def test_rendered_units_pass_systemd_analyze_verify(tmp_path, runner):
     if shutil.which("systemd-analyze") is None:
         pytest.skip("systemd-analyze not available")
-    done, unit, _, _ = _host_install(tmp_path)
+    done, unit, _, _ = _host_install(tmp_path, runner=runner)
     assert done.returncode == 0, done.stderr
     out = subprocess.run(
         ["systemd-analyze", "--user", "verify", str(unit)],

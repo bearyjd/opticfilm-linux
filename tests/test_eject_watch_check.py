@@ -78,6 +78,10 @@ echo "${JOURNAL_LINE-of135i: Scanner 07b3:1436 not found on the host USB bus}"
 INSTALLER_STUB = """#!/bin/bash
 echo "installer $*" >>"$STUB_LOG"
 echo "runner: ${STUB_RUNNER:-distrobox:dev} (stub)"
+if [[ -n "${STUB_HOST_PY:-}" ]]; then
+    echo "host-python: $STUB_HOST_PY"
+    echo "host-pythonpath: $STUB_HOST_PP"
+fi
 exit "${INSTALL_RC:-0}"
 """
 
@@ -564,6 +568,76 @@ def test_live_fails_when_unit_is_not_running_but_process_is(rig):
     r, _ = rig.run("--live", rig.driver, IS_ACTIVE="inactive")
     assert r.returncode == 1
     assert "the unit is 'inactive'" in r.stdout
+
+
+TRACEBACK = (
+    'File "/home/u/drv/of135i/__main__.py", line 1, in <module>\n'
+    "ModuleNotFoundError: No module named 'usb'"
+)
+
+
+@pytest.mark.parametrize("runner", ["host", "distrobox:dev"])
+@pytest.mark.parametrize("no_proc", ["", "1"])
+def test_only_a_traceback_in_the_journal_never_passes(rig, runner, no_proc):
+    r, _ = rig.run(rig.driver, STUB_RUNNER=runner, NO_PROC=no_proc, JOURNAL_LINE=TRACEBACK)
+    assert r.returncode == 1, r.stdout
+    assert "failure signature" in r.stdout
+
+
+@pytest.mark.parametrize("runner", ["host", "distrobox:dev"])
+def test_a_traceback_wins_over_real_evidence(rig, runner):
+    line = f"of135i: Scanner 07b3:1436 not found on the host USB bus\n{TRACEBACK}"
+    r, _ = rig.run(rig.driver, STUB_RUNNER=runner, JOURNAL_LINE=line)
+    assert r.returncode == 1, r.stdout
+
+
+@pytest.mark.parametrize(
+    "line", ["status=127", "status=203/EXEC", "ImportError: x", "SyntaxError: y", "Traceback (most"]
+)
+def test_more_failure_signatures(rig, line):
+    r, _ = rig.run(rig.driver, NO_PROC="1", JOURNAL_LINE=line)
+    assert r.returncode == 1
+
+
+def test_the_word_of135i_alone_is_not_evidence(rig):
+    r, _ = rig.run(rig.driver, NO_PROC="1", SHOW_START_TS="", JOURNAL_LINE='File "x/of135i/y.py"')
+    assert r.returncode == 1
+    assert "no sign that ExecStart ran" in r.stdout
+
+
+@pytest.mark.parametrize("line", ["watching for button events", "opened device 07b3:1436"])
+def test_driver_startup_lines_are_evidence(rig, line):
+    r, _ = rig.run(rig.driver, NO_PROC="1", SHOW_START_TS="", JOURNAL_LINE=line)
+    assert r.returncode == 0, r.stdout
+
+
+def _fake_python(path: Path, ok_when: str) -> str:
+    path.write_text(f'#!/bin/bash\n[[ "${{PYTHONPATH:-}}" == {ok_when} ]]\n')
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_host_mode_probes_the_python_exactly_as_the_unit_will_run(rig):
+    py = _fake_python(rig.tmp / "fakepy", rig.driver)
+    env = {"STUB_RUNNER": "host", "STUB_HOST_PY": py, "STUB_HOST_PP": rig.driver}
+    r, _ = rig.run(rig.driver, PYTHONPATH="/caller/fake", **env)
+    assert r.returncode == 0, r.stdout
+    env["STUB_HOST_PP"] = f"{rig.driver}:/missing"
+    r, _ = rig.run(rig.driver, **env)
+    assert r.returncode == 1
+    assert "cannot import usb" in r.stdout
+
+
+def test_usage_text_lists_runner(rig):
+    r, _ = rig.run()
+    assert "--runner" in r.stderr
+
+
+def test_fail_says_when_the_unit_was_enabled_before_the_check(rig):
+    r, _ = rig.run(rig.driver, STOP_STATE="failed", INIT_ENABLED="1")
+    assert "was enabled before this check" in r.stdout
+    r, _ = rig.run(rig.driver, STOP_STATE="failed")
+    assert "was enabled before this check" not in r.stdout
 
 
 def test_live_leftover_process_after_stop_fails(rig):

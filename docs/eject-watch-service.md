@@ -39,7 +39,9 @@ is the case for anything under your home folder.
    ```
 
    With no folder it uses `OPTICFILM_DRIVER_DIR`. `--runner` defaults to `auto`: host if the
-   host `python3` can import `pyusb`, else `distrobox:dev` if `distrobox-enter` exists, else a
+   host `python3` can import `pyusb` and `of135i.cli` the way the unit will run it (a clean
+   environment, `PYTHONPATH` set to the driver folder and the optional overlay, started in the
+   driver folder; your own `PYTHONPATH` does not count), else `distrobox:dev` if `distrobox-enter` exists, else a
    clear error. The installer prints which runner it chose and why; the names match the app's
    `OPTICFILM_DRIVER_RUNNER` (`host`, `distrobox:<name>`). `OF135I_DEPS_OVERLAY` (optional) adds
    a folder of extra Python packages to the host unit's `PYTHONPATH`. All folders and the
@@ -49,7 +51,15 @@ is the case for anything under your home folder.
    older one) and runs `systemctl --user daemon-reload`. It does **not** enable or start the
    unit. Change the container name `dev` in the written unit if yours differs.
 
-   The unit sets `PATH` to start with `~/.local/bin`, because the user manager's own `PATH`
+   **Switching runner or changing the unit while it runs is refused.** Both runners share one
+   unit name, and a watcher started by the old definition could not be stopped by the new one.
+   So the installer stops with a message when `systemctl --user is-active` is `active`,
+   `activating`, `deactivating` or `reloading`, or when any `of135i watch` process exists, unless
+   the rendered unit is byte-identical to the installed one. Run
+   `systemctl --user stop opticfilm-eject-watch.service`, make sure no `of135i watch` process is
+   left (end it with Ctrl-C or `kill -INT`, never `kill -9`), then install again.
+
+   The distrobox unit sets `PATH` to start with `~/.local/bin`, because the user manager's own `PATH`
    usually lacks it and a per-user distrobox lives there. Edit the `Environment=PATH=` line if
    distrobox is elsewhere.
 
@@ -176,7 +186,14 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   or empty USB listing counts as "cannot tell" and refuses, and a refusal makes no `systemctl`
   call.
 
-  On `FAIL` or `INCONCLUSIVE` it prints the journal tail, runs `systemctl --user disable` and a
+  A start only counts when the journal shows the driver's own startup output (`not found on the
+  host USB bus`, `watching for button events` or `opened device`); a `Traceback`,
+  `ModuleNotFoundError`, `No module named`, `status=127` or `status=203` anywhere in the journal
+  since the start fails the run even if such output is also there. For the host runner it
+  first re-runs the installer's import probe.
+
+  On `FAIL` or `INCONCLUSIVE` it prints the journal tail, runs `systemctl --user disable` (and
+  says so if the unit was enabled before the check) and a
   further bounded `stop` if the unit is still up, then reports the states it actually read
   (`is-active`, `is-enabled`, watcher process). If something is still running, end it with
   Ctrl-C or `kill -INT`, never `kill -9`, and paste the output.
@@ -199,6 +216,14 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   5. Only with `--enable` and only after all of that passed: `systemctl --user enable`.
 
   </details>
+- **A restart after a failed eject.** The driver deliberately sends nothing on a further button
+  press once an eject has failed and left the scanner not idle-homed (state `0x22`). But both
+  units use `Restart=always`: when `watch` exits, systemd starts a new one after 30 seconds, and
+  that new `watch` reads the scanner afresh. If it accepts the scanner's state (it refuses
+  unless idle-homed), it acts on the next press. So the driver's "a further press must not send
+  anything" holds inside one `watch` process, not across the 30-second restart. This has not
+  been tested on hardware; if it worries you, stop the unit after a failed eject
+  (`systemctl --user stop opticfilm-eject-watch.service`) until you have looked at the scanner.
 - **Not idle-homed at power-on.** If the scanner is not idle-homed when `watch` starts, `watch`
   refuses (its start-state check) and exits, and the unit just retries. The unit does not use
   `--cold-homing-rounds` and relaxes no guard or timeout. The button therefore stays inactive

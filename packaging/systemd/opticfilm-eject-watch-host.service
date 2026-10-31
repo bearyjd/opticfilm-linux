@@ -17,6 +17,7 @@ StartLimitIntervalSec=0
 Type=simple
 WorkingDirectory=@DRIVER_DIR@
 Environment=PYTHONPATH=@PYTHONPATH@
+# No Environment=PATH here on purpose: the interpreter below is an absolute path.
 ExecStart=@PYTHON@ -m of135i watch
 # The main process is python itself, so systemd's own stop reaches it: SIGINT to that process
 # only (KillMode=process), never SIGKILL. No ExecStop is needed.
