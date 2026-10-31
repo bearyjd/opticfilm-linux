@@ -14,7 +14,13 @@ Helpers for supervised runs against a real OpticFilm 135i. They are not run by t
 - `OPTICFILM_DRIVER_DIR` (required): the driver checkout; `$OPTICFILM_DRIVER_DIR/of135i` must exist.
 - `OF135I_DEPS_OVERLAY` (optional): an extra `PYTHONPATH` entry, for example a folder holding
   pure-Python dependencies such as `tifffile`.
-- `PYTHON` (optional): interpreter, default `python3`. It must have `pyusb`.
+- `PYTHON` (optional): interpreter, default `python3`. It must have `pyusb`; `tifffile` must be
+  importable too (install it, or point `OF135I_DEPS_OVERLAY` at a folder that holds it).
+- `OPTICFILM_HW_ASSUME_YES=1` (optional): skips the interactive "Enter to start" confirmation of
+  `ab_gate_test.sh` and `tray_and_armc_test.sh` and prints a notice. Only for wrappers where you are
+  physically supervising the scanner; without it the scripts abort unless stdin is a terminal.
+- `HW_RUN_LOG_DIR` (optional): where `hw_run.sh` writes logs, default `spike/logs`.
+- `hw_run.sh` does not inherit `PYTHONPATH`: the driver dir and the overlay are all it sets.
 - `DOCTOR_CMD` (optional): replaces the failure-capture command. `HW_RUN_NO_DOCTOR=1` turns the capture off.
 
 With a distrobox container: `distrobox enter <name> -- bash -lc 'cd <repo> && scripts/hardware/<script> ...'`.
@@ -25,9 +31,10 @@ With a distrobox container: `distrobox enter <name> -- bash -lc 'cd <repo> && sc
 - Anomaly rule: if the motor grinds or stalls, power the scanner OFF.
 - Run `load` in a real terminal, never through an agent's or IDE's `!` prefix.
 - One `load` and one power-on per series of runs.
-- Run in an environment that has `pyusb`.
+- Run in an environment that has `pyusb` (and `tifffile`, see above).
 - Failure capture: after a failed run the scripts run the read-only `doctor` (30 s timeout, never
-  changes the exit status) so the scanner's state is recorded BEFORE anyone power-cycles it;
-  a power cycle may lose it.
+  changes the exit status) so the scanner's state is recorded BEFORE anyone power-cycles it.
+  Power-on resets the scanner to the cold, never-homed state, and a failed session requires a
+  power cycle, so the failure state is gone afterwards.
 - The eject-watch service holds the scanner; stop it before running driver commands from a
   terminal (see `docs/eject-watch-service.md`).

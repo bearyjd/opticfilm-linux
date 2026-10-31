@@ -2,7 +2,8 @@
 # Supervised hardware phases. Run it YOURSELF in a real terminal, watching the scanner.
 # Run it inside whatever environment has pyusb; with a distrobox container that is
 #   distrobox enter <name> -- bash -lc 'cd <repo> && scripts/hardware/tray_and_armc_test.sh <phase> <attempt_dir>'
-# Needs OPTICFILM_DRIVER_DIR (see README.md in this folder).
+# Needs OPTICFILM_DRIVER_DIR (see README.md in this folder). Needs a real terminal for the confirmation;
+# OPTICFILM_HW_ASSUME_YES=1 skips it and is for wrappers that supervise the scanner only.
 # phases:
 #   tray   full four-slide tray at 3600 dpi, stop gate on (default). One scan, ~minutes. Roadmap item 2.
 #   armc   arm C proof at 600 dpi slide 4: bufempty on with the stop gate OFF (isolates C), then stop gate on as control.
@@ -15,7 +16,14 @@ phase=${1:?usage: tray_and_armc_test.sh <tray|armc> <attempt_dir>}
 attempt=${2:?usage: tray_and_armc_test.sh <tray|armc> <attempt_dir>}
 cd "$ROOT" || exit 2; mkdir -p "$attempt"
 run() { scripts/hardware/hw_run.sh "$attempt" "$@"; }
-read -r -p "Phase '$phase': holder loaded and latched, you are watching. Enter to start, Ctrl-C to cancel: " _
+if [ -n "${OPTICFILM_HW_ASSUME_YES:-}" ]; then
+  echo "NOTICE: OPTICFILM_HW_ASSUME_YES is set: starting WITHOUT an interactive confirmation (only for wrappers that supervise the scanner)" >&2
+elif [ ! -t 0 ]; then
+  echo "aborted: no confirmation (stdin is not a terminal; run it in a real terminal, or set OPTICFILM_HW_ASSUME_YES=1 in a supervised wrapper)" >&2
+  exit 1
+else
+  read -r -p "Phase '$phase': holder loaded and latched, you are watching. Enter to start, Ctrl-C to cancel: " _ || { echo "aborted: no confirmation"; exit 1; }
+fi
 
 case "$phase" in
   tray)
