@@ -551,3 +551,52 @@ def test_wait_idle_covers_a_request_still_out():
     assert not poller.wait_idle(0.1)
     scanner.release.set()
     assert poller.wait_idle(5.0)
+
+
+# -- a move that outlasts the wait must never be followed by a start -------------------------
+
+
+def test_a_later_open_does_not_start_the_watcher_while_the_move_still_runs(
+    sweep600_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
+    events: list[str] = []
+    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
+    try:
+        wait_until(c, lambda: c.state().banner is not None)  # the wait ran out
+        c.open_batch(_batch(tmp_path, "ro"), readonly=True)
+        wait_until(c, lambda: c.state().readonly)
+        c.open_batch(tmp_path / "missing")  # the batch cannot be read
+        wait_until(c, lambda: c.state().banner is not None and not c.state().readonly)
+        time.sleep(0.3)
+        assert "restore" not in events  # the move is still running
+        gate.set()  # the move ends: now the normal path may start the watcher
+        wait_until(c, lambda: not c._holder_busy)
+        c.open_batch(_batch(tmp_path, "ro2"), readonly=True)
+        wait_until(c, lambda: "restore" in events)
+        assert events.count("restore") == 1
+    finally:
+        gate.set()
+        c.shutdown()
+
+
+def test_closing_the_window_does_not_wait_out_the_bound(sweep600_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 60.0)
+    events: list[str] = []
+    blocked = _BlockedStatus()
+    scanner = FakeScanner(sweep600_dir)
+    scanner.status = blocked.status  # a status request that stays out
+    c = Controller(lambda _dpi: scanner, eject_watch=RecordingWatch(events))
+    open_new(c, tmp_path / "b")
+    c.tick()  # sends the status request
+    c.close_batch()
+    time.sleep(0.3)
+    closer = threading.Thread(target=c.shutdown)
+    started = time.monotonic()
+    closer.start()
+    closer.join(10)
+    returned_in_time = not closer.is_alive()
+    blocked.release.set()
+    closer.join(10)
+    assert returned_in_time and time.monotonic() - started < 10
+    assert "restore" not in events

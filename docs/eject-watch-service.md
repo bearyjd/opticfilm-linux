@@ -95,7 +95,9 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   Python process runs in the container, outside the unit's control group, so a signal sent to
   the main process does not reach it. The unit therefore has an `ExecStop=` that runs inside the
   container, sends SIGINT to the `of135i watch` process with `pkill -INT` and waits up to about
-  100 seconds for it to exit. If a stop still times out, the unit is marked `failed` with
+  100 seconds for it to exit. Because `pkill -f` matches full command lines in the shared process
+  namespace, it also signals the host-side `distrobox-enter` command line and a `watch` you
+  started by hand; SIGINT to those is the intended outcome. If a stop still times out, the unit is marked `failed` with
   `watch` possibly alive; the app's process check above catches that.
   **Unverified:** none of this has been run on a real system. That SIGINT sent this way ends
   `watch` cleanly, that `distrobox-enter --no-tty -n dev` accepts these arguments, and that

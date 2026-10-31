@@ -72,7 +72,7 @@ class Controller(HolderCommands):
         eject_watch: EjectWatch | None = None,
     ) -> None:
         self._factory = scanner_factory
-        self._scanner_quiet = True  # no holder move or status request was left out by a detach
+        self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
@@ -504,41 +504,49 @@ class Controller(HolderCommands):
         self._stop_jobs()  # a job writes through the store, so it must finish before it closes
         with self._lock:
             session, self._session = self._session, None
-        self._scanner_quiet = True
         if session is not None:
+            self._watch_poller = session.poller
             if session.poller is not None:
                 session.poller.close()
             if session.runner is not None:
                 session.runner.stop()
             session.store.close()
             if self._eject_watch is not None:
-                self._scanner_quiet = self._wait_scanner_quiet(session)
+                self._wait_scanner_idle()
         if restore_watch:
             self._restore_eject_watch()
         with self._lock:
             self._selected = None
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
 
-    def _wait_scanner_quiet(self, session: _Session) -> bool:
-        """Wait (bounded) for the holder move and the status request this session may have out."""
+    def _scanner_idle(self) -> bool:
+        """No holder move and no status request is out right now (asked fresh every time)."""
+        poller = self._watch_poller
+        return not self._holder_busy and (poller is None or poller.wait_idle(0.0))
+
+    def _wait_scanner_idle(self) -> None:
+        """Wait, bounded, for the scanner to go idle; returns early when the window is closing."""
         deadline = time.monotonic() + WATCH_RESTORE_WAIT_S
-        while self._holder_busy and time.monotonic() < deadline:
+        while not self._scanner_idle() and not self._closing.is_set():
+            if time.monotonic() >= deadline:
+                return
             time.sleep(0.05)
-        left = max(0.0, deadline - time.monotonic())
-        return not self._holder_busy and (session.poller is None or session.poller.wait_idle(left))
 
     def _restore_eject_watch(self) -> None:
-        """Start the background watcher again if it was running; a failure is a banner only."""
+        """Start the background watcher again if it was running; a failure is a banner only.
+
+        Never while the scanner is busy: a second program on it mid-move is unsafe."""
         if self._eject_watch is None:
             return
-        if not self._scanner_quiet:
+        if not self._scanner_idle():
             text = (
                 "The Eject button watcher was left stopped: the scanner was still busy. "
                 f"Start it with `systemctl --user start {UNIT}` when it is idle."
             )
             log.warning(text)
-            with self._lock:
-                self._banner = Banner(text)
+            if not self._closing.is_set():
+                with self._lock:
+                    self._banner = Banner(text)
             return
         problem = self._eject_watch.restore()
         if problem is not None:
