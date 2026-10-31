@@ -7,7 +7,8 @@ Single Python package `src/opticfilm_linux`, no server, no database (state = JSO
 ## Entry points
 ofscan   -> opticfilm_linux.cli:main            (batch/cli.py adds `ofscan batch ...`)
 opticfilm-> opticfilm_linux.app.qt.app:main     (`--fake SWEEP_DIR` = fake scanner)
-scripts/ check_spike.py, poll_report.py, rehearse.py, opticfilm-here
+scripts/ check_spike.py, poll_report.py, rehearse.py, opticfilm-here,
+         eject-watch-check.sh (no-motor stop-path check of the Eject-watcher unit)
 
 ## Layers (imports point downward only)
  app.qt (QML/PySide6, only place importing Qt)
