@@ -270,3 +270,29 @@ def test_installer_rejects_a_hostile_script_folder(tmp_path):
     done, unit, calls = _install(tmp_path, str(driver), script=home / "scripts" / INSTALL.name)
     assert done.returncode != 0 and "not allowed" in done.stderr
     assert not unit.exists() and calls == []
+
+
+def _locales() -> list[str]:
+    have = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout
+    names = {x.strip().lower().replace("utf-8", "utf8") for x in have.splitlines()}
+    wanted = ("en_US.UTF-8", "C.UTF-8")
+    return [loc for loc in wanted if loc.lower().replace("utf-8", "utf8") in names]
+
+
+@pytest.mark.skipif(not _locales(), reason="no UTF-8 locale installed")
+@pytest.mark.parametrize("locale", _locales())
+@pytest.mark.parametrize("name", ["Zé", "cyrillicа", "full／width", "dotlessı"])
+def test_installer_rejects_non_ascii_paths_under_a_utf8_locale(tmp_path, locale, name):
+    driver = tmp_path / name
+    driver.mkdir()
+    done, unit, calls = _install(tmp_path, str(driver), env={"LC_ALL": locale})
+    assert done.returncode != 0 and "not allowed" in done.stderr
+    assert not unit.exists() and calls == []
+
+
+def test_the_rendered_unit_is_readable_by_everyone_who_can_read_the_folder(tmp_path):
+    driver = tmp_path / "drv"
+    driver.mkdir()
+    done, unit, _ = _install(tmp_path, str(driver))
+    assert done.returncode == 0, done.stderr
+    assert stat.S_IMODE(unit.stat().st_mode) == 0o644

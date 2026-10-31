@@ -18,7 +18,8 @@ die() {
 check_path() { # <what> <path>
     local what=$1 path=$2
     [[ -n "$path" ]] || die "$what is empty"
-    [[ "$path" =~ ^[A-Za-z0-9_./-]+$ ]] ||
+    # LC_ALL=C: in a UTF-8 locale a range like A-Z can also match letters such as e-acute.
+    LC_ALL=C bash -c '[[ $1 =~ ^[A-Za-z0-9_./-]+$ ]]' _ "$path" ||
         die "$what has characters that are not allowed in the unit (only letters, digits and _ . / - are): '$path'"
     [[ "$path" == /* ]] || die "$what must be an absolute path: '$path'"
     [[ -d "$path" ]] || die "$what is not a folder: '$path'"
@@ -62,7 +63,7 @@ if [[ -f "$unit" ]]; then
 else
     echo "creating $unit"
 fi
-cp -- "$new" "$unit"
+install -m 0644 -- "$new" "$unit" # not mktemp's 0600, and an old 0600 unit is fixed too
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload

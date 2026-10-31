@@ -115,7 +115,7 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   container, which sends SIGINT to the `of135i watch` process with `pkill -INT` and waits up to about
   100 seconds for it to exit (`eject-watch-stop.sh`). Because `pkill -f` matches full command lines in the shared process
   namespace, it also signals the host-side `distrobox-enter` command line and a `watch` you
-  started by hand; SIGINT to those is the intended outcome. If a stop still times out, the unit is marked `failed` with
+  started by hand; SIGINT to those is the intended outcome. Any unrelated host process with `of135i ... watch` in its command line (an editor or `grep`, say) would be signalled the same way. If a stop still times out, the unit is marked `failed` with
   `watch` possibly alive; the app's process check above catches that.
   **Verified by tests only, not on a real system:** the scripts, the installer and the rule that
   the unit passes only plain words after `--` are tested offline (with stand-ins for `pkill`
