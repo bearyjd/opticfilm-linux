@@ -45,7 +45,7 @@ Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage
 | Variable | Required | Meaning |
 |----------|----------|---------|
 | `OPTICFILM_DRIVER_DIR` | For the real scanner, unless `of135i` is importable | Checkout of opticfilm135i-linux holding the `of135i/` package. Without it and without an importable `of135i`, the scanner is reported as not found |
-| `OPTICFILM_DRIVER_RUNNER` | No | How the shown load command runs the driver: unset = distrobox container `dev`, `host` = directly, `distrobox:<name>` = that container (letters, digits, `-`, `_`, `.`). Anything else falls back to the default and is logged |
+| `OPTICFILM_DRIVER_RUNNER` | No | How the shown load command runs the driver: unset = distrobox container `dev`, `host` = directly, `distrobox:<name>` = that container (letters, digits, `-`, `_`, `.`; must start with a letter or digit). Anything else falls back to the default and is logged |
 | `OPTICFILM_NEXT_STRIP` | No (off) | `1` enables the hardware-unproven `load --next-strip` and the app's load-next-holder; any other value leaves it off |
 | `OPTICFILM_EJECT_BUTTON` | No (on) | `0`, `false`, `no` or `off` (any case) switches the front-panel Eject button off; anything else leaves it on |
 | `OPTICFILM_LOAD_COMMAND` | No | Replaces the first-load terminal command shown in the app's help dialog |
