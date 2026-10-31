@@ -16,6 +16,7 @@ from opticfilm_linux.app.eject_watch import (
     WatchStillActive,
     watch_process_running,
 )
+from opticfilm_linux.app.holder import WAIT_HOLDER
 from opticfilm_linux.app.status import StatusPoller
 from opticfilm_linux.batch.model import BatchDefaults
 from opticfilm_linux.batch.store import BatchStore
@@ -499,22 +500,65 @@ def _commands_done(controller: Controller) -> None:
     controller._command.submit(lambda: None).result(30)
 
 
-def _eject_then_close(sweep600_dir, tmp_path, events):
+def _start_move(sweep600_dir, tmp_path, events):
+    """A controller with an eject running (held by ``gate``) and its watcher stepped aside."""
     gate = threading.Event()
     scanner = RecordingScanner(sweep600_dir, (ScannerStatus.NOT_READY,), gate=gate)
     c = Controller(lambda _dpi: scanner, eject_watch=RecordingWatch(events))
     open_new(c, tmp_path / "b")
     wait_until(c, lambda: c.state().can_eject)
+    return c, scanner, gate
+
+
+def _batch_commands(tmp_path):
+    return {
+        "close": lambda c: c.close_batch(),
+        "open_readonly": lambda c: c.open_batch(_batch(tmp_path, "ro"), readonly=True),
+        "open_unreadable": lambda c: c.open_batch(tmp_path / "missing"),
+        "new": lambda c: c.new_batch(tmp_path / "n", "N", "", None, 600),
+    }
+
+
+@pytest.mark.parametrize("command", ["close", "open_readonly", "open_unreadable", "new"])
+def test_a_batch_change_during_a_move_is_refused_and_leaves_the_watcher_stopped(
+    sweep600_dir, tmp_path, command
+):
+    events: list[str] = []
+    c, scanner, gate = _start_move(sweep600_dir, tmp_path, events)
+    try:
+        c.eject_holder()
+        wait_until(c, lambda: scanner.calls == ["eject"])  # the move is running now
+        _batch_commands(tmp_path)[command](c)
+        wait_until(c, lambda: c.state().banner is not None)
+        assert c.state().banner.message == WAIT_HOLDER
+        _commands_done(c)
+        assert "restore" not in events
+        gate.set()  # the move ends: now closing is allowed and starts the watcher again
+        wait_until(c, lambda: not c._holder_busy)
+        c.close_batch()
+        wait_until(c, lambda: "restore" in events)
+    finally:
+        gate.set()
+        c.shutdown()
+
+
+def _move_wins_the_race(sweep600_dir, tmp_path, events, command):
+    """A batch command passes the refusal check, then an eject is accepted before the command
+    thread gets to run it: the one way a holder move can still be running inside a detach."""
+    c, scanner, gate = _start_move(sweep600_dir, tmp_path, events)
+    hold = threading.Event()
+    c._command.submit(hold.wait, 30)  # keeps the command thread busy
+    _batch_commands(tmp_path)[command](c)  # no move yet, so it is queued behind it
     c.eject_holder()
-    wait_until(c, lambda: scanner.calls == ["eject"])  # the move is running now
-    c.close_batch()
+    wait_until(c, lambda: scanner.calls == ["eject"])
+    hold.set()
     return c, gate
 
 
 def test_the_watcher_is_not_started_while_the_holder_is_moving(sweep600_dir, tmp_path, monkeypatch):
     monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 30.0)
     events: list[str] = []
-    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
+    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, "close")
     try:
         time.sleep(0.5)
         assert "restore" not in events  # the move is still running
@@ -525,18 +569,35 @@ def test_the_watcher_is_not_started_while_the_holder_is_moving(sweep600_dir, tmp
         c.shutdown()
 
 
-def test_a_move_that_outlasts_the_wait_leaves_the_watcher_stopped_with_a_banner(
+@pytest.mark.parametrize("command", ["close", "open_readonly", "open_unreadable"])
+def test_a_move_that_wins_the_race_never_sees_the_watcher_start(
+    sweep600_dir, tmp_path, monkeypatch, command
+):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
+    events: list[str] = []
+    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, command)
+    try:
+        _commands_done(c)  # the command ran, its bounded wait ran out, the move still runs
+        assert "restore" not in events
+        gate.set()  # the move ends: the normal path may start the watcher
+        wait_until(c, lambda: not c._holder_busy)
+        c.open_batch(_batch(tmp_path, "ro2"), readonly=True)
+        wait_until(c, lambda: "restore" in events)
+        assert events.count("restore") == 1
+    finally:
+        gate.set()
+        c.shutdown()
+
+
+def test_a_close_that_lost_the_race_leaves_a_banner_with_the_start_command(
     sweep600_dir, tmp_path, monkeypatch
 ):
     monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
     events: list[str] = []
-    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
+    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, "close")
     try:
         wait_until(c, lambda: c.state().banner is not None)
         assert "stopped" in c.state().banner.message and UNIT in c.state().banner.message
-        gate.set()
-        time.sleep(0.3)
-        assert "restore" not in events
     finally:
         gate.set()
         c.shutdown()
@@ -565,39 +626,6 @@ def test_wait_idle_covers_a_request_still_out():
 
 
 # -- a move that outlasts the wait must never be followed by a start -------------------------
-
-
-def test_a_later_open_does_not_start_the_watcher_while_the_move_still_runs(
-    sweep600_dir, tmp_path, monkeypatch
-):
-    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
-    real_open = BatchStore.open
-
-    def slow_open(directory, *args, **kwargs):  # the unreadable batch is found out late
-        if Path(directory).name == "missing":
-            time.sleep(0.5)
-        return real_open(directory, *args, **kwargs)
-
-    monkeypatch.setattr(BatchStore, "open", staticmethod(slow_open))
-    events: list[str] = []
-    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
-    try:
-        wait_until(c, lambda: c.state().banner is not None)  # the wait ran out
-        c.open_batch(_batch(tmp_path, "ro"), readonly=True)
-        _commands_done(c)
-        wait_until(c, lambda: c.state().readonly)  # only the snapshot is still to catch up
-        c.open_batch(tmp_path / "missing")  # the batch cannot be read
-        _commands_done(c)  # its open has failed and its restore attempt has been made
-        wait_until(c, lambda: not c.state().readonly)
-        assert "restore" not in events  # the move is still running
-        gate.set()  # the move ends: now the normal path may start the watcher
-        wait_until(c, lambda: not c._holder_busy)
-        c.open_batch(_batch(tmp_path, "ro2"), readonly=True)
-        wait_until(c, lambda: "restore" in events)
-        assert events.count("restore") == 1
-    finally:
-        gate.set()
-        c.shutdown()
 
 
 def test_closing_the_window_does_not_wait_out_the_bound(sweep600_dir, tmp_path, monkeypatch):
@@ -673,9 +701,9 @@ def test_the_wait_for_an_idle_scanner_ends_when_the_window_is_closing(
 ):
     monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 60.0)
     events: list[str] = []
-    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
+    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, "close")
     try:
-        time.sleep(0.3)  # the close command is in its wait
+        wait_until(c, lambda: c._session is None)  # the close command is in its wait
         c._closing.set()
         _commands_done(c)  # returns at once instead of after the 60 s bound
         assert "restore" not in events

@@ -65,10 +65,13 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
   the detail. A failure to stop it is not a banner: if the unit is still running afterwards
   (or its state cannot be read after a stop was requested), the app **refuses to open the
   scanner** and says so. Stop the unit by hand and try again.
-- The unit is not started again while the scanner is busy: closing a batch waits (up to two
-  minutes) for an eject or load that is still moving the holder, and for a status request that
-  is still out. If they have not ended by then, the unit stays stopped and a banner gives the
-  `systemctl --user start` command to run when the scanner is idle.
+- Closing, opening or creating a batch is refused ("Wait for the eject/load to finish") while
+  an eject or load is moving the holder, so the unit cannot be started again during a move that
+  way. As a backstop the unit is also never started while the scanner is busy: a batch change
+  accepted just before a move began, or a scanner status request still out, makes the app
+  wait (up to two minutes, and not at all once the window is closing) and then leave the unit
+  stopped with a banner that gives the `systemctl --user start` command to run when the scanner
+  is idle.
 - The unit is not started again while an `of135i watch` process is already running, so two
   watchers never run at once.
 - Read-only batches and demo mode (`--fake`) never touch the unit.
