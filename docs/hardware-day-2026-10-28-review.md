@@ -109,7 +109,7 @@ Results that complicate the "gate fixes it" story:
 
 ## UNPROVEN
 
-- That the gate, rather than run order, warm-up or power state, caused the change between b4/b5 and b6/b7. No interleaved A/B exists.
+- ~~That the gate, rather than run order, warm-up or power state, caused the change between b4/b5 and b6/b7.~~ Addressed 2026-10-30 by an interleaved A/B (see "Interleaved A/B, 2026-10-30" below). Still one unit, one dpi, three runs per arm.
 - The gate-off failure rate at 3600 dpi on the newer revision.
 - Arm C: the diagnostics have no per-wait record for the buffer-empty wait (no duration or outcome). c3 also had the scan-stop gate on, so its own effect cannot be separated; c3 matches c2/b6 (median GO-to-data 35 ms vs 34-37 ms).
 - The guard-fail path: c4 produced a clean frame and exited normally with 50 cr_mismatches, so the guard never fired and its trip condition is unknown. No degraded state was present to test it.
@@ -132,3 +132,19 @@ Common flags (from the recorded `cli` block): `--slides N --dpi D --ir --no-clea
 | 6 | Warm-up control: first scan right after lamp-on vs after 20 min | `--cal-wait-scanstop enforce --dpi 600 --slides 4` | warm-up vs gate |
 
 Scrub checklist (verified by grep on this file): no hex register values, no `decoded-`, no `~/captures`, no `.pcap`, no `disasm`, no symbol names, no vendor timing numbers, no image or raw-byte content.
+
+## Interleaved A/B, 2026-10-30
+
+600 dpi, slide 4, one unit, one load, flags explicit on every scan. Order after a discarded warm-up (gate on): off, on, on, off, off, on.
+
+| Run | Gate | `cal_integrity` | Poll timeouts | Stop-gate waits |
+|---|---|---|---|---|
+| 1 | off | degraded | 1 | 0 |
+| 2 | on | clean | 0 | 7 |
+| 3 | on | clean | 0 | 7 |
+| 4 | off | degraded | 2 | 0 |
+| 5 | off | degraded | 1 | 0 |
+| 6 | on | clean | 0 | 7 |
+
+- PROVEN (this unit, this setup): every gate-off run showed the stale-read signature (calibration re-armed 5.7-11.9 ms after the previous clear while the acquisition still read as running) and ended in the `default_offset_codes` dark_b fallback; every gate-on run was clean. Gate-off runs 4 and 5 came after gate-on runs 2 and 3, so the earlier order confound does not explain it.
+- UNPROVEN: three runs per arm; one scanner; 600 dpi only. Image quality was not re-compared. `cal_bufempty_waits` was empty because arm C was not enabled, so its engagement is still open.

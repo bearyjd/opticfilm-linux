@@ -42,13 +42,15 @@ Not verified, or known problems:
 - A full tray at 7200 dpi is untested.
 - Ejecting the holder from a cold start timed out twice during homing.
 - The driver's startup recovery is experimental and opt-in.
-- The calibration stop gate is opt-in in the driver. At 600 dpi, all eight frames scanned without
-  it were degraded by a default dark-level fallback, and all eight scanned with it were clean
-  (one unit). The gate-off runs were all taken before the gate-on runs, so run order and warm-up
-  are not ruled out, and a gate-off run at 3600 dpi once came out clean, so the problem does not
-  show up every time. Other runs with the gate on showed no fallback, but the gate has not been
-  compared against gate-off runs at 3600 dpi, so image quality on real slides is not
-  established. See [the combined review](docs/hardware-day-2026-10-28-review.md).
+- The calibration stop gate is on by default in the driver (`--cal-wait-scanstop off` disables
+  it). In an interleaved A/B on 2026-10-30 (600 dpi, slide 4, one unit, order off/on/on/off/off/on
+  after a warm-up), all three gate-off runs were degraded by a default dark-level fallback and all
+  three gate-on runs were clean, so run order and warm-up do not explain the earlier result. That
+  is three runs per arm on one scanner at one resolution. A gate-off run at 3600 dpi once came out
+  clean, so the problem does not show up every time, and the gate has not been compared against
+  gate-off runs at 3600 dpi. The measured image difference is a 1-2 count shadow offset, so image
+  quality on real slides is not established. See
+  [the combined review](docs/hardware-day-2026-10-28-review.md).
 - The app's Eject-button handling (on by default; `OPTICFILM_EJECT_BUTTON=0` turns it off) was
   run on the real scanner by the owner on 2026-10-28 (one unit). No logs of that run are kept in
   this repository, and the cases that must do nothing (a press during a scan, a held press) are
