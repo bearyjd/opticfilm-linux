@@ -10,6 +10,9 @@ opticfilm-> opticfilm_linux.app.qt.app:main     (`--fake SWEEP_DIR` = fake scann
 scripts/ check_spike.py, poll_report.py, rehearse.py, opticfilm-here,
          install-eject-watch.sh (renders the host or distrobox unit),
          eject-watch-check.sh (check of the Eject-watcher unit; --live for the live stop)
+scripts/hardware/ hw_run.sh, ab_gate_test.sh, tray_and_armc_test.sh, merge_when_green.sh (supervised hardware series; README inside)
+packaging/systemd/ opticfilm-eject-watch.service (distrobox) + opticfilm-eject-watch-host.service (bare metal) +
+                  eject-watch-run.sh / eject-watch-stop.sh (container wrappers); opt-in Eject-button watcher, docs/eject-watch-service.md
 
 ## Layers (imports point downward only)
  app.qt (QML/PySide6, only place importing Qt)
