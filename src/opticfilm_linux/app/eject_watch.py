@@ -51,14 +51,27 @@ def watch_process_running(proc_root: Path = PROC) -> bool:
     """Whether any process is running ``of135i watch``, found by reading ``/proc/*/cmdline``.
 
     A container that shares the host's process namespace (distrobox does by default) shows up
-    here too. Entries that vanish or cannot be read are skipped.
+    here too. Entries that vanish or cannot be read are skipped, but if ``/proc`` cannot be
+    listed at all the answer is yes: not knowing counts as a watcher running. The one blind
+    spot is an app in its own process namespace (a Flatpak sandbox), which sees no host process.
     """
     try:
         entries = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
     except OSError as exc:
         log.warning("cannot list %s to look for a running watcher: %s", proc_root, exc)
-        return False
+        return True
     return any(_runs_watch(entry) for entry in entries)
+
+
+def _is_driver(arg: str) -> bool:
+    """``of135i``, a path to it, ``-mof135i``, ``of135i.__main__`` or ``.../of135i/__main__.py``."""
+    name = arg[2:] if arg.startswith("-m") else arg
+    return (
+        name == DRIVER_PROGRAM
+        or name.startswith(DRIVER_PROGRAM + ".")
+        or name.endswith("/" + DRIVER_PROGRAM)
+        or name.endswith(f"/{DRIVER_PROGRAM}/__main__.py")
+    )
 
 
 def _runs_watch(entry: Path) -> bool:
@@ -67,10 +80,10 @@ def _runs_watch(entry: Path) -> bool:
     except OSError:
         return False  # gone already, or not ours to read
     args = raw.decode(errors="replace").split("\0")
-    for index, arg in enumerate(args):
-        if arg == DRIVER_PROGRAM or arg.endswith("/" + DRIVER_PROGRAM):
-            return WATCH_COMMAND in args[index + 1 :]
-    return False
+    # Options may sit between the driver and `watch`; over-matching only refuses, so it is safe.
+    return any(
+        _is_driver(arg) and WATCH_COMMAND in args[index + 1 :] for index, arg in enumerate(args)
+    )
 
 
 class EjectWatch:
@@ -111,6 +124,11 @@ class EjectWatch:
         if not self._was_running:
             return None
         self._was_running = False
+        if self._process_check():  # the old watcher outlived the stop: never run two
+            return (
+                "The Eject button watcher was not started again because an `of135i watch` "
+                "process is already running."
+            )
         if self._systemctl("start") == 0:
             return None
         return (

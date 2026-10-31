@@ -32,6 +32,8 @@ class StatusPoller:
         self._started: float | None = None  # set while a request is out
         self._reported_error = False
         self._closed = False
+        self._idle = threading.Event()  # set while no request is out
+        self._idle.set()
         self._button: bool | None = None  # last eject-button reading; None: no baseline yet
         self._press_at: float | None = None  # when a new press was seen, until it is taken
         self._press_ttl_s = press_ttl_s
@@ -41,12 +43,17 @@ class StatusPoller:
         with self._lock:
             self._closed = True
 
+    def wait_idle(self, timeout_s: float) -> bool:
+        """Wait until no request is out; False if one is still out after ``timeout_s``."""
+        return self._idle.wait(timeout_s)
+
     def poll(self) -> None:
         """Ask the scanner in the background, unless an earlier request is still out."""
         with self._lock:
             if self._closed or self._started is not None:
                 return  # closed: the batch is gone, its scanner must not be asked again
             self._started = self._clock()
+            self._idle.clear()
         threading.Thread(target=self._ask, name="app-scanner-status", daemon=True).start()
 
     def take_eject_press(self) -> bool:
@@ -76,6 +83,7 @@ class StatusPoller:
             status, problem = ScannerStatus.ERROR, f"{type(exc).__name__}: {exc}"
         with self._lock:
             self._status, self._started = status, None
+            self._idle.set()
             if pressed is not None and self._button is not None and pressed and not self._button:
                 self._press_at = self._clock()
             self._button = pressed  # None (no usable reading) also drops the baseline

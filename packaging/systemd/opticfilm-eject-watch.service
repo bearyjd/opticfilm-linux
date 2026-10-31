@@ -4,10 +4,11 @@
 # Before enabling, replace @DRIVER_DIR@ below with the path of the driver checkout (the folder
 # that holds the `of135i` package). Keep the double quotes around it. Spaces are fine; write a
 # literal % as %% and a literal $ as $$. If your driver lives on the host instead of in a
-# distrobox container named `dev`, replace the whole distrobox part of ExecStart.
+# distrobox container named `dev`, replace the distrobox part of ExecStart and ExecStop.
 #
-# The user manager's PATH usually lacks ~/.local/bin, where a per-user distrobox lives; the
-# Environment line adds it. Adjust it if distrobox is somewhere else.
+# `distrobox-enter` must be found through PATH. The user manager's PATH usually lacks
+# ~/.local/bin, where a per-user distrobox lives; the Environment line adds it. Adjust it if
+# distrobox is somewhere else. The container needs `pkill` and `pgrep` (the procps package).
 
 [Unit]
 Description=OpticFilm 135i front-panel Eject button watcher
@@ -19,7 +20,11 @@ StartLimitIntervalSec=0
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # The driver folder is passed as a separate argument ($1), not spliced into the shell text.
-ExecStart=/usr/bin/env distrobox enter --no-tty dev -- bash -lc 'cd -- "$$1" && PYTHONPATH=. exec python3 -m of135i watch' _ "@DRIVER_DIR@"
+ExecStart=/usr/bin/env distrobox-enter --no-tty -n dev -- bash -c 'cd -- "$$1" && PYTHONPATH=. exec python3 -m of135i watch' _ "@DRIVER_DIR@"
+# A signal sent to the host-side distrobox-enter does not reach the Python process in the
+# container. So the stop sends SIGINT to it from inside the container and waits (at most about
+# 100 s, under TimeoutStopSec) for it to exit. It never sends SIGKILL.
+ExecStop=/usr/bin/env distrobox-enter --no-tty -n dev -- bash -c 'pkill -INT -f "$$1" || exit 0; for i in $$(seq 100); do pgrep -f "$$1" >/dev/null || exit 0; sleep 1; done; exit 1' _ '[o]f135i( .*)? watch( |$$)'
 # `watch` refuses to start unless the scanner is idle-homed, and exits when it is off. Each
 # retry starts a container shell and touches USB, so wait 30 s, backing off to 2 minutes
 # (RestartSteps needs systemd 254; older versions ignore it and retry every 30 s).

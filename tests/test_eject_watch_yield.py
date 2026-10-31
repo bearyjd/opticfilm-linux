@@ -2,11 +2,13 @@
 
 import logging
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from controller_helpers import wait_until
+from controller_helpers import open_new, wait_until
 from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.eject_watch import (
     UNIT,
@@ -14,9 +16,12 @@ from opticfilm_linux.app.eject_watch import (
     WatchStillActive,
     watch_process_running,
 )
+from opticfilm_linux.app.status import StatusPoller
 from opticfilm_linux.batch.model import BatchDefaults
 from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.fake import FakeScanner
+from test_app_controller_holder import RecordingScanner
 
 
 class Systemctl:
@@ -198,6 +203,17 @@ def test_no_user_bus_still_refuses_for_a_running_watch():
         make_watch(Systemctl([(1, "")]), process=True).yield_to_app()
 
 
+def test_restore_does_not_start_a_second_watcher():
+    alive = {"now": False}
+    runner = Systemctl(["active", "inactive"])
+    watch = EjectWatch(runner, process_check=lambda: alive["now"], sleep=lambda _seconds: None)
+    watch.yield_to_app()
+    alive["now"] = True  # the old watcher survived the stop
+    problem = watch.restore()
+    assert "already running" in (problem or "")
+    assert "start" not in runner.verbs()
+
+
 # -- a unit that is not plainly active at the start ----------------------------------------
 
 
@@ -261,8 +277,38 @@ def test_tolerates_unreadable_and_vanishing_entries(tmp_path):
     assert watch_process_running(tmp_path)
 
 
-def test_no_proc_means_no_process(tmp_path):
-    assert not watch_process_running(tmp_path / "missing")
+def test_an_unlistable_proc_fails_closed(tmp_path):
+    assert watch_process_running(tmp_path / "missing")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("python3", "-mof135i", "watch"),
+        ("python3", "-m", "of135i.__main__", "watch"),
+        ("python3", "/d/of135i/__main__.py", "watch"),
+        ("python3", "-m", "of135i", "--verbose", "watch"),
+        ("python3", "-m", "of135i", "--poll", "0.5", "watch", "--once"),
+        ("grep", "of135i", "watch"),  # fail-safe: an editor or grep on it also blocks
+    ],
+)
+def test_finds_every_way_of_starting_a_watch(tmp_path, args):
+    _proc(tmp_path, "10", *args)
+    assert watch_process_running(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("python3", "-m", "of135i", "watchdog"),
+        ("python3", "-m", "of135i", "--watch-me"),
+        ("python3", "-m", "of135i"),
+        ("python3", "watch", "of135i"),  # `watch` must come after the driver, not before
+    ],
+)
+def test_ignores_commands_that_only_look_similar(tmp_path, args):
+    _proc(tmp_path, "10", *args)
+    assert not watch_process_running(tmp_path)
 
 
 # -- wired into the controller ------------------------------------------------------------
@@ -414,3 +460,94 @@ def test_failed_restore_shows_a_banner(sweep600_dir, tmp_path):
         assert "did not restart" in c.state().banner.message
     finally:
         c.shutdown()
+
+
+def test_a_refused_open_does_not_start_a_second_watcher(sweep600_dir, tmp_path):
+    runner = Systemctl(["active", "inactive"])
+    watch = EjectWatch(runner, process_check=lambda: True, sleep=lambda _seconds: None)
+    c = Controller(lambda _dpi: FakeScanner(sweep600_dir), eject_watch=watch)
+    try:
+        c.open_batch(_batch(tmp_path))
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "start" not in runner.verbs()
+    finally:
+        c.shutdown()
+
+
+def test_a_failed_restore_after_a_read_only_open_stays_on_screen(sweep600_dir, tmp_path):
+    events: list[str] = []
+    watch = RecordingWatch(events, problem="The Eject button watcher did not restart.")
+    c = Controller(lambda _dpi: FakeScanner(sweep600_dir), eject_watch=watch)
+    try:
+        c.open_batch(_batch(tmp_path, "a"))
+        wait_until(c, lambda: events.count("yield") == 1)
+        c.open_batch(_batch(tmp_path, "b"), readonly=True)
+        wait_until(c, lambda: c.state().batch_name == "T" and c.state().readonly)
+        assert c.state().banner is not None and "did not restart" in c.state().banner.message
+    finally:
+        c.shutdown()
+
+
+def _eject_then_close(sweep600_dir, tmp_path, events):
+    gate = threading.Event()
+    scanner = RecordingScanner(sweep600_dir, (ScannerStatus.NOT_READY,), gate=gate)
+    c = Controller(lambda _dpi: scanner, eject_watch=RecordingWatch(events))
+    open_new(c, tmp_path / "b")
+    wait_until(c, lambda: c.state().can_eject)
+    c.eject_holder()
+    wait_until(c, lambda: scanner.calls == ["eject"])  # the move is running now
+    c.close_batch()
+    return c, gate
+
+
+def test_the_watcher_is_not_started_while_the_holder_is_moving(sweep600_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 30.0)
+    events: list[str] = []
+    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
+    try:
+        time.sleep(0.5)
+        assert "restore" not in events  # the move is still running
+        gate.set()
+        wait_until(c, lambda: "restore" in events)
+    finally:
+        gate.set()
+        c.shutdown()
+
+
+def test_a_move_that_outlasts_the_wait_leaves_the_watcher_stopped_with_a_banner(
+    sweep600_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
+    events: list[str] = []
+    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
+    try:
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "stopped" in c.state().banner.message and UNIT in c.state().banner.message
+        gate.set()
+        time.sleep(0.3)
+        assert "restore" not in events
+    finally:
+        gate.set()
+        c.shutdown()
+
+
+# -- the status poller's request in flight ---------------------------------------------------
+
+
+class _BlockedStatus:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def status(self):
+        self.release.wait(30)
+        return ScannerStatus.READY
+
+
+def test_wait_idle_covers_a_request_still_out():
+    scanner = _BlockedStatus()
+    poller = StatusPoller(scanner, time.monotonic, 30.0, lambda _m, _d: None)
+    assert poller.wait_idle(0.1)  # nothing asked yet
+    poller.poll()
+    assert not poller.wait_idle(0.1)
+    scanner.release.set()
+    assert poller.wait_idle(5.0)

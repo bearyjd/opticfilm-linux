@@ -15,7 +15,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
-from opticfilm_linux.app.eject_watch import EjectWatch
+from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
 from opticfilm_linux.app.holder import HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
 from opticfilm_linux.app.messages import failure_text
@@ -45,6 +45,9 @@ from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner
 SLIDES_PER_TRAY = 4
 STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
 LOCKED_PREFIX = "LOCKED:"
+# How long closing a batch waits for a holder move or status request to end before it will
+# start the Eject-button watcher again (a second program on the scanner mid-move is unsafe).
+WATCH_RESTORE_WAIT_S = 120.0
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +72,7 @@ class Controller(HolderCommands):
         eject_watch: EjectWatch | None = None,
     ) -> None:
         self._factory = scanner_factory
+        self._scanner_quiet = True  # no holder move or status request was left out by a detach
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
@@ -472,8 +476,6 @@ class Controller(HolderCommands):
             store.close()  # never leave the writer lock held after a failed open
             self._restore_eject_watch()
             raise
-        if readonly:
-            self._restore_eject_watch()  # no scanner is opened for a read-only batch
         first = store.snapshot().trays[0].number if store.snapshot().trays else None
         with self._lock:
             self._session = _Session(store, runner, poller, holder)
@@ -485,6 +487,8 @@ class Controller(HolderCommands):
             self._enhancing = set()
             self._export = None
             self._free_space = None
+        if readonly:
+            self._restore_eject_watch()  # no scanner is opened for a read-only batch
 
     def _scanner_problem(self, message: str, detail: str) -> None:
         self._set(_banner=Banner(message, detail))
@@ -500,21 +504,41 @@ class Controller(HolderCommands):
         self._stop_jobs()  # a job writes through the store, so it must finish before it closes
         with self._lock:
             session, self._session = self._session, None
+        self._scanner_quiet = True
         if session is not None:
             if session.poller is not None:
                 session.poller.close()
             if session.runner is not None:
                 session.runner.stop()
             session.store.close()
+            if self._eject_watch is not None:
+                self._scanner_quiet = self._wait_scanner_quiet(session)
         if restore_watch:
             self._restore_eject_watch()
         with self._lock:
             self._selected = None
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
 
+    def _wait_scanner_quiet(self, session: _Session) -> bool:
+        """Wait (bounded) for the holder move and the status request this session may have out."""
+        deadline = time.monotonic() + WATCH_RESTORE_WAIT_S
+        while self._holder_busy and time.monotonic() < deadline:
+            time.sleep(0.05)
+        left = max(0.0, deadline - time.monotonic())
+        return not self._holder_busy and (session.poller is None or session.poller.wait_idle(left))
+
     def _restore_eject_watch(self) -> None:
         """Start the background watcher again if it was running; a failure is a banner only."""
         if self._eject_watch is None:
+            return
+        if not self._scanner_quiet:
+            text = (
+                "The Eject button watcher was left stopped: the scanner was still busy. "
+                f"Start it with `systemctl --user start {UNIT}` when it is idle."
+            )
+            log.warning(text)
+            with self._lock:
+                self._banner = Banner(text)
             return
         problem = self._eject_watch.restore()
         if problem is not None:
