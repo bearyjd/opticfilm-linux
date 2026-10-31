@@ -78,7 +78,8 @@ This is a cautious procedure from single-unit experience, not a validated repair
 interrupted or partly moved scan, the holder may still be retained: do not force it, and do not
 send further commands until you know where it is.
 
-See also the [hardware checklist](docs/hardware-checklist.md).
+See also the [hardware checklist](docs/hardware-checklist.md). Supervised test-run helpers are in
+[scripts/hardware](scripts/hardware/README.md).
 
 ## Quick start
 
@@ -199,6 +200,8 @@ The scanner has to be loaded by hand once after it is switched on; the app canno
 3. In a terminal, run the command the dialog shows (**Copy command**). By default it is
    `distrobox enter dev -- bash -lc 'cd <driver dir> && PYTHONPATH=. python3 -m of135i load'`,
    built from `OPTICFILM_DRIVER_DIR`; set `OPTICFILM_LOAD_COMMAND` to show a different one.
+   `OPTICFILM_DRIVER_RUNNER` picks how the driver runs: unset = the distrobox container `dev`,
+   `host` = directly on this computer, `distrobox:<name>` = another container.
 4. When it asks, pull the holder fully out, push it back in to the stop, and press Enter.
 5. Check that it will not pull out (latched), then press **Scan**.
 

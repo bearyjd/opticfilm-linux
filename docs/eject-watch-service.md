@@ -107,6 +107,9 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
 
 ## Things to know
 
+- **The unit holds the scanner.** Stop it (`systemctl --user stop opticfilm-eject-watch.service`)
+  before running driver commands such as `load` or `scan` from a terminal, and start it again
+  afterwards; the app does this by itself, the command line does not.
 - **SIGINT only.** `of135i watch` must never be killed: a kill during an eject can land
   mid-move. The unit sets `KillSignal=SIGINT`, `SendSIGKILL=no` and `TimeoutStopSec=120`, and
   never sends SIGKILL. On the host the unit's main process is `distrobox-enter`'s shell, and the

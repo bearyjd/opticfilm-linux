@@ -246,7 +246,13 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
 
     scanner = Recording(sweep600_dir, (ScannerStatus.NOT_READY,))
     controller = Controller(lambda _dpi: scanner, next_strip=True)
-    bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600, load_command_text="of135i load now")
+    bridge = Bridge(
+        controller,
+        MemoryPrefs(),
+        demo_dpi=600,
+        load_command_text="of135i load now",
+        load_runner_note="runs in the box",
+    )
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
     engine, warnings = create_engine(bridge, provider)
     try:
@@ -271,6 +277,8 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         _wait(bridge, lambda: dialog.property("opened"))
         field = root.findChild(QObject, "loadCommandField")
         assert field.property("text") == "of135i load now" == bridge.loadCommand
+        note = root.findChild(QObject, "loadRunnerNote")
+        assert note.property("text") == "runs in the box" == bridge.loadRunnerNote
         _click(root, "copyLoadCommand")
         _wait(bridge, lambda: QApplication.clipboard().text() == "of135i load now")
         assert not bridge.hasBanner and warnings == []

@@ -68,3 +68,13 @@ def test_the_load_command_follows_the_driver_folder_or_an_override(monkeypatch):
     assert "cd -- /opt/of135i-driver && PYTHONPATH=. python3 -m of135i load" in load_command_text()
     monkeypatch.setenv("OPTICFILM_LOAD_COMMAND", "  my own command ")
     assert load_command_text() == "my own command"
+
+
+def test_the_runner_note_follows_the_custom_load_command(monkeypatch):
+    from opticfilm_linux.app.qt.app import load_runner_note
+
+    monkeypatch.delenv("OPTICFILM_LOAD_COMMAND", raising=False)
+    monkeypatch.setenv("OPTICFILM_DRIVER_RUNNER", "host")
+    assert "directly on this computer" in load_runner_note()
+    monkeypatch.setenv("OPTICFILM_LOAD_COMMAND", "mine")
+    assert "OPTICFILM_LOAD_COMMAND" in load_runner_note()
