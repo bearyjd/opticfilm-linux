@@ -3,7 +3,8 @@
 A holder movement and a scan share one reservation under the controller's lock: a movement is
 refused while a scan is queued or running, and a scan while a movement is. A movement never
 waits behind an export either: it is refused at once, runs on its own worker, and at most one is
-ever pending. Closing the batch cancels one that has not started; a running one completes.
+ever pending. Closing or reopening the batch cancels one that has not started; while one is
+running the batch is left as it is and the owner is told to wait.
 """
 
 from collections.abc import Callable
@@ -150,6 +151,16 @@ class HolderCommands:
             future = self._holder_future
         if future is not None:
             future.cancel()  # a running one cannot be cancelled: it completes
+
+    def _holder_move_running(self) -> bool:
+        """Cancel a movement that has not started; if one is still running, tell the owner to wait
+        and return True, so the caller leaves the batch as it is."""
+        self._cancel_queued_holder()
+        with self._lock:
+            running = self._holder_busy
+        if running:
+            self._set(_banner=Banner(WAIT_HOLDER))
+        return running
 
     @staticmethod
     def _track(future: Future | None, done: Callable[[], None]) -> None:
