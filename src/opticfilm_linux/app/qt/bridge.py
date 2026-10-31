@@ -116,10 +116,12 @@ class Bridge(QObject):
         demo_dpi: int | None = None,
         parent=None,
         load_command_text: str | None = None,
+        load_runner_note: str = "",
     ) -> None:
         super().__init__(parent)
         self._controller = controller
         self._load_command = load_command_text or load_command(None)
+        self._load_runner_note = load_runner_note
         self._prefs = prefs
         self._demo_dpi = demo_dpi or 0
         self._state: AppState = EMPTY_STATE
@@ -165,6 +167,7 @@ class Bridge(QObject):
     dpiChoices = Property("QVariantList", lambda self: list(DPI_CHOICES), constant=True)  # noqa: N815
     rotationChoices = Property("QVariantList", lambda self: list(ROTATIONS), constant=True)  # noqa: N815
     loadCommand = Property(str, lambda self: self._load_command, constant=True)  # noqa: N815
+    loadRunnerNote = Property(str, lambda self: self._load_runner_note, constant=True)  # noqa: N815
     nextStripEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.next_strip_enabled, constant=True
     )

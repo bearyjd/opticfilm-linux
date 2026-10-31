@@ -1,11 +1,22 @@
 """Plain-words text for the window. Pure functions, so they are tested without Qt."""
 
+import logging
+import os
+import re
 import shlex
+import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from opticfilm_linux.batch.model import Flag, SlideStatus, TrayStage
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
+
+log = logging.getLogger(__name__)
+
+RUNNER_ENV = "OPTICFILM_DRIVER_RUNNER"  # unset = distrobox "dev"; "host"; "distrobox:<name>"
+DEFAULT_CONTAINER = "dev"
+_CONTAINER_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
 _FLAGS = {
     Flag.TOO_DARK: "Very dark",
@@ -79,11 +90,59 @@ def holder_failed_text(action: str) -> str:
     )
 
 
-def load_command(driver_dir: Path | None) -> str:
-    """The terminal command for the first, interactive load after the scanner is switched on."""
+def _parse_runner(runner: str | None) -> str | None:
+    """``None`` for the host, else the distrobox container name; bad values fall back to default."""
+    value = os.environ.get(RUNNER_ENV, "") if runner is None else runner
+    value = value.strip()
+    if value == "host":
+        return None
+    name = value.removeprefix("distrobox:") if value.startswith("distrobox:") else None
+    if name is not None and _CONTAINER_NAME.fullmatch(name):
+        return name
+    if value:
+        log.warning(
+            "%s=%r is not 'host' or 'distrobox:<name>'; using distrobox %r",
+            RUNNER_ENV,
+            value,
+            DEFAULT_CONTAINER,
+        )
+    return DEFAULT_CONTAINER
+
+
+def load_command(driver_dir: Path | None, runner: str | None = None) -> str:
+    """The terminal command for the first, interactive load after the scanner is switched on.
+
+    ``runner`` defaults to ``OPTICFILM_DRIVER_RUNNER``: unset runs the driver in the distrobox
+    container ``dev``, ``host`` runs it directly, ``distrobox:<name>`` names the container.
+    """
     folder = shlex.quote(str(driver_dir)) if driver_dir is not None else DRIVER_DIR_PLACEHOLDER
     inner = f"cd -- {folder} && PYTHONPATH=. python3 -m of135i load"
-    return f"distrobox enter dev -- bash -lc {shlex.quote(inner)}"
+    container = _parse_runner(runner)
+    prefix = "" if container is None else f"distrobox enter {shlex.quote(container)} -- "
+    return f"{prefix}bash -lc {shlex.quote(inner)}"
+
+
+def runner_note(
+    runner: str | None = None, which: Callable[[str], str | None] = shutil.which
+) -> str:
+    """One plain sentence for the help text: which runner the command assumes, how to change it."""
+    container = _parse_runner(runner)
+    if container is None:
+        return (
+            "This command runs the driver directly on this computer. "
+            f"To run it in a distrobox container instead, set {RUNNER_ENV}=distrobox:<name>."
+        )
+    note = (
+        f'This command runs the driver inside the distrobox container "{container}". '
+        f"To run it directly on this computer instead, set {RUNNER_ENV}=host "
+        f"(or {RUNNER_ENV}=distrobox:<name> for another container)."
+    )
+    if which("distrobox") is None and which("distrobox-enter") is None:
+        note += (
+            " distrobox was not found on this computer, so this command will not work here: "
+            f"set {RUNNER_ENV}=host to run the driver directly."
+        )
+    return note
 
 
 _SLIDE_STATUS = {
