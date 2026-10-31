@@ -78,7 +78,8 @@ This is a cautious procedure from single-unit experience, not a validated repair
 interrupted or partly moved scan, the holder may still be retained: do not force it, and do not
 send further commands until you know where it is.
 
-See also the [hardware checklist](docs/hardware-checklist.md).
+See also the [hardware checklist](docs/hardware-checklist.md). Supervised test-run helpers are in
+[scripts/hardware](scripts/hardware/README.md).
 
 ## Quick start
 
