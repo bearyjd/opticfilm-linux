@@ -7,8 +7,9 @@ scanner is on, without the app open and without typing a command.
 
 The unit is `packaging/systemd/opticfilm-eject-watch.service`. It starts `of135i watch` inside
 the distrobox container `dev` (where the driver's `pyusb` lives), the same way the app's
-first-load command does, and uses `Restart=always` with `RestartSec=5`. It retries every few
-seconds, so it picks the scanner up when you switch it on; no udev rule is needed.
+first-load command does, and uses `Restart=always`. It retries every 30 seconds (backing off to 2 minutes on systemd 254
+or newer), so it picks the scanner up within a minute or two of switching it on; no udev rule is
+needed. The wait is deliberate: each retry starts a container shell and touches USB.
 
 ## Install
 
@@ -19,9 +20,14 @@ seconds, so it picks the scanner up when you switch it on; no udev rule is neede
    cp packaging/systemd/opticfilm-eject-watch.service ~/.config/systemd/user/
    ```
 
-   In the copy, replace `@DRIVER_DIR@` with the shell-quoted path of your driver checkout (the
-   same folder as `OPTICFILM_DRIVER_DIR`), for example `'/path/to/opticfilm135i-linux'`. Change
-   the container name `dev` if yours differs.
+   In the copy, replace `@DRIVER_DIR@` with the path of your driver checkout (the same
+   folder as `OPTICFILM_DRIVER_DIR`), keeping the double quotes, for example
+   `"/path/to/opticfilm135i-linux"`. Spaces are fine; write a literal `%` as `%%` and a literal
+   `$` as `$$`. Change the container name `dev` if yours differs.
+
+   The unit sets `PATH` to start with `~/.local/bin`, because the user manager's own `PATH`
+   usually lacks it and a per-user distrobox lives there. Edit the `Environment=PATH=` line if
+   distrobox is elsewhere.
 
 2. Load and start it:
 
@@ -58,12 +64,22 @@ Only one program may use the scanner at a time, so the app steps the watcher asi
 - If the stop was requested and the unit is still running afterwards, the app **refuses to open
   the scanner** and says so. Stop the unit by hand and try again.
 - Read-only batches and demo mode (`--fake`) never touch the unit.
+- Switching from one batch to another keeps the unit stopped in between; it is started again
+  only when no batch with a scanner is left open.
+- **A leftover `watch` also blocks the scanner.** Stopping the unit can leave `of135i watch`
+  running outside it (the unit uses `KillMode=process`, and a timed-out stop leaves the unit
+  `failed` with the process alive). So after the stop, and also when `systemctl` or the user
+  session bus is missing, the app reads `/proc/*/cmdline` for an `of135i watch` process. If it
+  finds one it refuses to open the scanner and says so; a `watch` you started by hand counts
+  too. The app never kills it: end it with Ctrl-C in its terminal. The check only sees a
+  container that shares the host's process namespace, which distrobox does by default.
 
 ## Things to know
 
 - **SIGINT only.** `of135i watch` must never be killed: a kill during an eject can land
   mid-move. The unit sets `KillSignal=SIGINT`, `SendSIGKILL=no` and `TimeoutStopSec=120`. A stop
-  therefore waits up to two minutes and then the unit is marked failed rather than killed.
+  therefore waits up to two minutes and then the unit is marked failed rather than killed, with
+  `watch` possibly still alive; the app's process check above catches that.
   *Unverified:* whether SIGINT sent to `distrobox enter` reaches the Python process inside the
   container (the unit uses `exec` so no shell sits in between). Test it on your setup with
   `systemctl --user stop` and the journal before relying on it during an eject. The unit's

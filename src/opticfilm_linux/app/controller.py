@@ -156,17 +156,15 @@ class Controller(HolderCommands):
         slots: tuple[SlotOrientation, ...] = (),
     ) -> None:
         def job() -> None:
-            self._detach()
             defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror, slots=slots)
-            self._attach(BatchStore.create(directory, name, album, date, defaults), False)
+            self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
 
         self._cancel_queued_holder()
         self._run(job, "Could not create the batch", droppable=True)
 
     def open_batch(self, directory: Path, readonly: bool = False) -> None:
         def job() -> None:
-            self._detach()
-            self._attach(BatchStore.open(directory, readonly=readonly), readonly)
+            self._replace_batch(lambda: BatchStore.open(directory, readonly=readonly), readonly)
 
         self._cancel_queued_holder()
         self._run(job, "Could not open the batch", droppable=True)
@@ -445,6 +443,16 @@ class Controller(HolderCommands):
         with self._lock:
             self._progress = {k: v for k, v in self._progress.items() if k != number}
 
+    def _replace_batch(self, make_store: Callable[[], BatchStore], readonly: bool = False) -> None:
+        """Close the open batch, open the next; the Eject-button watcher stays stopped between."""
+        self._detach(restore_watch=False)  # the next open steps it aside again at once
+        try:
+            store = make_store()
+        except BaseException:
+            self._restore_eject_watch()
+            raise
+        self._attach(store, readonly)
+
     def _attach(self, store: BatchStore, readonly: bool) -> None:
         runner = None
         poller = None
@@ -464,6 +472,8 @@ class Controller(HolderCommands):
             store.close()  # never leave the writer lock held after a failed open
             self._restore_eject_watch()
             raise
+        if readonly:
+            self._restore_eject_watch()  # no scanner is opened for a read-only batch
         first = store.snapshot().trays[0].number if store.snapshot().trays else None
         with self._lock:
             self._session = _Session(store, runner, poller, holder)
@@ -486,7 +496,7 @@ class Controller(HolderCommands):
         with self._jobs_idle:
             self._jobs_idle.wait_for(lambda: not self._job_futures)
 
-    def _detach(self) -> None:
+    def _detach(self, restore_watch: bool = True) -> None:
         self._stop_jobs()  # a job writes through the store, so it must finish before it closes
         with self._lock:
             session, self._session = self._session, None
@@ -496,7 +506,8 @@ class Controller(HolderCommands):
             if session.runner is not None:
                 session.runner.stop()
             session.store.close()
-        self._restore_eject_watch()
+        if restore_watch:
+            self._restore_eject_watch()
         with self._lock:
             self._selected = None
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
