@@ -31,14 +31,20 @@ Verified natively on Linux:
 - One slide (slide 1) at 3600 dpi.
 - One slide (slide 4) at 3600 dpi, with the driver's calibration stop gate on
   (`--cal-wait-scanstop enforce`): finished TIFFs, calibration integrity clean.
+- All four slides in one tray scan at 3600 dpi (2026-10-31, one unit, one run, stop gate on):
+  four finished frames, calibration integrity clean on each, about 5 minutes. The log shows two
+  "poll timed out, continuing" warnings that the per-frame diagnostics do not count. One run on
+  one scanner is not a reliability figure.
 - The scanner's front-panel Eject button, through the driver's `watch` command: one press, one
   eject.
 
 Not verified, or known problems:
 
-- A full four-slide tray at 3600 dpi has not been completed. An earlier single-slide scan of
-  slide 4 at 3600 dpi, without the stop gate, was interrupted after calibration warnings and
-  produced no finished TIFF.
+- An earlier single-slide scan of slide 4 at 3600 dpi, without the stop gate, was interrupted
+  after calibration warnings and produced no finished TIFF.
+- The driver's experimental `--cal-wait-bufempty` flag is not usable yet: with the stop gate off
+  it aborted the scan after 0.3 s, because the scanner's buffer-empty bit takes about 1 s to clear
+  after the execute pulse. It stays off by default and is not needed with the stop gate on.
 - A full tray at 7200 dpi is untested.
 - Ejecting the holder from a cold start timed out twice during homing.
 - The driver's startup recovery is experimental and opt-in.
