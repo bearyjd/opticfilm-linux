@@ -505,8 +505,8 @@ class Controller(HolderCommands):
         with self._lock:
             session, self._session = self._session, None
         if session is not None:
-            self._watch_poller = session.poller
             if session.poller is not None:
+                self._watch_poller = session.poller  # a read-only session keeps the earlier one
                 session.poller.close()
             if session.runner is not None:
                 session.runner.stop()

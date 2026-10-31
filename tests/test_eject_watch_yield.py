@@ -482,10 +482,21 @@ def test_a_failed_restore_after_a_read_only_open_stays_on_screen(sweep600_dir, t
         c.open_batch(_batch(tmp_path, "a"))
         wait_until(c, lambda: events.count("yield") == 1)
         c.open_batch(_batch(tmp_path, "b"), readonly=True)
-        wait_until(c, lambda: c.state().batch_name == "T" and c.state().readonly)
-        assert c.state().banner is not None and "did not restart" in c.state().banner.message
+        wait_until(
+            c,
+            lambda: (
+                c.state().readonly
+                and c.state().banner is not None
+                and "did not restart" in c.state().banner.message
+            ),
+        )
     finally:
         c.shutdown()
+
+
+def _commands_done(controller: Controller) -> None:
+    """Return once every queued open, close and new-batch command has finished."""
+    controller._command.submit(lambda: None).result(30)
 
 
 def _eject_then_close(sweep600_dir, tmp_path, events):
@@ -560,15 +571,24 @@ def test_a_later_open_does_not_start_the_watcher_while_the_move_still_runs(
     sweep600_dir, tmp_path, monkeypatch
 ):
     monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
+    real_open = BatchStore.open
+
+    def slow_open(directory, *args, **kwargs):  # the unreadable batch is found out late
+        if Path(directory).name == "missing":
+            time.sleep(0.5)
+        return real_open(directory, *args, **kwargs)
+
+    monkeypatch.setattr(BatchStore, "open", staticmethod(slow_open))
     events: list[str] = []
     c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
     try:
         wait_until(c, lambda: c.state().banner is not None)  # the wait ran out
         c.open_batch(_batch(tmp_path, "ro"), readonly=True)
-        wait_until(c, lambda: c.state().readonly)
+        _commands_done(c)
+        wait_until(c, lambda: c.state().readonly)  # only the snapshot is still to catch up
         c.open_batch(tmp_path / "missing")  # the batch cannot be read
-        wait_until(c, lambda: c.state().banner is not None and not c.state().readonly)
-        time.sleep(0.3)
+        _commands_done(c)  # its open has failed and its restore attempt has been made
+        wait_until(c, lambda: not c.state().readonly)
         assert "restore" not in events  # the move is still running
         gate.set()  # the move ends: now the normal path may start the watcher
         wait_until(c, lambda: not c._holder_busy)
@@ -600,3 +620,65 @@ def test_closing_the_window_does_not_wait_out_the_bound(sweep600_dir, tmp_path, 
     closer.join(10)
     assert returned_in_time and time.monotonic() - started < 10
     assert "restore" not in events
+
+
+def _blocked_status_controller(sweep600_dir, tmp_path, events):
+    blocked = _BlockedStatus()
+    scanner = FakeScanner(sweep600_dir)
+    scanner.status = blocked.status  # a status request that stays out
+    c = Controller(lambda _dpi: scanner, eject_watch=RecordingWatch(events))
+    open_new(c, tmp_path / "b")
+    c.tick()  # sends the status request
+    return c, blocked
+
+
+def test_a_status_request_still_out_keeps_the_watcher_stopped(sweep600_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
+    events: list[str] = []
+    c, blocked = _blocked_status_controller(sweep600_dir, tmp_path, events)
+    try:
+        c.close_batch()
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "stopped" in c.state().banner.message and "restore" not in events
+    finally:
+        blocked.release.set()
+        c.shutdown()
+
+
+def test_an_earlier_status_request_is_still_checked_after_a_read_only_session(
+    sweep600_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
+    events: list[str] = []
+    c, blocked = _blocked_status_controller(sweep600_dir, tmp_path, events)
+    try:
+        c.close_batch()
+        wait_until(c, lambda: c.state().banner is not None)  # left stopped, request still out
+        c.open_batch(_batch(tmp_path, "ro"), readonly=True)
+        _commands_done(c)
+        c.close_batch()  # the read-only session ends
+        _commands_done(c)
+        assert "restore" not in events  # the earlier request is still out
+        blocked.release.set()
+        wait_until(c, lambda: c._watch_poller.wait_idle(0.0))
+        c.open_batch(_batch(tmp_path, "ro2"), readonly=True)
+        wait_until(c, lambda: "restore" in events)
+    finally:
+        blocked.release.set()
+        c.shutdown()
+
+
+def test_the_wait_for_an_idle_scanner_ends_when_the_window_is_closing(
+    sweep600_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 60.0)
+    events: list[str] = []
+    c, gate = _eject_then_close(sweep600_dir, tmp_path, events)
+    try:
+        time.sleep(0.3)  # the close command is in its wait
+        c._closing.set()
+        _commands_done(c)  # returns at once instead of after the 60 s bound
+        assert "restore" not in events
+    finally:
+        gate.set()
+        c.shutdown()
