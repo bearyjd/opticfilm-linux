@@ -1,5 +1,6 @@
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -10,8 +11,15 @@ from controller_helpers import (
     wait_all_in_review,
     wait_until,
 )
+from opticfilm_linux.app.jobs import run_export
 from opticfilm_linux.batch import export as export_module
-from opticfilm_linux.batch.model import SlideStatus, TrayStage
+from opticfilm_linux.batch.model import (
+    BatchManifest,
+    SlideRecord,
+    SlideStatus,
+    TrayRecord,
+    TrayStage,
+)
 from opticfilm_linux.batch.store import BatchLocked, BatchStore
 
 GATE_TIMEOUT = 30
@@ -103,6 +111,7 @@ def test_export_to_missing_folder_gives_banner_and_changes_no_stage(two_trays, t
     assert _exported_count(two_trays) == 0
     assert {t.stage for t in two_trays.state().trays} == {TrayStage.REVIEW}
     assert two_trays.state().export is None or not two_trays.state().export.running
+    assert "Nothing to write" not in two_trays.state().export.message
 
 
 def test_export_empty_batch_reports_zero_written(sweep600_dir, tmp_path):
@@ -112,8 +121,101 @@ def test_export_empty_batch_reports_zero_written(sweep600_dir, tmp_path):
         c.export(tmp_path / "out", "tiff16")
         wait_until(c, lambda: c.state().export and c.state().export.finished)
         assert c.state().export.written == 0 and c.state().banner is None
+        assert "no accepted slides" in c.state().export.message.lower()
     finally:
         c.shutdown()
+
+
+@pytest.mark.parametrize("raw_accepted", [False, True])
+def test_export_nothing_reports_disjoint_reasons(two_trays, tmp_path, raw_accepted):
+    _export_all(two_trays, tmp_path / "out")
+    store = two_trays._session.store
+    store.update_tray(2, raw_removed=True)
+    if not raw_accepted:
+        tray = store.snapshot().trays[1]
+        store.update_tray(
+            2, slides=tuple(replace(s, status=SlideStatus.NEEDS_LOOK) for s in tray.slides)
+        )
+    two_trays.set_status(1, 1, SlideStatus.NEEDS_LOOK)
+    wait_until(two_trays, lambda: _slide_status(two_trays, 1, 1) is SlideStatus.NEEDS_LOOK)
+    two_trays.export(tmp_path / "out", "tiff16")
+    wait_until(two_trays, lambda: two_trays.state().export and two_trays.state().export.finished)
+    view = two_trays.state().export
+    assert (view.already_exported, view.not_accepted, view.raw_freed) == (3, 1, 4)
+    assert "Nothing to write" in view.message
+    assert "already exported" in view.message and "raw scans" in view.message
+    assert ("Use Re-export all accepted" in view.message) is not raw_accepted
+    assert ("Cannot re-export all accepted" in view.message) is raw_accepted
+
+
+@pytest.mark.parametrize("first_exported", [False, True])
+def test_export_reasons_use_the_selection_snapshot(tmp_path, monkeypatch, first_exported):
+    def manifest(exported):
+        slide = SlideRecord(
+            1,
+            status=SlideStatus.ACCEPTED if exported else SlideStatus.NEEDS_LOOK,
+            exported=exported,
+        )
+        return BatchManifest("Race", trays=(TrayRecord(1, TrayStage.REVIEW, slides=(slide,)),))
+
+    class ChangingStore:
+        directory = tmp_path / "batch"
+        reads = 0
+
+        def snapshot(self):
+            self.reads += 1
+            return manifest(first_exported if self.reads == 1 else not first_exported)
+
+    selected = []
+
+    def export_tray(_store, tray, *_args):
+        selected.append(tray)
+        return True
+
+    monkeypatch.setattr(export_module, "_export_tray", export_tray)
+    monkeypatch.setattr(export_module, "_finish_tray_if_done", lambda *_args: None)
+    store = ChangingStore()
+    views = []
+    run_export(store, tmp_path / "out", "tiff16", threading.Event(), views.append)
+    view = views[-1]
+    exported = selected[0].slides[0].exported
+    assert (view.already_exported, view.not_accepted, view.raw_freed) == (
+        int(exported),
+        int(not exported),
+        0,
+    )
+    assert store.reads == 1
+    assert ("already exported" in view.message) is exported
+
+
+def test_reexport_all_accepted_waits_for_edits_and_keeps_old_files(two_trays, tmp_path):
+    out = tmp_path / "out"
+    _export_all(two_trays, out)
+    original = {p: p.read_bytes() for p in out.iterdir()}
+    two_trays.set_status(1, 1, SlideStatus.NEEDS_LOOK)
+    two_trays.reexport_all_accepted()
+    wait_until(two_trays, lambda: _exported_count(two_trays) == 1)
+    assert two_trays.state().export is None
+    assert all(t.stage is TrayStage.REVIEW for t in two_trays._session.store.snapshot().trays)
+    assert all(p.read_bytes() == content for p, content in original.items())
+    assert len(list(out.iterdir())) == 8
+    two_trays.export(out, "tiff16")
+    wait_until(two_trays, lambda: two_trays.state().export and two_trays.state().export.finished)
+    assert two_trays.state().export.written == 7
+    assert len(list(out.iterdir())) == 15
+    assert all(p.read_bytes() == content for p, content in original.items())
+
+
+def test_reexport_freed_raw_reports_reason_and_changes_nothing(two_trays, tmp_path):
+    _export_all(two_trays, tmp_path / "out")
+    store = two_trays._session.store
+    store.update_tray(2, raw_removed=True)
+    before = store.snapshot()
+    two_trays.reexport_all_accepted()
+    wait_until(two_trays, lambda: two_trays.state().banner is not None)
+    assert "raw scans" in two_trays.state().banner.message
+    assert "removed" in two_trays.state().banner.message
+    assert store.snapshot() == before
 
 
 def test_free_space_lists_only_fully_exported_trays_with_sizes(two_trays, tmp_path):
@@ -166,6 +268,10 @@ def test_readonly_refuses_export_and_free_space(sweep600_dir, tmp_path):
         c.open_batch(tmp_path / "b", readonly=True)
         wait_until(c, lambda: c.state().batch_name == "Test")
         c.export(tmp_path / "out", "tiff16")
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "read-only" in c.state().banner.message and c.state().export is None
+        c.dismiss_banner()
+        c.reexport_all_accepted()
         wait_until(c, lambda: c.state().banner is not None)
         assert "read-only" in c.state().banner.message and c.state().export is None
         c.dismiss_banner()
