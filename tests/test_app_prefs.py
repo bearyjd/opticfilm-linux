@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+from opticfilm_linux.app import prefs as preferences
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
     DPI_CHOICES,
@@ -66,6 +69,30 @@ def test_subfolder_stays_inside_parent():
 
 def test_dpi_choices_match_the_spec():
     assert DPI_CHOICES == (600, 1200, 2400, 3600, 7200) and DEFAULT_DPI == 7200
+
+
+@pytest.mark.parametrize("stored", [None, "", "system", "DARK"])
+def test_missing_or_invalid_theme_defaults_to_dark(stored):
+    prefs = MemoryPrefs()
+    if stored is not None:
+        prefs.set("theme", stored)
+    assert preferences.read_theme(prefs) == "dark"
+
+
+@pytest.mark.parametrize("name", ["dark", "light"])
+def test_theme_is_remembered(name):
+    prefs = MemoryPrefs()
+    preferences.remember_theme(prefs, name)
+    assert prefs.get("theme") == name
+    assert preferences.read_theme(prefs) == name
+
+
+def test_invalid_theme_does_not_replace_a_remembered_choice():
+    prefs = MemoryPrefs()
+    preferences.remember_theme(prefs, "light")
+    with pytest.raises(ValueError):
+        preferences.remember_theme(prefs, "system")
+    assert preferences.read_theme(prefs) == "light"
 
 
 def test_export_preferences_default_to_jpeg_full_size():

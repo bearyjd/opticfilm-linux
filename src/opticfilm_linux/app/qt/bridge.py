@@ -15,15 +15,19 @@ from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
     DPI_CHOICES,
+    THEMES,
     Prefs,
     batch_subfolder,
     export_defaults,
     forget_batch,
+    read_theme,
     recent_batches,
     remember_batch,
     remember_export,
+    remember_theme,
 )
 from opticfilm_linux.app.qt.models import DictListModel
+from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
 from opticfilm_linux.batch.slots import slot_orientations
@@ -108,6 +112,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
 
 class Bridge(QObject):
     changed = Signal()
+    themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
 
     def __init__(
@@ -124,6 +129,8 @@ class Bridge(QObject):
         self._load_command = load_command_text or load_command(None)
         self._load_runner_note = load_runner_note
         self._prefs = prefs
+        self._theme = read_theme(prefs)
+        self._update_palette()
         self._demo_dpi = demo_dpi or 0
         self._state: AppState = EMPTY_STATE
         self._trays = DictListModel(TRAY_KEYS, self)
@@ -142,6 +149,26 @@ class Bridge(QObject):
 
     def start(self) -> None:
         self._timer.start()
+
+    def _update_palette(self) -> None:
+        self._palette = make_palette(self._theme)
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.setPalette(self._palette)
+
+    theme = Property(str, lambda self: self._theme, notify=themeChanged)
+    paletteColors = Property(  # noqa: N815
+        "QVariantMap", lambda self: qml_palette_colors(self._palette), notify=themeChanged
+    )
+
+    @Slot(str)
+    def setTheme(self, name: str) -> None:
+        if name not in THEMES or name == self._theme:
+            return
+        remember_theme(self._prefs, name)
+        self._theme = name
+        self._update_palette()
+        self.themeChanged.emit()
 
     # -- state mirror --------------------------------------------------------------------
 

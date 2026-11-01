@@ -1,0 +1,5 @@
+singleton Theme 1.0 Theme.qml
+Card 1.0 Card.qml
+PillButton 1.0 PillButton.qml
+SegmentedControl 1.0 SegmentedControl.qml
+WindowPalette 1.0 WindowPalette.qml
