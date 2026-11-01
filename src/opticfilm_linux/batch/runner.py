@@ -37,6 +37,7 @@ from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import Scanner, ScannerNotReady, ScannerStatus
 from opticfilm_linux.scanner.interrupted import ScanInterrupted
 from opticfilm_linux.sweepstore import save_sweep
+from opticfilm_linux.worker import lower_worker_priority
 
 RESCANNABLE = (TrayStage.REVIEW, TrayStage.FAILED)
 IN_FLIGHT = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
@@ -50,11 +51,15 @@ class BatchRunner:
         self._scanner = scanner
         self.events: queue.Queue[BatchEvent] = queue.Queue()
         self._scan_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan")
-        self._enhance_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="enhance")
+        self._enhance_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="enhance", initializer=lower_worker_priority
+        )
         self._pending: set[Future] = set()
         self._scans: set[Future] = set()
         self._lock = threading.Lock()
         self._scan_guard = threading.Lock()
+        self.operation_sequence = 0
+        self._operation = threading.local()
 
     # -- requests from the caller (never block) ------------------------------------------
 
@@ -276,6 +281,10 @@ class BatchRunner:
         self._emit(TrayFailed(number, message))
 
     def _emit(self, event: BatchEvent) -> None:
+        if isinstance(event, TrayFailed) and not event.operation_sequence:
+            event = dataclasses.replace(
+                event, operation_sequence=getattr(self._operation, "sequence", 0)
+            )
         self.events.put(event)
 
     def _submit(
@@ -286,14 +295,23 @@ class BatchRunner:
         *args,
         scan: bool = False,
     ) -> None:
-        future = pool.submit(job, number, *args)
+        sequence = getattr(self._operation, "sequence", self.operation_sequence)
+
+        def sequenced_job():
+            self._operation.sequence = sequence
+            try:
+                job(number, *args)
+            finally:
+                del self._operation.sequence
+
+        future = pool.submit(sequenced_job)
         with self._lock:
             self._pending.add(future)
             if scan:
                 self._scans.add(future)
-        future.add_done_callback(lambda f: self._finished(f, number))
+        future.add_done_callback(lambda f: self._finished(f, number, sequence))
 
-    def _finished(self, future: Future, number: int) -> None:
+    def _finished(self, future: Future, number: int, sequence: int = 0) -> None:
         # Report a crash BEFORE leaving the pending sets, so wait_idle() never returns while a
         # failure is still unreported.
         try:
@@ -301,13 +319,15 @@ class BatchRunner:
             if error is not None:
                 with self._lock:
                     scan = future in self._scans
-                self._report_crash(number, error, scan)
+                self._report_crash(number, error, scan, sequence)
         finally:
             with self._lock:
                 self._pending.discard(future)
                 self._scans.discard(future)
 
-    def _report_crash(self, number: int, error: BaseException, scan: bool = False) -> None:
+    def _report_crash(
+        self, number: int, error: BaseException, scan: bool = False, sequence: int = 0
+    ) -> None:
         """A job died outside its own error handling: never leave the tray stuck or silent."""
         cut_off = scan and not isinstance(error, Exception)  # a scan stopped by Ctrl-C
         message = INTERRUPTED_SCAN if cut_off else _describe(error)
@@ -320,7 +340,7 @@ class BatchRunner:
                 self._emit(TrayStageChanged(number, TrayStage.FAILED))
         except Exception:  # the manifest itself may be unwritable (disk full); still report it
             log.exception("could not record the failure of tray %s", number)
-        self._emit(TrayFailed(number, message))
+        self._emit(TrayFailed(number, message, sequence))
 
     def _wait_for(self, futures: set[Future], timeout: float | None) -> bool:
         deadline = None if timeout is None else time.monotonic() + timeout

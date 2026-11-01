@@ -267,3 +267,43 @@ def test_transition_write_failure_releases_reservation(tmp_path, sweep600_dir, m
         assert c._scans_queued == 0
     finally:
         c.shutdown()
+
+
+@pytest.mark.parametrize("change", ["close", "open", "new"])
+def test_transition_refused_while_batch_change_pending(tmp_path, sweep600_dir, monkeypatch, change):
+    c = make_controller(sweep600_dir)
+    entered, release = threading.Event(), threading.Event()
+    try:
+        path = tmp_path / "b"
+        _new(c, path)
+        store = c._session.store
+        before = store.snapshot()
+        stop_jobs = c._stop_jobs
+
+        def blocked_stop():
+            entered.set()
+            assert release.wait(20)
+            stop_jobs()
+
+        monkeypatch.setattr(c, "_stop_jobs", blocked_stop)
+        changes = {
+            "close": c.close_batch,
+            "open": lambda: c.open_batch(path),
+            "new": lambda: c.new_batch(tmp_path / "next", "Next", "", None, 600),
+        }
+        changes[change]()
+        assert entered.wait(10)
+        c._rebuild()
+        assert not c.state().can_finish_box
+        c.finish_box(False)
+        assert "Wait for the batch change" in c._banner.message
+        assert store.snapshot() == before
+        assert c._scans_queued == 0
+        assert c._lock.acquire(timeout=1)
+        c._lock.release()
+        release.set()
+        c._command.submit(lambda: None).result(10)
+        assert c._lifecycle_pending == 0
+    finally:
+        release.set()
+        c.shutdown()

@@ -213,6 +213,9 @@ class Bridge(QObject):
     sectionSize = _p(int, changed, lambda s, _: s.section_size)  # noqa: N815
     canFinishBox = _p(bool, changed, lambda s, _: s.can_finish_box)  # noqa: N815
     scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
+    holderLatchText = _p(str, changed, lambda s, _: s.holder_latch_text)  # noqa: N815
+    holderLatchWarning = _p(bool, changed, lambda s, _: s.holder_latch_warning)  # noqa: N815
+    canConfirmHolderLatched = _p(bool, changed, lambda s, _: s.can_confirm_holder_latched)  # noqa: N815
     canScan = _p(bool, changed, lambda s, _: s.can_scan)  # noqa: N815
     canEject = _p(bool, changed, lambda s, _: s.can_eject)  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
@@ -405,6 +408,10 @@ class Bridge(QObject):
     @Slot(int)
     def rescan(self, number: int) -> None:
         self._controller.rescan(number)
+
+    @Slot()
+    def confirmHolderLatched(self) -> None:  # noqa: N802
+        self._controller.confirm_holder_latched()
 
     @Slot()
     def ejectHolder(self) -> None:  # noqa: N802

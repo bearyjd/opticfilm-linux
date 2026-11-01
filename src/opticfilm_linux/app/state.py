@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from opticfilm_linux.app.messages import flag_text, scanner_text, stage_text
+from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.batch.model import (
     BatchManifest,
     SlideRecord,
@@ -14,6 +14,7 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import ScannerStatus
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,9 @@ class AppState:
     section: str = "a"
     section_size: int = 140
     can_finish_box: bool = False
+    holder_latch_text: str = holder_latch_text(HolderLatch.UNKNOWN)
+    can_confirm_holder_latched: bool = False
+    holder_latch_warning: bool = False
 
 
 EMPTY_STATE = AppState(
@@ -204,9 +208,10 @@ def build_state(
     jobs_running: bool = False,
     batch_session: int = 0,
     runner_busy: bool = False,
+    holder_latch: HolderLatch = HolderLatch.UNKNOWN,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
-    idle = manifest is not None and holder_control and not busy
+    idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return AppState(
         **_batch_fields(manifest, selected, preview_tokens, updating),
         batch_session=batch_session,
@@ -215,6 +220,7 @@ def build_state(
         scanner_text=scanner_text(scanner),
         can_scan=manifest is not None
         and scanner is ScannerStatus.READY
+        and holder_latch is not HolderLatch.RELEASED
         and not scan_pending
         and not holder_busy
         and not readonly,
@@ -238,4 +244,9 @@ def build_state(
             t.stage in (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
             for t in (manifest.trays if manifest else ())
         ),
+        holder_latch_text=holder_latch_text(holder_latch),
+        can_confirm_holder_latched=idle
+        and not jobs_running
+        and holder_latch is HolderLatch.RELEASED,
+        holder_latch_warning=manifest is not None and holder_latch is HolderLatch.UNKNOWN,
     )

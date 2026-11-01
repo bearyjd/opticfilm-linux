@@ -1,28 +1,45 @@
-<!-- Generated: 2026-10-29 | Source: main @ 65a1a6f | Files: batch/ 13 + pipeline/ 8 | Token estimate: ~700 -->
+<!-- Generated: 2026-11-01 | Source: main @ 39062e7 | Files: batch/ 13 + pipeline/ 8 + top-level helpers 4 = 25 Python files | Token estimate: ~950 -->
 # Batch + pipeline
 
-## batch/ (on-disk batch, background work)
-store.py 221      BatchStore: atomic manifest + tray folder layout; update(change)
-manifest.py 95    JSON (de)serialization of BatchManifest
-model.py 143      frozen records: SlideSettings, BatchDefaults, tray/slide records
-runner.py 310     BatchRunner: scanning + background enhancement; events.py = frozen events
-enhance.py 223    enhance_tray(store, number, on_progress): previews, flags, slide records
-review.py 184     owner operations; each = one atomic manifest update
-flags.py 33       reasons a slide deserves a second look (tuning guesses)
-previews.py 36    make_preview(rgb, gamma, long_side=1600) -> 8-bit JPEG source
-slots.py 80       per-slot default orientation
-export.py 291     export_batch(...): accepted slides -> files; only place raw scans are deleted
-cli.py 243        `ofscan batch ...`
+Paths are relative to `src/opticfilm_linux/`; counts include `__init__.py`.
 
-## pipeline/ (numpy uint16 RGB(+IR) arrays)
-run.py 100        process_sweep(sweep, ProcessOptions, OutputSpec) -> RunResult
-split.py 129      split_slides(sweep) -> 4 slides, empty-window detection
-dust.py 289       infrared dust/scratch removal
-tone.py 118       exposure, fade restoration, negative inversion
-detail.py 104     sharpen + grain reduction (dpi-aware)
-orient.py 17      quarter-turn + mirror
-arrays.py 64      uint16 <-> float32 [0,1], strip-wise processing
+## Flow
+
+`cli.py:main(argv=None)` -> `batch/cli.py:run_batch(args)` -> `BatchStore` + `BatchRunner`
+
+`BatchRunner.scan_tray()` -> scanner -> `sweepstore.save_sweep(sweep, directory)` -> `enhance_tray(store, number, on_progress=None)` -> previews + flags -> review -> export
+
+`cli.py` scan/process -> `process_sweep(sweep, options, out)` -> split -> skip blanks -> `enhance_slide(slide, options, dpi, *, linear=True)` -> `write_slide(rgb, spec)`
+
+## Batch ownership
+
+- `batch/store.py` (221 lines): locking, atomic manifest, paths and recovery; `update(change)` publishes one manifest change.
+- `batch/model.py` (144) + `manifest.py` (95): frozen records and JSON; `SlideKey = tuple[int, int]` means tray number and 1-based holder position.
+- `batch/runner.py` (310) + `events.py` (26): scan/rescan/resume, background enhancement and frozen events.
+- `batch/enhance.py` (223): sweeps -> split -> previews/flags; version-checked publication. `reenhance_slide(store, number, position)` handles edits.
+- `batch/review.py` (184): atomic review updates; `slots.py` (80) composes per-slot orientation.
+- `batch/flags.py` (33) + `previews.py` (36): review hints and JPEG previews; `make_preview(rgb, gamma=1.0, long_side=1600)`.
+- `batch/cli.py` (243): `ofscan batch ...` commands.
+
+## Export + re-export
+
+`batch/export.py` (335): `export_batch(store, directory, fmt="tiff16", on_progress=None, cancel=None, keys=None, on_selection=None)` -> `ExportResult`. Takes accepted, unexported slides from REVIEW/EXPORTED trays with raw scans, optionally selected by keys. Destination must be outside the batch folder. Reloads raw data for output; checks live settings before marking exported.
+
+`clear_exported(store, keys=None)` atomically clears accepted slides' exported flags and returns chosen trays to REVIEW. A chosen accepted slide in a raw-removed tray rejects the whole update. Re-export writes new numbered files. `cleanup_raw(store, number)` is the raw-deletion boundary; it requires fully exported, current trays.
+
+`app/jobs.py:_nothing_to_write(view, reexport_blocked)` explains empty exports: already exported, not accepted, raw removed, or no accepted slides ready; directs users to re-export when possible.
+
+## Image pipeline
+
+`pipeline/run.py` (99): dust -> optional negative inversion -> tone -> brightness -> grain reduction -> sharpening -> rotation -> mirror.
+
+For linear positives: `tone.subtract_black` -> optional `restore_color` -> `auto_exposure(rgb, gamma_limits=GAMMA_LIMITS, *, linear=True)`. Uses shared linear gain (up to 8x), highlight roll-off and sRGB encoding. Negative/finished-image tone uses bounded gamma, then optional color restoration. `pipeline/tone.py` is 151 lines.
+
+Other stages: `split.py` (129), four-window splitting/blank detection; `dust.py` (289), IR repair; `detail.py` (104), DPI-aware grain/sharpening; `orient.py` (17), rotation/mirror; `arrays.py` (64), uint16/float32 conversion and strip processing.
 
 ## Top-level helpers
-output.py 83 sRGB-embedded writer, numbered never-overwritten names | imports.py 84 enhance foreign scans
-spikecheck.py 316 / pollreport.py 359  offline verdict + poll-timeout reports for hardware-run folders
+
+- `cli.py` (144): devices, scan, process, enhance and batch routing.
+- `sweepstore.py` (59): save/load RGB + optional IR `.npy` and `meta.json`; `load_sweep(directory)` memory maps arrays.
+- `output.py` (83): `OutputSpec`, TIFF16/PNG8/JPEG with embedded sRGB; exclusive creation reserves sequence numbers and avoids overwrites.
+- `imports.py` (84): `process_images(paths, options, out, dpi)` loads foreign scans and calls enhancement with `linear=False`.

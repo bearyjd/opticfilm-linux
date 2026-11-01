@@ -22,7 +22,11 @@ class StatusPoller:
         timeout_s: float,
         on_problem: Callable[[str, str], None],
         press_ttl_s: float = PRESS_TTL_S,
+        begin_operation: Callable[[], int] = lambda: 0,
     ) -> None:
+        self._begin_operation = begin_operation
+        self._request_sequence = 0
+        self._status_sequence = 0
         self._scanner = scanner
         self._clock = clock
         self._timeout_s = timeout_s
@@ -52,6 +56,7 @@ class StatusPoller:
         with self._lock:
             if self._closed or self._started is not None:
                 return  # closed: the batch is gone, its scanner must not be asked again
+            self._request_sequence = self._begin_operation()
             self._started = self._clock()
             self._idle.clear()
         threading.Thread(target=self._ask, name="app-scanner-status", daemon=True).start()
@@ -64,12 +69,18 @@ class StatusPoller:
             return seen is not None and self._clock() - seen <= self._press_ttl_s
 
     def current(self) -> ScannerStatus:
+        return self.snapshot()[0]
+
+    def snapshot(self) -> tuple[ScannerStatus, int]:
+        """Cached status and the generation of the request that observed it."""
         with self._lock:
             started, status = self._started, self._status
+            sequence = self._status_sequence
+            request_sequence = self._request_sequence
         if started is None or self._clock() - started <= self._timeout_s:
-            return status
+            return status, sequence
         self._report("Scanner not responding", "the scanner did not answer a status request")
-        return ScannerStatus.ERROR
+        return ScannerStatus.ERROR, request_sequence
 
     def _ask(self) -> None:
         pressed: bool | None = None
@@ -82,6 +93,7 @@ class StatusPoller:
         except Exception as exc:  # the backend may raise anything; show it, keep polling
             status, problem = ScannerStatus.ERROR, f"{type(exc).__name__}: {exc}"
         with self._lock:
+            self._status_sequence = self._request_sequence
             self._status, self._started = status, None
             self._idle.set()
             if pressed is not None and self._button is not None and pressed and not self._button:
