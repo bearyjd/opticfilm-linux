@@ -12,7 +12,20 @@ from opticfilm_linux.pipeline.tone import (
     subtract_black,
 )
 
-STEPS = [subtract_black, auto_exposure, restore_color, invert_negative, sharpen, reduce_grain]
+
+def _linear_auto_exposure(image: np.ndarray) -> np.ndarray:
+    return auto_exposure(image, linear=True)
+
+
+STEPS = [
+    subtract_black,
+    auto_exposure,
+    _linear_auto_exposure,
+    restore_color,
+    invert_negative,
+    sharpen,
+    reduce_grain,
+]
 
 
 def _image(rows: int = 1500, cols: int = 1500) -> np.ndarray:

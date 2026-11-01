@@ -54,6 +54,10 @@ class ExportView:
     finished: bool = False
     written: int = 0
     cancelled: bool = False
+    already_exported: int = 0
+    not_accepted: int = 0
+    raw_freed: int = 0
+    message: str = ""
 
 
 @dataclass(frozen=True)

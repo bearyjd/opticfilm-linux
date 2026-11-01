@@ -6,6 +6,7 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    objectName: "exportDialog"
 
     property string folderUrl: bridge.lastExportFolder
     readonly property var formats: [
@@ -25,6 +26,14 @@ Kirigami.Dialog {
 
         title: qsTr("Export to folder")
         onAccepted: dialog.folderUrl = selectedFolder.toString()
+    }
+
+    ConfirmDialog {
+        id: reexportConfirm
+        objectName: "reexportConfirmDialog"
+        title: qsTr("Re-export all accepted slides?")
+        subtitle: qsTr("The next export will write new numbered files for all accepted slides. The old files are retained. This cannot be undone.")
+        onConfirmed: bridge.reexportAllAccepted()
     }
 
     ColumnLayout {
@@ -87,7 +96,9 @@ Kirigami.Dialog {
                 text: bridge.exportFinished
                     ? (bridge.exportCancelled
                         ? qsTr("Cancelled. %1 slides were written; export again to continue.").arg(bridge.exportWritten)
-                        : qsTr("Done. %1 slides were written.").arg(bridge.exportWritten))
+                        : (bridge.exportMessage !== ""
+                            ? bridge.exportMessage
+                            : qsTr("Done. %1 slides were written.").arg(bridge.exportWritten)))
                     : qsTr("Exporting %1 of %2…").arg(bridge.exportDone).arg(bridge.exportTotal)
             }
             QQC2.Button {
@@ -96,6 +107,13 @@ Kirigami.Dialog {
                 icon.name: bridge.exportFinished ? "dialog-close" : "dialog-cancel"
                 onClicked: bridge.exportFinished ? dialog.close() : bridge.cancelExport()
             }
+        }
+
+        QQC2.Button {
+            objectName: "reexportAllAccepted"
+            text: qsTr("Re-export all accepted")
+            visible: !bridge.exportRunning
+            onClicked: reexportConfirm.open()
         }
     }
 }

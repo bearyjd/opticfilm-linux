@@ -13,6 +13,8 @@ retaken then, and the frozen comparison runs the current dust removal on one thr
 The positive pins were re-taken on purpose again when linear scans moved their per-channel black
 level and colour stretch before the shared exposure curve (run._tone), on top of that dust
 removal; the negative pins and the before-previews did not change.
+The positive pins and statistics were retaken after replacing linear-positive gamma with a
+bounded linear exposure gain, highlight shoulder and sRGB encoding; negative pins are unchanged.
 """
 
 import hashlib
@@ -35,10 +37,10 @@ NEGATIVE = ProcessOptions(mode="negative", brightness_ev=0.5, rotation=90)
 # (enhanced, after preview, before preview) per slide
 PINNED = {
     "positive": [
-        ("88614f35d04bcf05", "47f32b2929bdf34a", "6a5debe78ef169c9"),
-        ("8a8f511e31e55ce9", "a7b107eccc51ca37", "fbdcbbcee6223a2d"),
-        ("a8c2279781e16993", "97fa3d1e423ef10e", "89b723526263a2c1"),
-        ("b5cf50e34e5c5e6d", "0ac7921dfd3b1e4a", "9e0107edaf8d2a53"),
+        ("bbf3e707b250a3a2", "aa34ab2efbbed11f", "6a5debe78ef169c9"),
+        ("a83ad894f67d1b4d", "3ecfb33100dc927e", "fbdcbbcee6223a2d"),
+        ("5d720d131fed6d5f", "862f8870eb26deb5", "89b723526263a2c1"),
+        ("b8b6fc01bb167f22", "eb5bfe4d68eed0f1", "9e0107edaf8d2a53"),
     ],
     "negative": [
         ("31e84c15fcab36fd", "a629a447748f1f0d", "6a5debe78ef169c9"),
@@ -136,10 +138,10 @@ def test_outputs_are_pixel_identical_to_the_pinned_ones(
 # comparison above shares the current tone code on both sides.
 STATS = {
     "positive": [
-        (0.4328, 0.6022, 0.4136, 0.5059),
-        (0.4626, 0.5330, 0.4464, 0.4699),
-        (0.4805, 0.4447, 0.4865, 0.4652),
-        (0.4783, 0.4645, 0.4846, 0.4712),
+        (0.6549, 0.7858, 0.6436, 0.7015),
+        (0.6478, 0.7005, 0.6342, 0.6631),
+        (0.6549, 0.6273, 0.6573, 0.6497),
+        (0.6569, 0.6448, 0.6630, 0.6521),
     ],
     "negative": [
         (0.5716, 0.4010, 0.5913, 0.4923),

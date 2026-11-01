@@ -14,8 +14,6 @@ import pytest
 from opticfilm_linux.model import Box, Slide
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.tone import (
-    GAMMA_LIMITS,
-    LINEAR_GAMMA_LIMITS,
     MAX_BLACK_OFFSET,
     auto_exposure,
     invert_negative,
@@ -81,11 +79,10 @@ def test_a_dark_scan_with_its_mount_still_comes_out_neutral_and_brighter():
 
 
 def test_per_channel_stretch_after_the_curve_would_cast_the_mount_scan():
-    """The order matters: tiny per-channel differences in the mount, lifted by a strong gamma,
-    become a large cast if the per-channel stretch comes after the curve (as on real scans)."""
+    """The display curve magnifies a cast when per-channel stretching comes afterward."""
     image = _dark_linear_scene(mount=True)
-    curved_first = restore_color(auto_exposure(subtract_black(image), LINEAR_GAMMA_LIMITS))
-    assert _balance(curved_first) > 1.2
+    curved_first = restore_color(auto_exposure(subtract_black(image), linear=True))
+    assert _balance(curved_first) > 1.08
 
 
 def test_the_old_order_was_dark_and_green_deficient():
@@ -173,20 +170,15 @@ def test_tiny_frames_do_not_fail():
         assert subtract_black(tiny).shape == tiny.shape
 
 
-def test_the_gamma_floor_still_holds_on_a_near_black_frame():
+def test_the_linear_gain_cap_keeps_a_near_black_frame_dark():
     """A frame that is black but for a few bright specks must not have its noise lifted to grey:
-    it wants a gamma near 0.1, and the floor keeps its median well below the target."""
+    the gain cap keeps its median well below the target."""
     rng = np.random.default_rng(1)
     dark = rng.uniform(0.001, 0.003, (100, 100, 3))
     dark[:2, :] = 1.0  # 2 % bright pixels set the white point
     image = np.rint(dark * FULL).astype(np.uint16)
-    out = auto_exposure(image, gamma_limits=LINEAR_GAMMA_LIMITS)
+    out = auto_exposure(image, linear=True)
     assert float(np.median(out)) / FULL < 0.35
-
-
-def test_gamma_limits_are_sane():
-    assert 0.15 <= LINEAR_GAMMA_LIMITS[0] < GAMMA_LIMITS[0]
-    assert LINEAR_GAMMA_LIMITS[1] == GAMMA_LIMITS[1]
 
 
 def _neutral_ramp() -> np.ndarray:
@@ -194,12 +186,13 @@ def _neutral_ramp() -> np.ndarray:
     return np.rint(np.stack([ramp] * 3, axis=2) * FULL).astype(np.uint16)
 
 
-def test_a_well_exposed_bright_scan_is_treated_as_before():
+def test_a_well_exposed_bright_scan_remains_neutral_with_highlight_detail():
     image = _neutral_ramp()
     out = enhance_slide(_slide(image), PLAIN, 600).astype(np.float64) / FULL
-    before = restore_color(auto_exposure(image)) / FULL
-    assert np.abs(out - before).max() < 1e-4  # only an extra 16-bit rounding step apart
-    assert abs(float(np.median(out)) - 0.45) < 0.03
+    assert np.array_equal(out[..., 0], out[..., 1])
+    assert np.array_equal(out[..., 1], out[..., 2])
+    assert np.all(np.diff(out[0, :, 0]) >= 0)
+    assert 0.9 < out[0, -1, 0] < 1.0
 
 
 def test_shadows_outside_the_interior_are_not_clipped():

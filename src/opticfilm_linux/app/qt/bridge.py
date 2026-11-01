@@ -202,6 +202,14 @@ class Bridge(QObject):
     exportTotal = _p(int, changed, lambda s, _: s.export.total if s.export else 0)  # noqa: N815
     exportWritten = _p(int, changed, lambda s, _: s.export.written if s.export else 0)  # noqa: N815
     exportCancelled = _p(bool, changed, lambda s, _: bool(s.export and s.export.cancelled))  # noqa: N815
+    exportAlreadyExported = _p(  # noqa: N815
+        int, changed, lambda s, _: s.export.already_exported if s.export else 0
+    )
+    exportNotAccepted = _p(  # noqa: N815
+        int, changed, lambda s, _: s.export.not_accepted if s.export else 0
+    )
+    exportRawFreed = _p(int, changed, lambda s, _: s.export.raw_freed if s.export else 0)  # noqa: N815
+    exportMessage = _p(str, changed, lambda s, _: s.export.message if s.export else "")  # noqa: N815
     freeSpaceReady = _p(  # noqa: N815
         bool,
         changed,
@@ -375,6 +383,11 @@ class Bridge(QObject):
         self._prefs.set(EXPORT_FOLDER_KEY, folder)
         self._prefs.set(EXPORT_FORMAT_KEY, fmt)
         self._controller.export(Path(folder), fmt)  # type: ignore[arg-type]
+
+    @Slot()
+    def reexportAllAccepted(self) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.reexport_all_accepted()
 
     @Slot()
     def cancelExport(self) -> None:  # noqa: N802
