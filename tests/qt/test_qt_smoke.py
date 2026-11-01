@@ -100,6 +100,52 @@ def test_second_window_on_the_same_batch_reports_in_use(qapp, sweep600_dir, tmp_
         second.shutdown()
 
 
+def test_empty_export_message_and_reexport_confirmation(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    _scanned(bridge, tmp_path, "Reexport")
+    bridge.acceptAll()
+    out = tmp_path / "out"
+    url = QUrl.fromLocalFile(str(out)).toString()
+    bridge.startExport(url, "tiff16")
+    _wait(bridge, lambda: bridge.exportFinished)
+    count = bridge.exportWritten
+    bridge.dismissExport()
+    _wait(bridge, lambda: not bridge.hasExport)
+    bridge.startExport(url, "tiff16")
+    _wait(bridge, lambda: bridge.exportFinished)
+    assert bridge.exportAlreadyExported == count and bridge.exportNotAccepted == 0
+    assert bridge.exportRawFreed == 0 and "Nothing to write" in bridge.exportMessage
+    store = bridge._controller._session.store
+    before = store.snapshot()
+    assert all(slide.exported for tray in before.trays for slide in tray.slides)
+    assert all(tray.stage.value == "exported" for tray in before.trays)
+    root = engine.rootObjects()[0]
+    dialog = root.findChild(QObject, "exportDialog")
+    QMetaObject.invokeMethod(dialog, "open")
+    _wait(bridge, lambda: dialog.property("opened"))
+    _click(root, "reexportAllAccepted")
+    confirm = root.findChild(QObject, "reexportConfirmDialog")
+    _wait(bridge, lambda: confirm.property("opened"))
+    assert "new numbered files" in confirm.property("subtitle")
+    assert "old files" in confirm.property("subtitle")
+    assert "cannot be undone" in confirm.property("subtitle")
+    assert len(list(out.iterdir())) == count
+    assert store.snapshot() == before
+    QMetaObject.invokeMethod(confirm, "reject")
+    _wait(bridge, lambda: not confirm.property("visible"))
+    assert len(list(out.iterdir())) == count
+    assert store.snapshot() == before
+    _click(root, "reexportAllAccepted")
+    _wait(bridge, lambda: confirm.property("opened"))
+    QMetaObject.invokeMethod(confirm, "accept")
+    _wait(bridge, lambda: not bridge.hasExport)
+    assert len(list(out.iterdir())) == count
+    assert _all_reviewed(tmp_path / "Reexport")
+    bridge.startExport(url, "tiff16")
+    _wait(bridge, lambda: bridge.exportFinished and bridge.exportWritten == count)
+    assert len(list(out.iterdir())) == count * 2 and warnings == []
+
+
 def _scanned(bridge, tmp_path, name):
     bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), name, "", "", 600)
     _wait(bridge, lambda: bridge.hasBatch)
