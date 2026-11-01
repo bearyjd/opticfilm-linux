@@ -124,6 +124,30 @@ Kirigami.Page {
         anchors.fill: parent
         spacing: 0
 
+        QQC2.Label {
+            objectName: "holderLatchText"
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            wrapMode: Text.Wrap
+            text: bridge.holderLatchText
+        }
+
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            visible: bridge.holderLatchWarning
+            type: Kirigami.MessageType.Warning
+            text: qsTr("Holder latch is unknown. Reseat and latch the holder before scanning.")
+        }
+
+        QQC2.Button {
+            objectName: "confirmHolderLatched"
+            Layout.margins: Kirigami.Units.smallSpacing
+            visible: bridge.canConfirmHolderLatched
+            text: qsTr("Confirm holder is seated and latched")
+            onClicked: bridge.confirmHolderLatched()
+        }
+
         RowLayout {
             // the scanner's status and the holder controls: own row, so the text is never cut off
             Layout.fillWidth: true

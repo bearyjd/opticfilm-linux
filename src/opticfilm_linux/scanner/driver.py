@@ -424,6 +424,38 @@ class DriverScanner:
         self._failed_address: str | None = None  # the USB address it failed on
         self._last_address: str | None = None
 
+    @property
+    def usb_address(self) -> tuple[int, int] | None:
+        """Parse bounded, already-recorded output lazily; never run or read the driver."""
+        try:
+            output = getattr(self, "_latch_output", "")[:HEAD_BYTES]
+            match = re.search(r"\bbus=([0-9]{1,3})\s+addr=([0-9]{1,3})(?=\s|$)", output)
+            if match is None:
+                return None
+            bus, address = int(match[1]), int(match[2])
+            return (bus, address) if bus <= 255 and address <= 255 else None
+        except Exception:  # noqa: BLE001 - informational data must never affect scanner calls
+            return None
+
+    @property
+    def eject_outcome(self) -> str | None:
+        """Only a successful, explicitly confirmed eject releases the informational latch."""
+        try:
+            result = getattr(self, "_eject_result", None)
+            if result is None or result.stopped or result.returncode != 0:
+                return None
+            return (
+                "ejected"
+                if any(
+                    (line == "ejected" or line.startswith("ejected ("))
+                    and not any(negative in line.lower() for negative in ("fail", "refus", "error"))
+                    for line in result.output[:OUTPUT_TAIL_BYTES].splitlines()
+                )
+                else None
+            )
+        except Exception:  # noqa: BLE001 - tolerate unavailable informational observations
+            return None
+
     # -- Scanner protocol ----------------------------------------------------------------
 
     def scan_holder(self, settings: ScanSettings) -> RawSweep:
@@ -511,6 +543,10 @@ class DriverScanner:
             return reading
 
     def eject(self) -> None:
+        try:
+            self._eject_result = None
+        except BaseException:  # informational recording cannot change driver behavior
+            pass
         self._holder_command(["eject"], "eject failed.")
 
     def load_next_strip(self) -> None:
@@ -543,6 +579,11 @@ class DriverScanner:
         except BaseException:
             self._note_failure()  # cut off (Ctrl-C): the mark stays until confirmed
             raise
+        try:
+            if args[0] == "eject":
+                self._eject_result = result
+        except BaseException:  # informational recording cannot change driver behavior
+            pass
         if result.stopped:
             self._note_failure()
             raise ScanInterrupted("the driver was stopped mid-move")
@@ -641,7 +682,12 @@ class DriverScanner:
                         _SIGNALLED.discard(proc)
             # killed by a signal, or exited the way a program does when it was (128 + signal)
             stopped = stopped or returncode < 0 or returncode >= SIGNAL_EXIT_BASE
-            return _Result(returncode, _read_tail(sink_path, tail), stopped)
+            output = _read_tail(sink_path, tail)
+            try:
+                self._latch_output = output
+            except BaseException:  # recording alone: no parsing, I/O, or escaped errors
+                pass
+            return _Result(returncode, output, stopped)
         finally:
             self._last_address = _address_in(sink_path) or self._last_address
             if temporary:
