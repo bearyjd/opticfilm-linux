@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from opticfilm_linux.app.messages import flag_text, scanner_text, stage_text
+from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.batch.model import (
     BatchManifest,
     SlideRecord,
@@ -14,6 +14,7 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import ScannerStatus
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,9 @@ class AppState:
     export_format: Format = "jpeg"
     jpeg_size: JpegSize = "full"
     batch_session: int = 0  # changes on every attach, including a reopen of the same batch
+    holder_latch_text: str = holder_latch_text(HolderLatch.UNKNOWN)
+    can_confirm_holder_latched: bool = False
+    holder_latch_warning: bool = False
 
 
 EMPTY_STATE = AppState(
@@ -194,6 +198,7 @@ def build_state(
     next_strip: bool = False,
     jobs_running: bool = False,
     batch_session: int = 0,
+    holder_latch: HolderLatch = HolderLatch.UNKNOWN,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
     idle = manifest is not None and holder_control and not busy
@@ -205,6 +210,7 @@ def build_state(
         scanner_text=scanner_text(scanner),
         can_scan=manifest is not None
         and scanner is ScannerStatus.READY
+        and holder_latch is not HolderLatch.RELEASED
         and not scan_pending
         and not holder_busy
         and not readonly,
@@ -220,4 +226,7 @@ def build_state(
         next_strip_enabled=next_strip,
         can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED and not busy,
         holder_busy=holder_busy,
+        holder_latch_text=holder_latch_text(holder_latch),
+        can_confirm_holder_latched=idle and holder_latch is HolderLatch.RELEASED,
+        holder_latch_warning=manifest is not None and holder_latch is HolderLatch.UNKNOWN,
     )

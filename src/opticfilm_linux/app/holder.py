@@ -7,6 +7,7 @@ ever pending. Closing or reopening the batch cancels one that has not started; w
 running the batch is left as it is and the owner is told to wait.
 """
 
+import logging
 from collections.abc import Callable
 from concurrent.futures import Future
 
@@ -14,9 +15,12 @@ from opticfilm_linux.app.messages import holder_failed_text
 from opticfilm_linux.app.state import Banner
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError
+from opticfilm_linux.scanner import holder_latch
 from opticfilm_linux.scanner.base import HolderControl, ScanError, ScannerStatus
 from opticfilm_linux.scanner.driver import ScannerInUse, confirm_scanner_reset
 from opticfilm_linux.scanner.interrupted import ScannerInterrupted, ScannerRefused
+
+log = logging.getLogger(__name__)
 
 ANOTHER_PROGRAM = "Another program is using the scanner. Close it or wait for it to finish."
 WAIT_SCAN = "Wait for the scan to finish"
@@ -58,15 +62,30 @@ class HolderCommands:
             session = self._session
             if session is None or session.holder is None:
                 raise BatchError("this scanner cannot move the holder")
+            with self._lock:
+                sequence = self._next_latch_sequence()
             try:
                 move(session.holder)
+                outcome = getattr(session.holder, "eject_outcome", None)
+                latch = (
+                    holder_latch.after_load(True)
+                    if action == "load"
+                    else holder_latch.after_eject(outcome)
+                )
+                self._remember_holder_latch(latch, sequence=sequence)
             except ScannerInUse as exc:
                 self._set(_banner=Banner(ANOTHER_PROGRAM, f"ScannerInUse: {exc}"))
             except ScannerRefused as exc:  # refused before the driver started: not a failure
+                if isinstance(exc, ScannerInterrupted):
+                    self._remember_holder_latch(holder_latch.invalidate(), sequence=sequence)
                 text = SCANNER_INTERRUPTED if isinstance(exc, ScannerInterrupted) else REFUSED
                 self._set(_banner=Banner(text, f"{type(exc).__name__}: {exc}"))
             except ScanError as exc:
+                self._remember_holder_latch(holder_latch.invalidate(), sequence=sequence)
                 self._set(_banner=Banner(holder_failed_text(action), f"ScanError: {exc}"))
+            except BaseException:
+                self._remember_holder_latch(holder_latch.invalidate(), sequence=sequence)
+                raise
             finally:
                 if session.poller is not None:
                     session.poller.poll()  # ask again now: the holder moved, or the move failed
@@ -92,8 +111,11 @@ class HolderCommands:
 
         def job(_runner: BatchRunner) -> None:
             session = self._session
+            with self._lock:
+                sequence = self._next_latch_sequence()
             try:
                 confirm_scanner_reset()
+                self._remember_holder_latch(holder_latch.invalidate(), sequence=sequence)
                 self._set(_banner=None)
             except ScannerInUse as exc:
                 self._set(_banner=Banner(ANOTHER_PROGRAM, f"ScannerInUse: {exc}"))
@@ -118,6 +140,107 @@ class HolderCommands:
         poller = session.poller if session is not None else None
         return poller is not None and poller.current() is ScannerStatus.INTERRUPTED
 
+    def _begin_latch_operation(self) -> int:
+        with self._lock:
+            return self._next_latch_sequence()
+
+    def _next_latch_sequence(self) -> int:
+        """Allocate when an operation starts, with the controller lock held."""
+        self._latch_sequence += 1
+        return self._latch_sequence
+
+    def _queue_latch_io(self, job) -> None:
+        """Only the dedicated worker accesses storage; the caller never waits for it."""
+
+        def run():
+            # Submission can happen under the lock, but storage never does.
+            with self._lock:
+                pass
+            try:
+                job()
+            except Exception:
+                log.exception("could not persist holder latch information")
+
+        try:
+            self._latch_pool.submit(run)
+        except Exception:
+            log.exception("could not schedule holder latch persistence")
+
+    def _sync_holder_latch(self, scanner) -> None:
+        """Under lock: compare cached identity and enqueue persistence snapshots."""
+        address = getattr(scanner, "usb_address", None)
+        if address == self._latch_address:
+            return
+        previous, self._latch_address = self._latch_address, address
+        if previous is None:
+            self._latch_loss = None
+            # First discovery identifies the same in-flight operation; it must not
+            # outrank its result or restore a record from a previous session.
+            self._save_holder_latch()
+            return
+        applied = self._latch_applied
+        sequence = self._next_latch_sequence()
+        self._latch_loss = (sequence, applied) if address is None else None
+        if address is None:
+            self._queue_latch_io(
+                lambda: holder_latch.save_latch(*previous, holder_latch.HolderLatch.UNKNOWN)
+            )
+        self._holder_latch = holder_latch.invalidate()
+        self._latch_applied = sequence
+        self._latch_invalidated = True
+        self._save_holder_latch()
+
+    def _save_holder_latch(self) -> None:
+        """Under lock: enqueue immutable state; in-memory knowledge is authoritative."""
+        address, state = self._latch_address, self._holder_latch
+        if address is not None:
+            self._queue_latch_io(lambda: holder_latch.save_latch(*address, state))
+
+    def _remember_holder_latch(
+        self, latch: holder_latch.HolderLatch, scanner=None, *, sequence: int | None = None
+    ) -> None:
+        with self._lock:
+            if sequence is None:
+                sequence = self._next_latch_sequence()
+            session = self._session
+            self._sync_holder_latch(scanner or (session.scanner if session else None))
+            loss = self._latch_loss
+            if (
+                latch is holder_latch.HolderLatch.RELEASED
+                and self._latch_address is None
+                and loss is not None
+                and self._latch_applied == loss[0]
+                and sequence >= loss[1]
+            ):
+                # Missing identity cannot negate the completion of this eject.
+                sequence = loss[0]
+            if sequence < self._latch_applied:
+                return
+            self._holder_latch = latch
+            self._latch_applied = sequence
+            self._latch_invalidated = latch is holder_latch.HolderLatch.UNKNOWN
+            self._save_holder_latch()
+
+    def confirm_holder_latched(self) -> None:
+        """Record the owner's physical confirmation without moving the scanner."""
+        with self._lock:
+            if (
+                self._session is None
+                or self._session.runner is None
+                or self._holder_busy
+                or self._scans_queued
+                or self._session.runner.scan_pending()
+                or self._long_jobs
+                or self._job_futures
+                or self._holder_latch is not holder_latch.HolderLatch.RELEASED
+            ):
+                return
+            self._holder_latch = holder_latch.HolderLatch.LATCHED
+            self._latch_applied = self._next_latch_sequence()
+            self._latch_invalidated = False
+            self._save_holder_latch()
+            self._banner = None
+
     def _holder_refusal(self) -> str | None:
         """Why a movement cannot start now; called under the lock."""
         session = self._session
@@ -133,12 +256,30 @@ class HolderCommands:
         runner has it."""
         with self._lock:
             refused = self._holder_busy
+            released = self._holder_latch is holder_latch.HolderLatch.RELEASED
+            if released:
+                self._banner = Banner(
+                    "Seat and latch the holder, then confirm it is latched before scanning."
+                )
+                return
             if not refused:
                 self._scans_queued += 1
         if refused:
             self._set(_banner=Banner(WAIT_HOLDER))
             return
-        future = self._run_writer(job, message, droppable=True)
+
+        def sequenced_job(runner):
+            with self._lock:
+                runner.operation_sequence = self._next_latch_sequence()
+            try:
+                job(runner)
+            except BaseException:
+                self._remember_holder_latch(
+                    holder_latch.HolderLatch.UNKNOWN, sequence=runner.operation_sequence
+                )
+                raise
+
+        future = self._run_writer(sequenced_job, message, droppable=True)
         self._track(future, self._scan_handed_over)
 
     def _scan_handed_over(self) -> None:
