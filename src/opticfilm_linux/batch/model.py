@@ -8,6 +8,7 @@ ROTATIONS = (0, 90, 180, 270)
 BRIGHTNESS_RANGE = (-2.0, 2.0)
 
 Mode = Literal["positive", "negative"]
+SlideKey = tuple[int, int]  # (tray number, 1-based holder position)
 
 
 class TrayStage(StrEnum):
