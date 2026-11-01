@@ -6,6 +6,8 @@ produce a duplicate file on the next export, never a missing one.
 """
 
 import dataclasses
+import hashlib
+import os
 import shutil
 import threading
 from collections.abc import Callable, Collection
@@ -75,6 +77,7 @@ def _mark_exported(
     defaults: BatchDefaults,
     path: Path | None = None,
     size: tuple[int, ...] = (),
+    sha256: str = "",
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
     """Mark one slide exported, only if the file written still matches it.
 
@@ -101,6 +104,7 @@ def _mark_exported(
                             exported=True,
                             export_path=str(path.resolve()) if path else "",
                             export_size=size,
+                            export_sha256=sha256,
                         )
                     slides.append(s)
                 tray = dataclasses.replace(tray, slides=tuple(slides))
@@ -187,7 +191,15 @@ def _export_tray(
         size = (image.shape[1], image.shape[0])
         if spec.fmt == "jpeg":
             size = jpeg_geometry(*size, sweep.dpi, spec.jpeg_size)[:2]
-        path = write_slide(image, spec)
+        receipts: list[tuple[Path, str]] = []
+        path = write_slide(
+            image,
+            spec,
+            on_written=lambda p, digest, receipts=receipts: receipts.append((p, digest)),
+        )
+        if len(receipts) != 1 or receipts[0][0] != path:
+            raise BatchError("export writer did not provide a matching durable artifact record")
+        digest = receipts[0][1]
         report(path)
         outcome = _mark_exported(
             store,
@@ -199,6 +211,7 @@ def _export_tray(
             defaults,
             path,
             size,
+            digest,
         )
         if outcome == "stale_tray":
             return True  # re-scanned, mode or orientation changed: the next export redoes it
@@ -254,34 +267,56 @@ class ExportVerificationFailed(BatchError):
 MIN_JPEG_BYTES = 512
 
 
-def verify_tray_export(store: BatchStore, number: int) -> None:
-    """Decode every recorded JPEG and check its actual write-time geometry.
+def _durable_digest(path: Path) -> str:
+    """Read in bounded chunks and persist both the artifact and its directory entry."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+        os.fsync(handle.fileno())
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest()
 
-    Successful decoding alone cannot detect a valid but incorrectly sized replacement, so the
-    geometry comes from the rendered array (including rotation, crop and delivery scaling).
-    """
-    tray = _tray(store.snapshot(), number)
+
+def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
     if tray.stage is not TrayStage.EXPORTED or not tray.slides:
-        raise BatchError(f"tray {number} is not fully exported")
+        raise BatchError(f"tray {tray.number} is not fully exported")
     for slide in tray.slides:
+        if slide.status is SlideStatus.BLANK:
+            continue
         try:
-            if not slide.exported or slide.preview_stale:
+            if (
+                slide.status is not SlideStatus.ACCEPTED
+                or not slide.exported
+                or slide.preview_stale
+            ):
                 raise ValueError("slide is not marked exported or has pending edits")
-            if not slide.export_path or len(slide.export_size) != 2:
+            if not slide.export_path or len(slide.export_size) != 2 or not slide.export_sha256:
                 raise ValueError("missing export record")
             path = Path(slide.export_path)
-            if path.stat().st_size <= MIN_JPEG_BYTES:
+            if jpeg_only and path.stat().st_size <= MIN_JPEG_BYTES:
                 raise ValueError("JPEG is too short")
+            if _durable_digest(path) != slide.export_sha256:
+                raise ValueError("export digest differs from written artifact")
             with Image.open(path) as image:
-                if image.format != "JPEG":
+                if jpeg_only and image.format != "JPEG":
                     raise ValueError("export is not a JPEG")
                 image.load()
                 if image.size != slide.export_size:
                     raise ValueError(
-                        f"JPEG size {image.size} differs from written {slide.export_size}"
+                        f"export size {image.size} differs from written {slide.export_size}"
                     )
         except (OSError, ValueError) as exc:
-            raise ExportVerificationFailed(number, slide.position, exc) from exc
+            raise ExportVerificationFailed(tray.number, slide.position, exc) from exc
+
+
+def verify_tray_export(store: BatchStore, number: int) -> None:
+    """Decode JPEGs and verify write-time geometry, streamed digest and durability."""
+    _verify_export(_tray(store.snapshot(), number), jpeg_only=True)
 
 
 def _stale(tray: TrayRecord) -> bool:
@@ -326,32 +361,65 @@ def _delete(number: int, folders: list[Path]) -> None:
         ) from exc
 
 
-def cleanup_raw(store: BatchStore, number: int) -> int:
-    """Delete an exported tray's raw sweeps (all versions). Returns the bytes freed.
+def _cleanup_policy(manifest: BatchManifest, number: int, *, release_first: bool) -> None:
+    if manifest.defaults.keep_raw:
+        raise CleanupRefused("keep raw is enabled; raw scans must be kept")
+    first = min(t.number for t in manifest.trays)
+    if (
+        (manifest.defaults.auto_export or any(t.auto not in ("", "off") for t in manifest.trays))
+        and not manifest.first_tray_released
+        and not (release_first and number == first)
+    ):
+        raise CleanupRefused("the first held tray requires explicit owner release")
 
-    A cleanup that failed after marking the tray removed is finished by calling this again.
-    """
-    tray = next((t for t in store.snapshot().trays if t.number == number), None)
+
+def check_cleanup_allowed(
+    store: BatchStore, number: int, *, release_first: bool = False
+) -> TrayRecord:
+    """Freshly check policy and durable artifacts for either cleanup entry point."""
+    manifest = store.snapshot()
+    tray = next((t for t in manifest.trays if t.number == number), None)
     if tray is None:
         raise BatchError(f"no tray {number} in this batch")
-    if _half_cleaned(store, tray):
-        folders = _checked_sweep_folders(store, number)
-        freed = sum(_folder_size(path) for path in folders)
-        _delete(number, folders)
-        return freed
+    _cleanup_policy(manifest, number, release_first=release_first)
     if tray.stage is not TrayStage.EXPORTED:
         raise CleanupRefused(
             f"tray {number} is {tray.stage}; only exported trays can be cleaned up"
         )
     if _stale(tray):
         raise CleanupRefused(f"tray {number} still has a preview to update; try again shortly")
+    _verify_export(tray, jpeg_only=False)
+    return tray
+
+
+def cleanup_raw(store: BatchStore, number: int, *, release_first: bool = False) -> int:
+    """Delete an exported tray's raw sweeps (all versions). Returns the bytes freed.
+
+    A cleanup that failed after marking the tray removed is finished by calling this again.
+    """
+    tray = check_cleanup_allowed(store, number, release_first=release_first)
     folders = _checked_sweep_folders(store, number)
     freed = sum(_folder_size(path) for path in folders)
+
     # Commit first, under the store's lock: once marked removed, nothing (a new batch
     # orientation, an edit) can send the tray back to review while its raw scans go.
-    if not store.update_tray_if(number, _still_freeable, raw_removed=True):
-        raise CleanupRefused(f"tray {number} changed meanwhile; it is no longer fully exported")
+    def commit(manifest: BatchManifest) -> BatchManifest:
+        _cleanup_policy(manifest, number, release_first=release_first)
+        current = _tray(manifest, number)
+        if current != tray or not (_still_freeable(current) or _half_cleaned(store, current)):
+            raise CleanupRefused(f"tray {number} changed meanwhile; it is no longer fully exported")
+        released = release_first and number == min(t.number for t in manifest.trays)
+        updated = dataclasses.replace(current, raw_removed=True)
+        return dataclasses.replace(
+            manifest,
+            first_tray_released=manifest.first_tray_released or released,
+            trays=tuple(updated if t.number == number else t for t in manifest.trays),
+        )
+
+    store.update(commit)
     _delete(number, folders)
+    if tray.auto:
+        store.update_tray(number, auto="freed", auto_error="", auto_failed=())
     return freed
 
 
@@ -384,6 +452,8 @@ def free_space(
     on_progress: Callable[[int, int], None] | None = None,
     cancel: threading.Event | None = None,
     only: Collection[int] | None = None,
+    *,
+    release_first: bool = False,
 ) -> int:
     """Remove the raw scans of fully exported trays; stops between trays when cancelled.
 
@@ -394,7 +464,7 @@ def free_space(
     for done, tray in enumerate(trays, start=1):
         if cancel is not None and cancel.is_set():
             break
-        freed += cleanup_raw(store, tray.number)
+        freed += cleanup_raw(store, tray.number, release_first=release_first)
         if on_progress is not None:
             on_progress(done, len(trays))
     return freed

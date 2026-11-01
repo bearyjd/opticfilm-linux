@@ -78,6 +78,7 @@ class SlideRecord:
     preview_stale: bool = False  # settings changed but the preview was not redone yet
     export_path: str = ""
     export_size: tuple[int, ...] = ()
+    export_sha256: str = ""
 
 
 @dataclass(frozen=True)

@@ -4,11 +4,11 @@ The controller runs this on its existing serial jobs worker, independently of ma
 views and cancellation. Terminal manifest states are never rearmed by later review events.
 """
 
-import dataclasses
 import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from opticfilm_linux.app.raw import raw_failure, raw_inventory
 from opticfilm_linux.batch.export import (
     ExportVerificationFailed,
     cleanup_raw,
@@ -86,63 +86,74 @@ class AutoPipeline:
         if not self.store.snapshot().defaults.auto_export:
             self._update(number, auto="off")
             return
+        before = raw_inventory(self.store, (number,))
         try:
-            if tray.auto == "pending":
-                flagged = tuple(
-                    sorted(
-                        set(tray.auto_flagged)
-                        | {
-                            s.position
-                            for s in tray.slides
-                            if s.flags or s.status in (SlideStatus.BLANK, SlideStatus.NEEDS_LOOK)
-                        }
-                    )
-                )
-                # Persist flagged positions before acceptance removes the BLANK/NEEDS_LOOK status.
-                self._update(number, auto_flagged=flagged)
-                accept_tray(self.store, number)
-                failed = []
-                errors = []
-                defaults = self.store.snapshot().defaults
-                if not defaults.export_dir:
-                    raise BatchError("Choose an album folder before automatic export")
-                for slide in self._tray(number).slides:
-                    if self.cancel.is_set():
-                        return
-                    try:
-                        result = export_batch(
-                            self.store,
-                            Path(defaults.export_dir),
-                            "jpeg",
-                            cancel=self.cancel,
-                            keys=frozenset({(number, slide.position)}),
-                            jpeg_size=defaults.jpeg_size,
-                        )
-                        if result.cancelled:
-                            return
-                    except Exception as exc:
-                        failed.append(slide.position)
-                        errors.append(f"Slide {slide.position}: {exc}")
-                if failed:
-                    self._update(
-                        number,
-                        auto="failed",
-                        auto_failed=tuple(failed),
-                        auto_error="; ".join(errors),
-                    )
-                    return
-                self._update(number, auto="exported")
+            if tray.auto == "pending" and not self._export_pending(number):
+                return
             self._verify_and_finish(number)
         except Exception as exc:
-            self._failed(number, exc)
+            self._failed(number, exc, before=before, already_removed=tray.raw_removed)
 
-    def _failed(self, number: int, exc: Exception) -> None:
+    def _accept_pending(self, number: int) -> None:
+        tray = self._tray(number)
+        flagged = tuple(
+            sorted(
+                set(tray.auto_flagged)
+                | {
+                    s.position
+                    for s in tray.slides
+                    if s.flags or s.status in (SlideStatus.BLANK, SlideStatus.NEEDS_LOOK)
+                }
+            )
+        )
+        # Remember flags before automatic acceptance changes undecided statuses.
+        self._update(number, auto_flagged=flagged)
+        accept_tray(self.store, number)
+
+    def _export_pending(self, number: int) -> bool:
+        self._accept_pending(number)
+        defaults = self.store.snapshot().defaults
+        if not defaults.export_dir:
+            raise BatchError("Choose an album folder before automatic export")
+        failed, errors = [], []
+        for slide in self._tray(number).slides:
+            if self.cancel.is_set():
+                return False
+            try:
+                result = export_batch(
+                    self.store,
+                    Path(defaults.export_dir),
+                    "jpeg",
+                    cancel=self.cancel,
+                    keys=frozenset({(number, slide.position)}),
+                    jpeg_size=defaults.jpeg_size,
+                )
+                if result.cancelled:
+                    return False
+            except Exception as exc:
+                failed.append(slide.position)
+                errors.append(f"Slide {slide.position}: {exc}")
+        if failed:
+            self._update(
+                number,
+                auto="failed",
+                auto_failed=tuple(failed),
+                auto_error="raw data kept. " + "; ".join(errors),
+            )
+            return False
+        self._update(number, auto="exported")
+        return True
+
+    def _failed(self, number: int, exc: Exception, *, before, already_removed: bool) -> None:
         positions = (
             (exc.position,)
             if isinstance(exc, ExportVerificationFailed)
             else tuple(s.position for s in self._tray(number).slides if not s.exported)
         )
-        self._update(number, auto="failed", auto_error=str(exc), auto_failed=positions)
+        outcome = raw_failure(
+            before, raw_inventory(self.store, (number,)), already_removed=already_removed
+        )
+        self._update(number, auto="failed", auto_error=f"{outcome}. {exc}", auto_failed=positions)
 
     def _verify_and_finish(self, number: int, *, release: bool = False) -> None:
         if self.cancel.is_set():
@@ -161,22 +172,18 @@ class AutoPipeline:
             return
         if self.cancel.is_set():
             return
-        # Recheck every mark and geometry after progress callbacks and before irreversible work.
-        verify_tray_export(self.store, number)
-        if release and number == first:
-            # This is the owner's durable decision after successful verification. Store it
-            # before deletion, so a crash after unlink cannot strand the batch's first hold.
-            self.store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
         tray = self._tray(number)
         if not tray.raw_removed or any(self.store.tray_dir(number).glob("sweep-*")):
-            cleanup_raw(self.store, number)
+            cleanup_raw(self.store, number, release_first=release and number == first)
         self._update(number, auto="freed")
 
     def confirm_free_held(self, number: int) -> None:
         manifest = self.store.snapshot()
         if number != min(t.number for t in manifest.trays) or self._tray(number).auto != "held":
             return
+        before = raw_inventory(self.store, (number,))
+        already_removed = self._tray(number).raw_removed
         try:
             self._verify_and_finish(number, release=True)
         except Exception as exc:
-            self._failed(number, exc)
+            self._failed(number, exc, before=before, already_removed=already_removed)

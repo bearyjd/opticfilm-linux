@@ -503,7 +503,8 @@ def _free_text(state: AppState) -> str:
     if view is None:
         return ""
     if view.freed is not None:
-        return f"Freed {bytes_text(view.freed)}."
+        result = f"Freed {bytes_text(view.freed)}."
+        return f"{view.message} {result}" if view.message else result
     names = ", ".join(f"tray {n} ({bytes_text(b)})" for n, b in view.trays)
     if not view.trays:
         return "There are no fully exported trays with raw scans to remove."

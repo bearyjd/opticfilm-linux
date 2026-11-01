@@ -9,13 +9,17 @@ from opticfilm_linux.batch.enhance import RawRemoved
 from opticfilm_linux.batch.events import SlideUpdated
 from opticfilm_linux.batch.model import (
     BatchDefaults,
+    Flag,
+    SlideRecord,
     SlideSettings,
     SlideStatus,
+    TrayRecord,
     TrayStage,
 )
 from opticfilm_linux.batch.review import (
     NoSuchSlide,
     accept_all,
+    accept_tray,
     apply_slide_settings,
     set_slide_status,
     set_tray_mode,
@@ -113,6 +117,29 @@ def test_accept_all_skips_blank_and_non_review_trays(store):
     assert _slide(store, 1, 2).status is SlideStatus.BLANK
     assert _slide(store, 1, 3).status is SlideStatus.ACCEPTED and _slide(store, 1, 3).owner_decided
     assert _slide(store, 2, 1).status is SlideStatus.NEEDS_LOOK
+
+
+@pytest.mark.parametrize("status", [SlideStatus.NEEDS_LOOK, SlideStatus.PENDING, SlideStatus.BLANK])
+def test_accept_tray_preserves_owner_nonaccepted_choice(tmp_path, status):
+    owner_slide = SlideRecord(
+        position=1,
+        status=status,
+        owner_decided=True,
+        flags=(Flag.TOO_DARK,),
+        settings=SlideSettings(brightness_ev=0.5),
+    )
+    automatic_slide = SlideRecord(position=2, status=SlideStatus.NEEDS_LOOK)
+    with BatchStore.create(tmp_path / "batch", name="T") as store:
+        store.update(
+            lambda manifest: dataclasses.replace(
+                manifest,
+                trays=(TrayRecord(1, TrayStage.REVIEW, slides=(owner_slide, automatic_slide)),),
+            )
+        )
+        accept_tray(store, 1)
+        assert store.snapshot().trays[0].slides[0] == owner_slide
+        accepted = store.snapshot().trays[0].slides[1]
+        assert accepted.status is SlideStatus.ACCEPTED and accepted.owner_decided
 
 
 def test_set_tray_mode_changes_the_mode(store):

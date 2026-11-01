@@ -53,6 +53,58 @@ def test_run_export_forwards_size_without_changing_selection(tmp_path, monkeypat
     assert views[-1].finished
 
 
+def test_failed_cleanup_reports_bytes_actually_deleted(tmp_path, monkeypatch):
+    from opticfilm_linux.app import jobs
+    from opticfilm_linux.batch.export import FreeableTray
+
+    with BatchStore.create(tmp_path / "b", "B") as store:
+        folder = store.sweep_dir(1, 1)
+        folder.mkdir(parents=True)
+        (folder / "first").write_bytes(b"12345")
+        (folder / "second").write_bytes(b"1234567")
+        monkeypatch.setattr(jobs, "freeable_trays", lambda _: (FreeableTray(1, 12),))
+
+        def fail(*args, **kwargs):
+            (folder / "first").unlink()
+            raise OSError("partly deleted")
+
+        monkeypatch.setattr(jobs, "free_space", fail)
+        views = []
+        with pytest.raises(OSError, match="partly deleted"):
+            jobs.run_free_space(store, threading.Event(), views.append, (1,))
+        assert views[-1].freed == 5
+        assert "raw data partly removed" in views[-1].message.lower()
+
+
+def test_failed_multi_tray_cleanup_does_not_call_intact_remaining_tray_unusable(
+    tmp_path, monkeypatch
+):
+    from opticfilm_linux.app import jobs
+    from opticfilm_linux.batch.export import FreeableTray
+
+    with BatchStore.create(tmp_path / "b", "B") as store:
+        for number, data in ((1, b"12345"), (2, b"1234567")):
+            folder = store.sweep_dir(number, 1)
+            folder.mkdir(parents=True)
+            (folder / "raw").write_bytes(data)
+        monkeypatch.setattr(
+            jobs, "freeable_trays", lambda _: (FreeableTray(1, 5), FreeableTray(2, 7))
+        )
+
+        def fail(*args, **kwargs):
+            (store.sweep_dir(1, 1) / "raw").unlink()
+            raise OSError("tray 2 verification failed")
+
+        monkeypatch.setattr(jobs, "free_space", fail)
+        views = []
+        with pytest.raises(OSError, match="tray 2 verification failed"):
+            jobs.run_free_space(store, threading.Event(), views.append, (1, 2))
+        assert views[-1].freed == 5
+        assert "remaining scans cannot be used" not in views[-1].message
+        assert "remaining raw files are still on disk" in views[-1].message
+        assert (store.sweep_dir(2, 1) / "raw").read_bytes() == b"1234567"
+
+
 @pytest.fixture
 def two_trays(sweep600_dir, tmp_path):
     """A controller with two scanned, reviewed and accepted trays (8 slides)."""

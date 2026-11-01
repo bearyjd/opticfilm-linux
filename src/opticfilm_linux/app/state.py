@@ -72,6 +72,7 @@ class FreeSpaceView:
     done: int = 0
     total: int = 0
     freed: int | None = None
+    message: str = ""
 
 
 @dataclass(frozen=True)

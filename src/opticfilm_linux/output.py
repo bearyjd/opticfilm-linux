@@ -1,6 +1,9 @@
 """Write finished slides to disk with sequence numbers and an embedded sRGB profile."""
 
+import hashlib
+import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache
 from math import floor
@@ -94,7 +97,12 @@ def _encode(
         )
 
 
-def write_slide(rgb: np.ndarray, spec: OutputSpec) -> Path:
+def write_slide(
+    rgb: np.ndarray,
+    spec: OutputSpec,
+    *,
+    on_written: Callable[[Path, str], None] | None = None,
+) -> Path:
     """Write ``rgb`` under the next free sequence number; never overwrites an existing file."""
     extension = EXTENSIONS.get(spec.fmt)
     if extension is None:
@@ -107,13 +115,31 @@ def write_slide(rgb: np.ndarray, spec: OutputSpec) -> Path:
     while True:
         path = spec.directory / f"{prefix}{sequence:04d}.{extension}"
         try:
-            handle = open(path, "xb")  # noqa: SIM115 - exclusive create, closed below
+            handle = open(path, "x+b")  # noqa: SIM115 - exclusive create, closed below
         except FileExistsError:
             sequence += 1
             continue
         try:
             with handle:
                 _encode(rgb, spec.fmt, handle, scan_dpi=spec.scan_dpi, jpeg_size=spec.jpeg_size)
+                if on_written is not None:
+                    handle.flush()
+                    handle.seek(0)
+                    digest = hashlib.sha256()
+                    while chunk := handle.read(1024 * 1024):
+                        digest.update(chunk)
+                    os.fsync(handle.fileno())
+            if on_written is not None:
+                # Include every ancestor: a previous failed sync may have left an existing
+                # destination whose own directory entry has never reached durable storage.
+                directory = path.parent.resolve()
+                for parent in (directory, *directory.parents):
+                    descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                on_written(path, digest.hexdigest())
         except BaseException:
             path.unlink(missing_ok=True)
             raise

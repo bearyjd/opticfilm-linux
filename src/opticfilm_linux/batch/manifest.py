@@ -54,6 +54,8 @@ def to_json(manifest: BatchManifest) -> str:
                 slide.pop("export_path")
             if not slide["export_size"]:
                 slide.pop("export_size")
+            if not slide["export_sha256"]:
+                slide.pop("export_sha256")
     return json.dumps(data, indent=2)
 
 
@@ -72,6 +74,7 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         preview_stale=data.get("preview_stale", False),
         export_path=data.get("export_path", ""),
         export_size=tuple(data.get("export_size", ())),
+        export_sha256=data.get("export_sha256", ""),
     )
 
 

@@ -1,5 +1,10 @@
+import ast
 import dataclasses
+import errno
+import inspect
 import json
+import os
+import stat
 import threading
 from pathlib import Path
 
@@ -330,8 +335,8 @@ def test_auto_owner_release_survives_crash_after_cleanup(store, monkeypatch):
     auto.run(1)
     real = auto_module.cleanup_raw
 
-    def crash_after_delete(*args):
-        real(*args)
+    def crash_after_delete(*args, **kwargs):
+        real(*args, **kwargs)
         raise KeyboardInterrupt("power loss")
 
     monkeypatch.setattr(auto_module, "cleanup_raw", crash_after_delete)
@@ -426,3 +431,150 @@ def test_auto_cleanup_crash_reopen_reverifies_before_deleting_remaining_raw(
         tray = reopened.snapshot().trays[0]
         assert tray.auto == ("failed" if damage else "freed")
         assert reopened.sweep_dir(1, 1).exists() is damage
+
+
+def test_auto_run_coordinates_work_in_under_fifty_lines():
+    from opticfilm_linux.app.auto import AutoPipeline
+
+    tree = ast.parse(inspect.getsource(AutoPipeline))
+    run = next(
+        node
+        for node in tree.body[0].body
+        if isinstance(node, ast.FunctionDef) and node.name == "run"
+    )
+    assert run.end_lineno - run.lineno + 1 < 50
+
+
+@pytest.mark.parametrize("fault", [errno.ENOSPC, errno.EACCES])
+def test_auto_destination_fault_keeps_raw_and_lists_every_failed_slide(store, monkeypatch, fault):
+    def fail(*args, **kwargs):
+        raise OSError(fault, "destination fault")
+
+    monkeypatch.setattr(exports, "write_slide", fail)
+    auto = pipeline(store)
+    auto.arm(2)
+    auto.run(2)
+    tray = store.snapshot().trays[1]
+    assert tray.auto == "failed" and tray.auto_failed == (1, 2, 3)
+    assert not tray.raw_removed and store.sweep_dir(2, 1).exists()
+
+
+def test_auto_manifest_directory_fsync_failure_keeps_raw(store, monkeypatch):
+    from opticfilm_linux.batch import store as store_module
+
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    real = os.fsync
+    failed = False
+
+    def fail_directory_once(fd):
+        nonlocal failed
+        target = os.fstat(fd)
+        manifest_dir = store.directory.stat()
+        if (
+            stat.S_ISDIR(target.st_mode)
+            and (target.st_dev, target.st_ino) == (manifest_dir.st_dev, manifest_dir.st_ino)
+            and not failed
+        ):
+            failed = True
+            raise OSError(errno.EIO, "manifest directory fsync failed")
+        return real(fd)
+
+    monkeypatch.setattr(store_module.os, "fsync", fail_directory_once)
+    auto.confirm_free_held(1)
+    assert failed, "manifest publication must fsync its directory"
+    assert store.sweep_dir(1, 1).exists()
+    assert not store.snapshot().trays[0].raw_removed
+    assert store.snapshot().trays[0].auto == "failed"
+
+
+@pytest.mark.parametrize(
+    "fault,expected",
+    [
+        ("intact", "raw data kept"),
+        ("partial", "raw data partly removed"),
+        ("complete", "raw data removed; could not save cleanup completion"),
+    ],
+)
+def test_auto_cleanup_failure_reports_actual_raw_state(store, monkeypatch, fault, expected):
+    from opticfilm_linux.app import auto as auto_module
+
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    raw = store.sweep_dir(1, 1) / "raw"
+    (raw.parent / "second").write_bytes(b"second raw")
+
+    def fail_cleanup(*args, **kwargs):
+        if fault == "partial":
+            raw.unlink()
+            store.update_tray(1, raw_removed=True)
+        raise OSError("cleanup failed")
+
+    if fault == "complete":
+        real = store.update_tray
+
+        def fail_completion(number, **changes):
+            if changes.get("auto") == "freed":
+                raise OSError("saving completion failed")
+            return real(number, **changes)
+
+        monkeypatch.setattr(store, "update_tray", fail_completion)
+    else:
+        monkeypatch.setattr(auto_module, "cleanup_raw", fail_cleanup)
+    auto.confirm_free_held(1)
+    assert expected in store.snapshot().trays[0].auto_error.lower()
+
+
+@pytest.mark.parametrize("remaining", [False, True])
+def test_auto_recovered_cleanup_failure_never_claims_raw_kept(store, monkeypatch, remaining):
+    import shutil
+
+    from opticfilm_linux.app import auto as auto_module
+
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+    store.update_tray(1, auto="verified", raw_removed=True)
+    if not remaining:
+        shutil.rmtree(store.sweep_dir(1, 1))
+    real = auto._update
+
+    def fail_completion(number, **changes):
+        if changes.get("auto") == "freed":
+            raise OSError("saving completion failed")
+        return real(number, **changes)
+
+    def fail_cleanup(*args, **kwargs):
+        raise OSError("retry failed")
+
+    monkeypatch.setattr(auto, "_update", fail_completion)
+    monkeypatch.setattr(auto_module, "cleanup_raw", fail_cleanup)
+    auto.run(1)
+    error = store.snapshot().trays[0].auto_error.lower()
+    assert "raw data kept" not in error
+    assert ("cleanup incomplete" if remaining else "raw data removed") in error
+
+
+@pytest.mark.parametrize("reopened", [False, True])
+def test_auto_preserves_owner_needs_look_before_queued_or_resumed_run(store, reopened):
+    auto = pipeline(store)
+    auto.arm(2)
+    review.set_slide_status(store, 2, 2, SlideStatus.NEEDS_LOOK)
+    if reopened:
+        directory = store.directory
+        store.close()
+        store = BatchStore.open(directory)
+        auto = pipeline(store)
+        assert 2 in auto.resume()
+    try:
+        auto.run(2)
+        tray = store.snapshot().trays[1]
+        assert tray.slides[1].status is SlideStatus.NEEDS_LOOK
+        assert not tray.slides[1].exported
+        assert not tray.raw_removed and store.sweep_dir(2, 1).exists()
+    finally:
+        if reopened:
+            store.close()

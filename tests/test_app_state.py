@@ -1,4 +1,7 @@
+import ast
 import itertools
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +15,29 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.scanner.base import ScannerStatus
+
+
+def test_cleanup_result_text_shows_failure_and_actual_freed_bytes():
+    from opticfilm_linux.app import state as state_module
+    from opticfilm_linux.app.messages import bytes_text
+    from opticfilm_linux.app.state import AppState, FreeSpaceView
+
+    # Exercise the pure formatter without requiring a running Qt application.
+    source = Path(state_module.__file__).parent / "qt" / "bridge.py"
+    tree = ast.parse(source.read_text())
+    formatter = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_free_text"
+    )
+    namespace = {"AppState": AppState, "bytes_text": bytes_text}
+    exec(compile(ast.Module(body=[formatter], type_ignores=[]), str(source), "exec"), namespace)
+    view = FreeSpaceView(
+        ((1, 12),), 12, freed=5, message="Cleanup failed; raw data partly removed."
+    )
+    text = namespace["_free_text"](replace(EMPTY_STATE, free_space=view))
+    assert "Cleanup failed; raw data partly removed." in text
+    assert f"Freed {bytes_text(5)}." in text
 
 
 def _manifest() -> BatchManifest:

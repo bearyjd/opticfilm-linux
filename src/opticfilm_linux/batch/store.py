@@ -178,6 +178,11 @@ class BatchStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp, path)
+            directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise

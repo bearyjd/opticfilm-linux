@@ -5,6 +5,7 @@ from collections.abc import Callable, Collection
 from dataclasses import replace
 from pathlib import Path
 
+from opticfilm_linux.app.raw import bytes_removed, raw_failure, raw_inventory
 from opticfilm_linux.app.state import ExportView, FreeSpaceView
 from opticfilm_linux.batch.export import (
     ExportResult,
@@ -145,18 +146,36 @@ def run_free_space(
     cancel: threading.Event,
     publish: Callable[[FreeSpaceView], None],
     numbers: Collection[int],
+    *,
+    release_first: bool = False,
 ) -> None:
     """Remove the raw scans of the confirmed trays; the final view carries the bytes freed."""
     base = _candidates_view(tuple(f for f in freeable_trays(store) if f.number in numbers))
     total = len(base.trays)
+    before = raw_inventory(store, numbers)
+    already_removed = any(t.raw_removed for t in store.snapshot().trays if t.number in numbers)
 
     def progress(done: int, _total: int) -> None:
         publish(FreeSpaceView(base.trays, base.total_bytes, running=True, done=done, total=total))
 
     publish(FreeSpaceView(base.trays, base.total_bytes, running=True, done=0, total=total))
     try:
-        freed = free_space(store, on_progress=progress, cancel=cancel, only=numbers)
-    except BaseException:
-        publish(FreeSpaceView(base.trays, base.total_bytes, running=False, freed=0))
+        freed = free_space(
+            store, on_progress=progress, cancel=cancel, only=numbers, release_first=release_first
+        )
+    except BaseException as exc:
+        after = raw_inventory(store, numbers)
+        outcome = raw_failure(before, after, already_removed=already_removed)
+        if len(set(numbers)) > 1 and before != after and after:
+            outcome = "some raw data removed; remaining raw files are still on disk"
+        publish(
+            FreeSpaceView(
+                base.trays,
+                base.total_bytes,
+                running=False,
+                freed=bytes_removed(before, after),
+                message=f"Cleanup failed; {outcome}. {exc}",
+            )
+        )
         raise
     publish(FreeSpaceView(base.trays, base.total_bytes, running=False, total=total, freed=freed))

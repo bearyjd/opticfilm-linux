@@ -159,9 +159,11 @@ def test_releasing_first_tray_schedules_verified_held_backlog(sweep600_dir, tmp_
     def verify(store, number):
         verified.append(number)
 
-    def cleanup(store, number):
+    def cleanup(store, number, *, release_first=False):
         cleaned.append((number, threading.current_thread().name))
         store.update_tray(number, raw_removed=True)
+        if release_first:
+            store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
 
     monkeypatch.setattr(auto, "verify_tray_export", verify)
     monkeypatch.setattr(auto, "cleanup_raw", cleanup)
@@ -207,5 +209,61 @@ def test_stale_auto_callback_cannot_clear_reopened_session_reservation(
             c._auto_active.add(1)
         captured[0](c._session.runner)
         assert 1 in c._auto_active
+    finally:
+        c.shutdown()
+
+
+def test_manual_first_hold_release_resumes_backlog(sweep600_dir, tmp_path, monkeypatch):
+    from opticfilm_linux.app.state import FreeSpaceView
+
+    c = make_controller(sweep600_dir)
+    calls = []
+
+    def confirmed_cleanup(store, cancel, publish, numbers, *, release_first=False):
+        assert release_first
+        store.update(
+            lambda m: dataclasses.replace(
+                m,
+                first_tray_released=True,
+                trays=(dataclasses.replace(m.trays[0], auto="freed", raw_removed=True), m.trays[1]),
+            )
+        )
+        publish(FreeSpaceView(((1, 10),), 10, freed=10))
+
+    class Pipeline:
+        def __init__(self, store, **kwargs):
+            self.store = store
+
+        def resume(self):
+            return (2,) if self.store.snapshot().first_tray_released else ()
+
+        def arm(self, number):
+            return False
+
+        def run(self, number):
+            calls.append(number)
+
+    monkeypatch.setattr(controller_module, "run_free_space", confirmed_cleanup)
+    monkeypatch.setattr(controller_module, "AutoPipeline", Pipeline)
+    try:
+        open_new(c, tmp_path / "batch")
+        c._session.store.update(
+            lambda m: dataclasses.replace(
+                m,
+                defaults=dataclasses.replace(m.defaults, auto_export=True),
+                trays=(
+                    TrayRecord(1, TrayStage.EXPORTED, auto="held"),
+                    TrayRecord(2, TrayStage.EXPORTED, auto="held"),
+                ),
+            )
+        )
+        c._set(_free_space=FreeSpaceView(((1, 10),), 10))
+        c.confirm_free_space()
+        wait_until(
+            c,
+            lambda: c.state().free_space is not None and c.state().free_space.freed == 10,
+            timeout=2,
+        )
+        wait_until(c, lambda: calls == [2], timeout=0.5)
     finally:
         c.shutdown()

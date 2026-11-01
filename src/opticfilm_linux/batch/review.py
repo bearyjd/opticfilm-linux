@@ -123,7 +123,9 @@ def accept_tray(store: BatchStore, number: int) -> None:
         if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED) or tray.raw_removed:
             raise BatchError(f"tray {number} is not ready for automatic acceptance")
         slides = tuple(
-            dataclasses.replace(s, status=SlideStatus.ACCEPTED, owner_decided=True)
+            s
+            if s.owner_decided
+            else dataclasses.replace(s, status=SlideStatus.ACCEPTED, owner_decided=True)
             for s in tray.slides
         )
         return dataclasses.replace(

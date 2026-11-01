@@ -393,12 +393,18 @@ class Controller(HolderCommands):
                 raise BatchError("check which trays can be freed before removing anything")
             if view.running or view.freed is not None:
                 return  # a second click: already running or done
-            run_free_space(
-                self._open_store(),
-                self._cancel_free,
-                lambda update: self._set(_free_space=update),
-                tuple(number for number, _ in view.trays),
-            )
+            session = self._session
+            try:
+                run_free_space(
+                    self._open_store(),
+                    self._cancel_free,
+                    lambda update: self._set(_free_space=update),
+                    tuple(number for number, _ in view.trays),
+                    release_first=True,
+                )
+            finally:
+                if session is not None:
+                    self._resume_auto_backlog(session)
 
         if not self._closing.is_set():
             self._cancel_free.clear()
@@ -770,14 +776,7 @@ class Controller(HolderCommands):
                 pipeline = self._auto_pipeline(session.store)
                 if release:
                     pipeline.confirm_free_held(number)
-                    # Trays checked before the owner released the first were held too.
-                    # Queue each through the same per-tray reservation as a new auto job.
-                    if session.store.snapshot().first_tray_released:
-                        backlog = pipeline.resume()
-                        with self._lock:
-                            if self._session is session:
-                                self._auto_due.update(backlog)
-                        self._submit_auto_due()
+                    self._resume_auto_backlog(session)
                 else:
                     pipeline.arm(number)
                     pipeline.run(number)
@@ -785,7 +784,8 @@ class Controller(HolderCommands):
                 if tray.auto == "failed":
                     self._set(
                         _banner=Banner(
-                            f"Tray {number}: automatic export failed; raw data kept",
+                            f"Tray {number}: automatic export failed; "
+                            f"{tray.auto_error.partition('. ')[0]}",
                             tray.auto_error,
                         )
                     )
@@ -796,6 +796,15 @@ class Controller(HolderCommands):
                         self._auto_active.discard(number)
 
         self._after_pending_commands(job, "Could not complete automatic export")
+
+    def _resume_auto_backlog(self, session: _Session) -> None:
+        if not session.store.snapshot().first_tray_released:
+            return
+        backlog = self._auto_pipeline(session.store).resume()
+        with self._lock:
+            if self._session is session:
+                self._auto_due.update(backlog)
+        self._submit_auto_due()
 
     def confirm_free_held(self, number: int) -> None:
         """The owner's one explicit release of the checked first tray."""
