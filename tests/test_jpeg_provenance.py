@@ -446,7 +446,8 @@ def test_encode_failure_does_not_unlink_replacement_file(tmp_path, monkeypatch):
 def test_invalid_xml_characters_are_stripped_from_owner_names(tmp_path, name):
     inputs = list(_inputs())
     inputs[0] = replace(inputs[0], name=name, album=name)
-    collection = name.replace("\0", "")  # Folder validation already refuses NUL.
+    # Collection validation rejects controls/surrogates, but XML noncharacters remain valid names.
+    collection = "Family\ufffe\uffffAlbum"
     inputs[1] = replace(inputs[1], location=replace(inputs[1].location, collection=collection))
     fields = _fields(_write(tmp_path, inputs))
     assert fields["Batch"] == fields["Collection"] == "FamilyAlbum"
@@ -457,7 +458,11 @@ def test_invalid_xml_characters_are_stripped_from_owner_names(tmp_path, name):
 def test_valid_xml_whitespace_and_unicode_survive_owner_names(tmp_path):
     inputs = list(_inputs())
     name = "Family\t\n\rAlbum é & <雪> 😀"
+    collection = "Family Album é & <雪> 😀"
     inputs[0] = replace(inputs[0], name=name, album=name)
-    inputs[1] = replace(inputs[1], location=replace(inputs[1].location, collection=name))
+    inputs[1] = replace(inputs[1], location=replace(inputs[1].location, collection=collection))
     fields = _fields(_write(tmp_path, inputs))
-    assert fields["Batch"] == fields["Collection"] == name.replace("\r", "\n")
+    assert fields["Batch"] == name.replace("\r", "\n")
+    assert fields["Collection"] == collection
+    assert inputs[0].name == inputs[0].album == name
+    assert inputs[1].location.collection == collection

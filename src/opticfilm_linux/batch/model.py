@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
@@ -96,17 +97,27 @@ class SlideRecord:
     exports: tuple[ExportRecord, ...] = ()
 
 
-def _check_location(collection: str, box: int, section: str) -> None:
+def _check_location(collection: str, box: int, section: str) -> str:
+    if not isinstance(collection, str):
+        raise ValueError("collection must be a string")
+    collection = unicodedata.normalize("NFC", collection)
     if (
-        not isinstance(collection, str)
-        or any(c in collection for c in ("/", "\\", "\0"))
-        or collection in (".", "..")
+        (collection and not collection.strip())
+        or collection.lstrip().startswith(".")
+        or any(c in collection for c in ("/", "\\"))
+        or any(unicodedata.category(c) in ("Cc", "Cs") for c in collection)
     ):
-        raise ValueError("collection must be a single folder name without separators")
+        raise ValueError(
+            "collection must be a nonblank folder name "
+            "without a leading dot, separators or controls"
+        )
+    if len(collection) > 64 or len(collection.encode("utf-8")) > 200:
+        raise ValueError("collection must be at most 64 characters and 200 UTF-8 bytes")
     if type(box) is not int or box < 1:
         raise ValueError("box must be a positive integer")
     if not isinstance(section, str) or re.fullmatch(r"[a-f]|0[1-9]|[1-9][0-9]", section) is None:
         raise ValueError("section must be a-f or 01-99")
+    return collection
 
 
 @dataclass(frozen=True)
@@ -118,7 +129,9 @@ class TrayLocation:
     capacity: int
 
     def __post_init__(self) -> None:
-        _check_location(self.collection, self.box, self.section)
+        object.__setattr__(
+            self, "collection", _check_location(self.collection, self.box, self.section)
+        )
         if not self.collection:
             raise ValueError("a tray location needs a collection")
         if type(self.start) is not int or not 1 <= self.start <= 999:
@@ -211,6 +224,8 @@ class BatchManifest:
     section_size: int = 140
 
     def __post_init__(self) -> None:
-        _check_location(self.collection, self.box, self.section)
+        object.__setattr__(
+            self, "collection", _check_location(self.collection, self.box, self.section)
+        )
         if type(self.section_size) is not int or not 1 <= self.section_size <= 999:
             raise ValueError("section_size must be between 1 and 999")

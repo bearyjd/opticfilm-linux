@@ -152,6 +152,69 @@ def test_queued_transition_does_not_retarget_new_batch(tmp_path, sweep600_dir):
         c.shutdown()
 
 
+@pytest.mark.parametrize("next_box", [False, True])
+def test_duplicate_queued_finish_advances_once(tmp_path, sweep600_dir, next_box):
+    c = make_controller(sweep600_dir)
+    gate, started = threading.Event(), threading.Event()
+    try:
+        _new(c, tmp_path / "b")
+        store = c._session.store
+        c._command.submit(lambda: (started.set(), gate.wait(20)))
+        assert started.wait(10)
+        c.finish_box(next_box)
+        c.finish_box(next_box)
+        gate.set()
+        c._command.submit(lambda: None).result(10)
+        manifest = store.snapshot()
+        assert (manifest.box, manifest.section) == ((2, "a") if next_box else (1, "b"))
+        assert c._scans_queued == 0
+        assert "section change" in c._banner.message
+        c.finish_box(next_box)
+        c._command.submit(lambda: None).result(10)
+        manifest = store.snapshot()
+        assert (manifest.box, manifest.section) == ((3, "a") if next_box else (1, "c"))
+        assert c._scans_queued == 0
+    finally:
+        gate.set()
+        c.shutdown()
+
+
+@pytest.mark.parametrize("readonly", [False, True])
+def test_transition_missing_writer_releases_reservation(tmp_path, sweep600_dir, readonly):
+    c = make_controller(sweep600_dir)
+    try:
+        if readonly:
+            with BatchStore.create(tmp_path / "b", "Family", collection="family"):
+                pass
+            c.open_batch(tmp_path / "b", readonly=True)
+            wait_until(c, lambda: c.state().readonly)
+        c.finish_box(False)
+        c._command.submit(lambda: None).result(10)
+        assert c._scans_queued == 0
+        assert ("read-only" if readonly else "no batch") in c._banner.message
+    finally:
+        c.shutdown()
+
+
+def test_transition_submission_failure_releases_reservation(tmp_path, sweep600_dir, monkeypatch):
+    c = make_controller(sweep600_dir)
+    try:
+        _new(c, tmp_path / "b")
+
+        def failed_submit(*args, **kwargs):
+            raise RuntimeError("executor shut down")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(c._command, "submit", failed_submit)
+            c.finish_box(False)
+        assert c._scans_queued == 0
+        c.finish_box(False)
+        wait_until(c, lambda: c.state().section == "b")
+        assert c._scans_queued == 0
+    finally:
+        c.shutdown()
+
+
 @pytest.mark.parametrize("source", ["orientation", "reopened_stale"])
 def test_finish_refused_while_reenhancement_runs(tmp_path, sweep600_dir, monkeypatch, source):
     entered, release = threading.Event(), threading.Event()
@@ -224,6 +287,8 @@ def test_transition_write_keeps_ui_responsive(tmp_path, sweep600_dir, monkeypatc
         monkeypatch.setattr(store, "_write", blocked_write)
         c.finish_box(next_box)
         assert entered.wait(10)
+        c.finish_box(next_box)
+        assert "section change" in c._banner.message
         monkeypatch.setattr(store, "snapshot", blocked_snapshot)
         reader = threading.Thread(target=read_ui, daemon=True)
         reader.start()
