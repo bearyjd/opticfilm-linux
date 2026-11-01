@@ -5,8 +5,8 @@ readiness check. The app uses it as a software gate: after a known eject (RELEAS
 refused until the owner confirms the holder is seated and latched; when the state is UNKNOWN
 scanning is allowed with a warning. Only a successful load or a confirmed eject establishes a
 known state. The record is written to disk, but a new session starts UNKNOWN and never
-restores it, because the holder can be changed while the app is closed. Failed sessions, failed moves,
-interruptions, disconnections and interrupted batches invalidate that knowledge.
+restores it, because the holder can be changed while the app is closed. Failed sessions,
+failed moves, interruptions, disconnections and interrupted batches invalidate that knowledge.
 """
 
 import json
