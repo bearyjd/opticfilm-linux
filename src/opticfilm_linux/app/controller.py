@@ -43,6 +43,7 @@ from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.worker import lower_worker_priority
 
 SLIDES_PER_TRAY = 4
 STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
@@ -80,6 +81,7 @@ class Controller(HolderCommands):
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
         self._holder_busy = False  # an eject or load is queued or running
+        self._lifecycle_pending = 0  # accepted batch changes exclude new holder movements
         self._holder_latch = HolderLatch.UNKNOWN
         self._latch_address: tuple[int, int] | None = None
         self._latch_invalidated = False
@@ -110,7 +112,9 @@ class Controller(HolderCommands):
         self._free_space: FreeSpaceView | None = None
         self._cancel_export = threading.Event()
         self._cancel_free = threading.Event()
-        self._jobs = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-jobs")
+        self._jobs = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
+        )
         self._state = EMPTY_STATE
         self._reported = EMPTY_STATE
 
@@ -138,8 +142,13 @@ class Controller(HolderCommands):
         return changed
 
     def _act_on_eject_button(self, poller: StatusPoller) -> None:
-        # A press is always taken, so one the app cannot act on now is dropped, never queued.
+        # A press is always taken and handled now, never queued behind a scan.
         if not poller.take_eject_press() or not self._eject_button:
+            return
+        with self._lock:
+            refusal = self._holder_refusal()
+        if refusal is not None:
+            self._set(_banner=Banner(refusal))
             return
         # ``state()`` is a poll behind: also ask the poller's own answer, so a scanner that has just
         # gone to an error or interrupted state is not moved.
@@ -173,22 +182,16 @@ class Controller(HolderCommands):
             defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror, slots=slots)
             self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
 
-        if self._holder_move_running():
-            return
-        self._run(job, "Could not create the batch", droppable=True)
+        self._run_lifecycle(job, "Could not create the batch")
 
     def open_batch(self, directory: Path, readonly: bool = False) -> None:
         def job() -> None:
             self._replace_batch(lambda: BatchStore.open(directory, readonly=readonly), readonly)
 
-        if self._holder_move_running():
-            return
-        self._run(job, "Could not open the batch", droppable=True)
+        self._run_lifecycle(job, "Could not open the batch")
 
     def close_batch(self) -> None:
-        if self._holder_move_running():
-            return
-        self._run(self._detach, "Could not close the batch", droppable=True)
+        self._run_lifecycle(self._detach, "Could not close the batch")
 
     # -- scanning ------------------------------------------------------------------------
 
@@ -350,7 +353,7 @@ class Controller(HolderCommands):
         """Queue a long job behind every command already submitted (an edit made a moment
         ago must be stored before an export reads the slides), then run it on the jobs worker."""
         with self._lock:
-            self._long_jobs += 1  # until it reaches the jobs worker: no holder move meanwhile
+            self._long_jobs += 1  # count the job before it reaches the jobs worker
         future = self._run_writer(
             lambda _runner: self._run_writer(job, message, pool=self._jobs), message
         )
@@ -469,6 +472,24 @@ class Controller(HolderCommands):
     def _drop_progress(self, number: int) -> None:
         with self._lock:
             self._progress = {k: v for k, v in self._progress.items() if k != number}
+
+    def _run_lifecycle(self, job: Callable[[], None], message: str) -> None:
+        """Reserve batch ownership until the queued change has completely finished."""
+        self._cancel_queued_holder()
+        with self._lock:
+            refused = self._holder_busy
+            if not refused:
+                self._lifecycle_pending += 1
+        if refused:
+            self._set(_banner=Banner("Wait for the eject/load to finish"))
+            return
+        # Draining jobs and opening/closing hardware must run without the state lock.
+        future = self._run(job, message, droppable=True)
+        self._track(future, self._lifecycle_finished)
+
+    def _lifecycle_finished(self) -> None:
+        with self._lock:
+            self._lifecycle_pending -= 1
 
     def _replace_batch(self, make_store: Callable[[], BatchStore], readonly: bool = False) -> None:
         """Close the open batch, open the next; the Eject-button watcher stays stopped between."""

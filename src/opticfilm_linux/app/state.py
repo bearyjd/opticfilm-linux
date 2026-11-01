@@ -174,11 +174,7 @@ def build_state(
 ) -> AppState:
     trays = manifest.trays if manifest is not None else ()
     current = next((t for t in trays if t.number == selected), None)
-    idle = (
-        manifest is not None
-        and holder_control
-        and not (holder_busy or scan_pending or readonly or jobs_running)
-    )
+    idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return AppState(
         batch_name=manifest.name if manifest is not None else None,
         readonly=readonly,
@@ -208,6 +204,8 @@ def build_state(
         and not (holder_busy or scan_pending or readonly or jobs_running),
         holder_busy=holder_busy,
         holder_latch_text=holder_latch_text(holder_latch),
-        can_confirm_holder_latched=idle and holder_latch is HolderLatch.RELEASED,
+        can_confirm_holder_latched=idle
+        and not jobs_running
+        and holder_latch is HolderLatch.RELEASED,
         holder_latch_warning=manifest is not None and holder_latch is HolderLatch.UNKNOWN,
     )
