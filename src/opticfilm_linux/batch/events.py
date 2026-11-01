@@ -21,6 +21,7 @@ class SlideUpdated:
 class TrayFailed:
     number: int
     message: str
+    operation_sequence: int = 0
 
 
 BatchEvent = TrayStageChanged | SlideUpdated | TrayFailed

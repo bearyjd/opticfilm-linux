@@ -11,6 +11,7 @@ from pathlib import Path
 from opticfilm_linux.batch.model import Flag, SlideStatus, TrayStage
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,16 @@ def stage_text(stage: TrayStage) -> str:
 
 def scanner_text(status: ScannerStatus) -> str:
     return _SCANNER[status]
+
+
+def holder_latch_text(latch: HolderLatch) -> str:
+    return {
+        HolderLatch.LATCHED: "Holder: latched",
+        HolderLatch.RELEASED: "Holder: released",
+        HolderLatch.UNKNOWN: (
+            "Holder: unknown after power-on or a fault; check by hand before scanning"
+        ),
+    }[latch]
 
 
 def failure_text(detail: str, fallback: str) -> str:

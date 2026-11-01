@@ -41,6 +41,7 @@ from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 SLIDES_PER_TRAY = 4
 STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
@@ -60,6 +61,7 @@ class _Session:
     runner: BatchRunner | None  # None for a read-only batch
     poller: StatusPoller | None
     holder: HolderControl | None = None  # None: the scanner cannot move the holder
+    scanner: Scanner | None = None  # identity may become known only after the first status poll
 
 
 class Controller(HolderCommands):
@@ -77,6 +79,13 @@ class Controller(HolderCommands):
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
         self._holder_busy = False  # an eject or load is queued or running
+        self._holder_latch = HolderLatch.UNKNOWN
+        self._latch_address: tuple[int, int] | None = None
+        self._latch_invalidated = False
+        self._latch_sequence = 0
+        self._latch_applied = 0
+        self._latch_loss = None
+        self._latch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-latch")
         self._holder_future: Future | None = None  # that eject or load, while it may not start
         self._holder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-holder")
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
@@ -188,7 +197,7 @@ class Controller(HolderCommands):
     def rescan(self, number: int) -> None:
         def job(runner: BatchRunner) -> None:
             self._drop_progress(number)
-            runner.rescan_tray(number)
+            return runner.rescan_tray(number)
 
         self._reserved_scan(job, f"Could not re-scan tray {number}")
 
@@ -371,6 +380,7 @@ class Controller(HolderCommands):
         self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
         self._detach()
         self._refresher.shutdown(wait=True)
+        self._latch_pool.shutdown(wait=True)
 
     # -- internals shared with the other controller modules ------------------------------
 
@@ -464,16 +474,24 @@ class Controller(HolderCommands):
         runner = None
         poller = None
         holder = None
+        scanner = None
         try:
             if not readonly:
                 if self._eject_watch is not None:
                     self._eject_watch.yield_to_app()  # raises if it stays up: no scanner open
                 scanner = self._factory(store.snapshot().defaults.dpi)
-                poller = StatusPoller(scanner, self._clock, STATUS_TIMEOUT_S, self._scanner_problem)
+                poller = StatusPoller(
+                    scanner,
+                    self._clock,
+                    STATUS_TIMEOUT_S,
+                    self._scanner_problem,
+                    begin_operation=self._begin_latch_operation,
+                )
                 runner = BatchRunner(store, CachedStatusScanner(scanner, poller))
                 runner.resume()
                 holder = scanner if isinstance(scanner, HolderControl) else None
         except BaseException:
+            self._remember_holder_latch(HolderLatch.UNKNOWN, scanner)
             if runner is not None:
                 runner.stop()
             store.close()  # never leave the writer lock held after a failed open
@@ -481,7 +499,14 @@ class Controller(HolderCommands):
             raise
         first = store.snapshot().trays[0].number if store.snapshot().trays else None
         with self._lock:
-            self._session = _Session(store, runner, poller, holder)
+            self._next_latch_sequence()
+            self._latch_applied = self._latch_sequence
+            self._session = _Session(store, runner, poller, holder, scanner)
+            self._holder_latch = HolderLatch.UNKNOWN
+            self._latch_address = None
+            self._latch_loss = None
+            self._latch_invalidated = True
+            self._sync_holder_latch(scanner)
             self._selected = first
             self._banner = None
             self._updating = frozenset()
@@ -505,6 +530,9 @@ class Controller(HolderCommands):
 
     def _detach(self, restore_watch: bool = True) -> None:
         self._stop_jobs()  # a job writes through the store, so it must finish before it closes
+        current = self._session
+        if current and current.runner and current.runner.scan_pending():
+            self._remember_holder_latch(HolderLatch.UNKNOWN)
         with self._lock:
             session, self._session = self._session, None
         if session is not None:
@@ -513,9 +541,14 @@ class Controller(HolderCommands):
                 session.poller.close()
             if session.runner is not None:
                 session.runner.stop()
+                self._drain_events(session)  # failed scans must persist before dropping the session
             session.store.close()
             if self._eject_watch is not None:
                 self._wait_scanner_idle()
+        try:
+            self._latch_pool.submit(lambda: None).result()
+        except Exception:
+            log.exception("could not finish queued holder latch persistence")
         if restore_watch:
             self._restore_eject_watch()
         with self._lock:
@@ -562,13 +595,17 @@ class Controller(HolderCommands):
 
     # -- events and refresh --------------------------------------------------------------
 
-    def _drain_events(self) -> None:
-        session = self._session
+    def _drain_events(self, session: _Session | None = None) -> None:
+        session = session or self._session
         if session is None or session.runner is None:
             return
         events = session.runner.events
         while not events.empty():
             event = events.get_nowait()
+            if isinstance(event, TrayFailed):
+                self._remember_holder_latch(
+                    HolderLatch.UNKNOWN, session.scanner, sequence=event.operation_sequence
+                )
             with self._lock:
                 self._apply_event(event)
 
@@ -611,11 +648,29 @@ class Controller(HolderCommands):
 
     def _rebuild(self) -> None:
         session = self._session
-        status = session.poller.current() if session and session.poller else ScannerStatus.UNKNOWN
+        status, sequence = (
+            session.poller.snapshot() if session and session.poller else (ScannerStatus.UNKNOWN, 0)
+        )
         manifest = session.store.snapshot() if session is not None else None
         with self._lock:
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do
+            if session is not None:
+                self._sync_holder_latch(session.scanner)
+            if (
+                status
+                in (
+                    ScannerStatus.INTERRUPTED,
+                    ScannerStatus.ERROR,
+                    ScannerStatus.NOT_CONNECTED,
+                )
+                and sequence >= self._latch_applied
+                and (self._holder_latch is not HolderLatch.UNKNOWN or not self._latch_invalidated)
+            ):
+                self._latch_applied = sequence
+                self._holder_latch = HolderLatch.UNKNOWN
+                self._latch_invalidated = True
+                self._save_holder_latch()
             selected = self._selected
             tokens = self._preview_tokens(session, manifest, selected)
             self._state = build_state(
@@ -636,6 +691,7 @@ class Controller(HolderCommands):
                 holder_busy=self._holder_busy,
                 next_strip=self._next_strip,
                 jobs_running=bool(self._long_jobs or self._job_futures),
+                holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
             )
 
     @staticmethod
