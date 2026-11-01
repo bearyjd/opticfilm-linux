@@ -18,10 +18,12 @@ from opticfilm_linux.app.prefs import (
     THEMES,
     Prefs,
     batch_subfolder,
+    export_defaults,
     forget_batch,
     read_theme,
     recent_batches,
     remember_batch,
+    remember_export,
     remember_theme,
 )
 from opticfilm_linux.app.qt.models import DictListModel
@@ -66,8 +68,6 @@ FIELDS = {
     "sharpen": "sharpen_amount",
 }
 DEFAULTS = BatchDefaults()
-EXPORT_FOLDER_KEY = "export_folder"
-EXPORT_FORMAT_KEY = "export_format"
 
 
 def _tray_dict(row: TrayRow) -> dict[str, Any]:
@@ -113,6 +113,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
 class Bridge(QObject):
     changed = Signal()
     themeChanged = Signal()
+    batchReplaced = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -137,6 +138,7 @@ class Bridge(QObject):
         self._pending: dict[tuple[int, int], dict[str, float]] = {}
         self._opening: Path | None = None
         self._last_attempt: Path | None = None
+        self._pending_export: tuple[int, str, str, str] | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self.poll)
@@ -176,6 +178,25 @@ class Bridge(QObject):
             self._apply(self._controller.state())
 
     def _apply(self, state: AppState) -> None:
+        replaced = state.batch_session != self._state.batch_session
+        pending = self._pending_export
+        if pending is not None:
+            session, folder, fmt, size = pending
+            if session != state.batch_session:
+                self._pending_export = None
+            elif (
+                state.export is not None
+                and state.export is not self._state.export
+                and (state.export_dir, state.export_format, state.jpeg_size) == (folder, fmt, size)
+            ):
+                # The controller has validated and saved this request before starting it.
+                remember_export(
+                    self._prefs,
+                    QUrl.fromLocalFile(folder).toString(),
+                    state.export_format,
+                    state.jpeg_size,
+                )
+                self._pending_export = None
         self._state = state
         self._trays.set_rows([_tray_dict(t) for t in state.trays])
         number = state.selected
@@ -186,6 +207,8 @@ class Bridge(QObject):
             remember_batch(self._prefs, self._opening)
             self._opening = None
         self.changed.emit()
+        if replaced:
+            self.batchReplaced.emit()
 
     trays = Property(QObject, lambda self: self._trays, constant=True)
     slides = Property(QObject, lambda self: self._slides, constant=True)
@@ -204,6 +227,13 @@ class Bridge(QObject):
     readonly = _p(bool, changed, lambda s, _: s.readonly)
     batchRotation = _p(int, changed, lambda s, _: s.default_rotation)  # noqa: N815
     batchMirror = _p(bool, changed, lambda s, _: s.default_mirror)  # noqa: N815
+    batchExportFolder = _p(  # noqa: N815
+        str,
+        changed,
+        lambda s, _: QUrl.fromLocalFile(s.export_dir).toString() if s.export_dir else "",
+    )
+    batchExportFormat = _p(str, changed, lambda s, _: s.export_format)  # noqa: N815
+    batchJpegSize = _p(str, changed, lambda s, _: s.jpeg_size)  # noqa: N815
     scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
     holderLatchText = _p(str, changed, lambda s, _: s.holder_latch_text)  # noqa: N815
     holderLatchWarning = _p(bool, changed, lambda s, _: s.holder_latch_warning)  # noqa: N815
@@ -256,10 +286,13 @@ class Bridge(QObject):
     )
     freeSpaceText = _p(str, changed, lambda s, _: _free_text(s))  # noqa: N815
     lastExportFolder = _p(  # noqa: N815
-        str, changed, lambda _s, b: b._prefs.get(EXPORT_FOLDER_KEY, "") or ""
+        str, changed, lambda _s, b: export_defaults(b._prefs).folder
     )
     lastExportFormat = _p(  # noqa: N815
-        str, changed, lambda _s, b: b._prefs.get(EXPORT_FORMAT_KEY, "tiff16") or "tiff16"
+        str, changed, lambda _s, b: export_defaults(b._prefs).format
+    )
+    lastExportJpegSize = _p(  # noqa: N815
+        str, changed, lambda _s, b: export_defaults(b._prefs).jpeg_size
     )
     recentBatches = _p(  # noqa: N815
         "QVariantList",
@@ -272,7 +305,14 @@ class Bridge(QObject):
 
     # -- batch ---------------------------------------------------------------------------
 
+    @Slot(str, str, str, str, int)
+    @Slot(str, str, str, str, int, int)
+    @Slot(str, str, str, str, int, int, bool)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList")
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList")
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str)
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -284,6 +324,9 @@ class Bridge(QObject):
         mirror: bool = False,
         slot_rotations: list[int] | None = None,
         slot_mirrors: list[bool] | None = None,
+        export_dir: str = "",
+        export_format: str = "jpeg",
+        jpeg_size: str = "full",
     ) -> None:
         """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
         rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
@@ -300,6 +343,9 @@ class Bridge(QObject):
             rotation,
             mirror,
             slot_orientations(rotations, mirrored),
+            export_dir=QUrl(export_dir).toLocalFile() or export_dir,
+            export_format=export_format,  # type: ignore[arg-type]
+            jpeg_size=jpeg_size,  # type: ignore[arg-type]
         )
 
     @Slot(str, bool)
@@ -404,12 +450,13 @@ class Bridge(QObject):
     # -- export and free disk space ------------------------------------------------------
 
     @Slot(str, str)
-    def startExport(self, folder_url: str, fmt: str) -> None:  # noqa: N802
+    @Slot(str, str, str)
+    def startExport(self, folder_url: str, fmt: str, jpeg_size: str = "full") -> None:  # noqa: N802
         self._flush_now()  # the export must see the slider the owner just moved
         folder = QUrl(folder_url).toLocalFile() or folder_url
-        self._prefs.set(EXPORT_FOLDER_KEY, folder)
-        self._prefs.set(EXPORT_FORMAT_KEY, fmt)
-        self._controller.export(Path(folder), fmt)  # type: ignore[arg-type]
+        directory = Path(folder)
+        self._pending_export = (self._state.batch_session, str(directory), fmt, jpeg_size)
+        self._controller.export(directory, fmt, jpeg_size)  # type: ignore[arg-type]
 
     @Slot()
     def reexportAllAccepted(self) -> None:  # noqa: N802

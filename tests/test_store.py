@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from opticfilm_linux.batch.manifest import ManifestFormatError, from_json
-from opticfilm_linux.batch.model import BatchManifest, TrayRecord, TrayStage
+from opticfilm_linux.batch.model import BatchDefaults, BatchManifest, TrayRecord, TrayStage
 from opticfilm_linux.batch.store import BatchError, BatchStore
 
 
@@ -204,3 +204,17 @@ def test_context_manager_releases_the_lock(tmp_path):
     with _store(tmp_path):
         pass
     BatchStore.open(tmp_path / "batch").close()
+
+
+@pytest.mark.parametrize("dpi", [7200, 600])
+def test_create_reopen_preserves_new_and_explicit_dpi(tmp_path, dpi):
+    defaults = None if dpi == 7200 else BatchDefaults(dpi=dpi)
+    directory = tmp_path / "batch"
+    store = BatchStore.create(directory, name="Trips", defaults=defaults)
+    assert store.snapshot().defaults.dpi == dpi
+    store.close()
+    reopened = BatchStore.open(directory)
+    try:
+        assert reopened.snapshot().defaults.dpi == dpi
+    finally:
+        reopened.close()

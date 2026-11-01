@@ -10,6 +10,9 @@ Kirigami.ScrollablePage {
     objectName: "startPage"
 
     property url parentFolder: ""
+    property url exportFolder: ""
+
+    Component.onCompleted: exportFolder = bridge.lastExportFolder
 
     title: qsTr("OpticFilm Linux")
 
@@ -18,6 +21,13 @@ Kirigami.ScrollablePage {
 
         title: qsTr("Choose where the new batch folder goes")
         onAccepted: page.parentFolder = selectedFolder
+    }
+
+    FolderDialog {
+        id: exportFolderDialog
+
+        title: qsTr("Export to folder")
+        onAccepted: page.exportFolder = selectedFolder
     }
 
     ColumnLayout {
@@ -80,11 +90,51 @@ Kirigami.ScrollablePage {
             }
             QQC2.ComboBox {
                 id: dpiBox
+                objectName: "newBatchDpi"
 
                 Kirigami.FormData.label: qsTr("Resolution (dpi):")
-                model: bridge.dpiChoices
+                model: bridge.dpiChoices.map(dpi => ({value: dpi}))
+                textRole: "value"
+                valueRole: "value"
                 enabled: bridge.demoDpi === 0
                 Component.onCompleted: currentIndex = Math.max(0, bridge.dpiChoices.indexOf(bridge.defaultDpi))
+            }
+            RowLayout {
+                Kirigami.FormData.label: qsTr("Export folder:")
+
+                QQC2.Label {
+                    text: page.exportFolder.toString() === "" ? qsTr("(choose later)") : decodeURIComponent(page.exportFolder.toString().replace("file://", ""))
+                    elide: Text.ElideMiddle
+                    Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+                }
+                QQC2.Button {
+                    text: qsTr("Browse…")
+                    icon.name: "folder-open"
+                    onClicked: exportFolderDialog.open()
+                }
+            }
+            QQC2.ComboBox {
+                id: exportFormatBox
+                objectName: "newBatchExportFormat"
+                Kirigami.FormData.label: qsTr("Export format:")
+                model: [
+                    {key: "jpeg", label: qsTr("JPEG")},
+                    {key: "png8", label: qsTr("8-bit PNG")},
+                    {key: "tiff16", label: qsTr("16-bit TIFF (best quality)")}
+                ]
+                textRole: "label"
+                valueRole: "key"
+                Component.onCompleted: currentIndex = Math.max(0, indexOfValue(bridge.lastExportFormat))
+            }
+            QQC2.ComboBox {
+                id: jpegSizeBox
+                objectName: "newBatchJpegSize"
+                Kirigami.FormData.label: qsTr("JPEG size:")
+                model: [{key: "full", label: qsTr("Full size")}, {key: "3600", label: qsTr("3600 dpi size")}]
+                textRole: "label"
+                valueRole: "key"
+                enabled: exportFormatBox.currentValue === "jpeg"
+                Component.onCompleted: currentIndex = Math.max(0, indexOfValue(bridge.lastExportJpegSize))
             }
             RowLayout {
                 Kirigami.FormData.label: qsTr("Slide orientation:")
@@ -151,7 +201,7 @@ Kirigami.ScrollablePage {
                 onClicked: {
                     // hidden slot rows do not count: the owner said all slots are loaded alike
                     const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
-                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, parseInt(dpiBox.currentText), parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored));
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue);
                 }
             }
         }

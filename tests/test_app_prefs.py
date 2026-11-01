@@ -9,9 +9,11 @@ from opticfilm_linux.app.prefs import (
     MemoryPrefs,
     RecentBatch,
     batch_subfolder,
+    export_defaults,
     forget_batch,
     recent_batches,
     remember_batch,
+    remember_export,
 )
 
 
@@ -66,7 +68,7 @@ def test_subfolder_stays_inside_parent():
 
 
 def test_dpi_choices_match_the_spec():
-    assert DPI_CHOICES == (600, 1200, 2400, 3600, 7200) and DEFAULT_DPI == 3600
+    assert DPI_CHOICES == (600, 1200, 2400, 3600, 7200) and DEFAULT_DPI == 7200
 
 
 @pytest.mark.parametrize("stored", [None, "", "system", "DARK"])
@@ -91,3 +93,35 @@ def test_invalid_theme_does_not_replace_a_remembered_choice():
     with pytest.raises(ValueError):
         preferences.remember_theme(prefs, "system")
     assert preferences.read_theme(prefs) == "light"
+
+
+def test_export_preferences_default_to_jpeg_full_size():
+    defaults = export_defaults(MemoryPrefs())
+    assert (defaults.folder, defaults.format, defaults.jpeg_size) == ("", "jpeg", "full")
+
+
+def test_remember_export_preserves_folder_format_and_size():
+    prefs = MemoryPrefs()
+    remember_export(prefs, "file:///photos", "png8", "3600")
+    defaults = export_defaults(prefs)
+    assert (defaults.folder, defaults.format, defaults.jpeg_size) == (
+        "file:///photos",
+        "png8",
+        "3600",
+    )
+
+
+def test_export_preferences_keep_legacy_choices_and_ignore_corrupt_enums():
+    prefs = MemoryPrefs()
+    prefs.set("export_folder", "file:///legacy")
+    prefs.set("export_format", "tiff16")
+    defaults = export_defaults(prefs)
+    assert (defaults.folder, defaults.format, defaults.jpeg_size) == (
+        "file:///legacy",
+        "tiff16",
+        "full",
+    )
+    prefs.set("export_format", "unknown")
+    prefs.set("export_jpeg_size", "unknown")
+    defaults = export_defaults(prefs)
+    assert (defaults.format, defaults.jpeg_size) == ("jpeg", "full")

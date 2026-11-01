@@ -25,6 +25,34 @@ from opticfilm_linux.batch.store import BatchLocked, BatchStore
 GATE_TIMEOUT = 30
 
 
+def test_run_export_forwards_size_without_changing_selection(tmp_path, monkeypatch):
+    from opticfilm_linux.batch.export import ExportResult
+
+    seen = []
+
+    def export(store, directory, fmt, **kwargs):
+        seen.append((store, directory, fmt, kwargs))
+        kwargs["on_selection"](store.snapshot())
+        return ExportResult((), False)
+
+    monkeypatch.setattr("opticfilm_linux.app.jobs.export_batch", export)
+    with BatchStore.create(tmp_path / "b", "B") as store:
+        views = []
+        keys = frozenset({(1, 2)})
+        run_export(
+            store,
+            tmp_path / "photos",
+            "jpeg",
+            threading.Event(),
+            views.append,
+            keys,
+            jpeg_size="3600",
+        )
+    assert seen[0][3]["keys"] == keys
+    assert seen[0][3]["jpeg_size"] == "3600"
+    assert views[-1].finished
+
+
 @pytest.fixture
 def two_trays(sweep600_dir, tmp_path):
     """A controller with two scanned, reviewed and accepted trays (8 slides)."""
@@ -106,12 +134,14 @@ def test_export_cancel_marks_cancelled_and_second_export_continues(
 def test_export_to_missing_folder_gives_banner_and_changes_no_stage(two_trays, tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("x")
+    before = two_trays._session.store.snapshot().defaults
     two_trays.export(blocker / "sub", "tiff16")
     wait_until(two_trays, lambda: two_trays.state().banner is not None)
     assert _exported_count(two_trays) == 0
     assert {t.stage for t in two_trays.state().trays} == {TrayStage.REVIEW}
-    assert two_trays.state().export is None or not two_trays.state().export.running
-    assert "Nothing to write" not in two_trays.state().export.message
+    assert two_trays.state().export is None
+    assert "not a directory" in two_trays.state().banner.detail
+    assert two_trays._session.store.snapshot().defaults == before
 
 
 def test_export_empty_batch_reports_zero_written(sweep600_dir, tmp_path):
