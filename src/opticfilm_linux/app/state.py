@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from opticfilm_linux.app.messages import flag_text, scanner_text, stage_text
+from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.batch.model import (
     BatchManifest,
     SlideRecord,
@@ -13,6 +13,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.scanner.base import ScannerStatus
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,9 @@ class AppState:
     next_strip_enabled: bool = False  # the experimental non-interactive load is switched on
     holder_busy: bool = False  # an eject or load is queued or running
     can_confirm_scanner: bool = False  # a command was cut off; the owner may confirm a reset
+    holder_latch_text: str = holder_latch_text(HolderLatch.UNKNOWN)
+    can_confirm_holder_latched: bool = False
+    holder_latch_warning: bool = False
 
 
 EMPTY_STATE = AppState(
@@ -166,6 +170,7 @@ def build_state(
     holder_busy: bool = False,
     next_strip: bool = False,
     jobs_running: bool = False,
+    holder_latch: HolderLatch = HolderLatch.UNKNOWN,
 ) -> AppState:
     trays = manifest.trays if manifest is not None else ()
     current = next((t for t in trays if t.number == selected), None)
@@ -181,6 +186,7 @@ def build_state(
         scanner_text=scanner_text(scanner),
         can_scan=manifest is not None
         and scanner is ScannerStatus.READY
+        and holder_latch is not HolderLatch.RELEASED
         and not scan_pending
         and not holder_busy
         and not readonly,
@@ -201,4 +207,7 @@ def build_state(
         can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED
         and not (holder_busy or scan_pending or readonly or jobs_running),
         holder_busy=holder_busy,
+        holder_latch_text=holder_latch_text(holder_latch),
+        can_confirm_holder_latched=idle and holder_latch is HolderLatch.RELEASED,
+        holder_latch_warning=manifest is not None and holder_latch is HolderLatch.UNKNOWN,
     )

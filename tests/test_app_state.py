@@ -172,3 +172,14 @@ def test_holder_buttons_need_an_open_batch():
     )
     assert not state.can_eject and not state.can_load_next
     assert not EMPTY_STATE.can_eject and not EMPTY_STATE.can_load_next
+
+
+@pytest.mark.parametrize(
+    "latch,allowed", [("UNKNOWN", True), ("LATCHED", True), ("RELEASED", False)]
+)
+def test_can_scan_respects_holder_latch(latch, allowed):
+    from opticfilm_linux.scanner.holder_latch import HolderLatch
+
+    state = _build(holder_latch=HolderLatch[latch], holder_control=True)
+    assert state.can_scan is allowed
+    assert state.can_confirm_holder_latched is (latch == "RELEASED")
