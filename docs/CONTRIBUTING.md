@@ -26,6 +26,7 @@
 
 | Command | What it does |
 |---------|--------------|
+| `ofscan` / `opticfilm` | Installed entry points: `opticfilm_linux.cli:main` / `opticfilm_linux.app.qt.app:main` (`pyproject.toml` `[project.scripts]`) |
 | `ofscan devices` | List supported scanners (read-only) |
 | `ofscan scan [--fake DIR] [--dpi N]` | Scan a holder and process it (default 3600 dpi) |
 | `ofscan process SWEEP_DIR` | Process a stored sweep |
@@ -41,6 +42,10 @@
 | `scripts/hardware/hw_run.sh ATTEMPT_DIR NAME of135i-ARGS...` | Run one driver command with a trace and log; after a failure it records the scanner state with the read-only `doctor` (see `scripts/hardware/README.md`) |
 | `scripts/hardware/ab_gate_test.sh ATTEMPT_DIR` / `tray_and_armc_test.sh tray\|armc ATTEMPT_DIR` | Supervised hardware series that move the motor; they need a real terminal for the confirmation |
 | `scripts/hardware/merge_when_green.sh OWNER/REPO PR BRANCH` | Maintainer tooling: wait for CI on the current head, then merge with a merge commit |
+| `uv sync` | Install project dependencies and the default `dev` group: `pytest>=8.0`, `pytest-cov>=5.0`, `ruff>=0.5` (`pyproject.toml`); also used by CI |
+| `uv run pytest --cov=opticfilm_linux --cov-fail-under=80` | Normal CI test command; default pytest selection is `-m 'not hardware and not qt'`. `hardware` means read-only real-scanner tests; `qt` means distribution PySide6/Kirigami headless smoke tests (`pyproject.toml`, `.github/workflows/ci.yml`) |
+| `uv run ruff check .` | Lint command run by normal CI (`.github/workflows/ci.yml`) |
+| `QT_QPA_PLATFORM=offscreen .venv-qt/bin/python -m pytest -m qt tests/qt -q` | Optional Fedora CI Qt job; `-m qt` overrides the default marker selection. CI creates `.venv-qt` with `--system-site-packages` using `/usr/bin/python3`, then syncs with `UV_PROJECT_ENVIRONMENT=.venv-qt` (`.github/workflows/ci.yml`) |
 
 Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage at least 80 %,
 `ruff check` and `ruff format --check` (line length 100, Python 3.11 target).
