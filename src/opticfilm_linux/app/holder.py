@@ -1,10 +1,10 @@
 """Eject and load-next-holder for the controller, kept apart from scans and long jobs.
 
 A holder movement and a scan share one reservation under the controller's lock: a movement is
-refused while a scan is queued or running, and a scan while a movement is. A movement never
-waits behind an export either: it is refused at once, runs on its own worker, and at most one is
-ever pending. Closing or reopening the batch cancels one that has not started; while one is
-running the batch is left as it is and the owner is told to wait.
+refused while a scan is queued or running, and a scan while a movement is. A movement runs on
+its own worker alongside exports and free-space jobs, and at most one is ever pending. Closing
+or reopening the batch cancels one that has not started; while one is running the batch is left
+as it is and the owner is told to wait.
 """
 
 import logging
@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 ANOTHER_PROGRAM = "Another program is using the scanner. Close it or wait for it to finish."
 WAIT_SCAN = "Wait for the scan to finish"
 WAIT_HOLDER = "Wait for the eject/load to finish"
+WAIT_BATCH = "Wait for the batch change to finish"
 WAIT_EXPORT = "Wait for the export to finish, then try again"
 SCANNER_INTERRUPTED = (
     "A scan or holder move was cut off, so nothing moves the scanner until you confirm it was "
@@ -127,6 +128,8 @@ class HolderCommands:
 
         with self._lock:
             refusal = WAIT_HOLDER if self._holder_busy else self._holder_refusal()
+            if refusal is None and (self._long_jobs or self._job_futures):
+                refusal = WAIT_EXPORT
             self._holder_busy = refusal is None
         if refusal is not None:
             self._set(_banner=Banner(refusal))
@@ -243,12 +246,12 @@ class HolderCommands:
 
     def _holder_refusal(self) -> str | None:
         """Why a movement cannot start now; called under the lock."""
+        if self._lifecycle_pending or self._closing.is_set():
+            return WAIT_BATCH
         session = self._session
         runner = session.runner if session is not None else None
         if self._scans_queued or (runner is not None and runner.scan_pending()):
             return WAIT_SCAN
-        if self._long_jobs or self._job_futures:
-            return WAIT_EXPORT
         return None
 
     def _reserved_scan(self, job: Callable[[BatchRunner], None], message: str) -> None:
