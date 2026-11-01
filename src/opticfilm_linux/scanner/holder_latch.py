@@ -1,10 +1,11 @@
-"""Qt-free knowledge of the holder latch, persisted per USB connection.
+"""Qt-free knowledge of the holder latch, saved per USB connection but never restored.
 
 The latch has no sensor, so this is knowledge of what the app itself did, never a hardware
 readiness check. The app uses it as a software gate: after a known eject (RELEASED) Scan is
 refused until the owner confirms the holder is seated and latched; when the state is UNKNOWN
 scanning is allowed with a warning. Only a successful load or a confirmed eject establishes a
-known state, and nothing here outlives a session. Failed sessions, failed moves,
+known state. The record is written to disk, but a new session starts UNKNOWN and never
+restores it, because the holder can be changed while the app is closed. Failed sessions, failed moves,
 interruptions, disconnections and interrupted batches invalidate that knowledge.
 """
 
