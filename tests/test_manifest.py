@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -79,3 +80,57 @@ def test_wrong_type_raises_manifestformaterror():
 def test_top_level_must_be_an_object():
     with pytest.raises(ManifestFormatError):
         from_json("[1, 2, 3]")
+
+
+@pytest.mark.parametrize("fmt", ["tiff16", "png8", "jpeg"])
+def test_export_defaults_roundtrip(fmt):
+    manifest = _manifest()
+    defaults = replace(
+        manifest.defaults,
+        export_dir="/photos/Family albums",
+        export_format=fmt,
+        jpeg_size="3600",
+    )
+    custom = replace(manifest, defaults=defaults)
+    assert from_json(to_json(custom)) == custom
+    assert (
+        not {"export_dir", "export_format", "jpeg_size"}
+        & json.loads(to_json(manifest))["defaults"].keys()
+    )
+
+
+@pytest.mark.parametrize("stored_dpi", [600, 3600, 7200])
+def test_old_manifest_keeps_stored_dpi(stored_dpi):
+    manifest = _manifest()
+    custom = replace(manifest, defaults=replace(manifest.defaults, dpi=stored_dpi))
+    data = json.loads(to_json(custom))
+    for key in ("export_dir", "export_format", "jpeg_size"):
+        data["defaults"].pop(key, None)
+    loaded = from_json(json.dumps(data))
+    assert loaded.defaults.dpi == stored_dpi
+    assert (
+        loaded.defaults.export_dir,
+        loaded.defaults.export_format,
+        loaded.defaults.jpeg_size,
+    ) == ("", "jpeg", "full")
+    assert from_json(to_json(loaded)) == loaded
+    assert json.loads(to_json(loaded))["defaults"]["dpi"] == stored_dpi
+
+
+@pytest.mark.parametrize(
+    "key,value", [("export_dir", None), ("export_format", "gif"), ("jpeg_size", "half")]
+)
+def test_bad_manifest_export_defaults_rejected(key, value):
+    data = json.loads(to_json(_manifest()))
+    data["defaults"][key] = value
+    with pytest.raises(ManifestFormatError, match=key):
+        from_json(json.dumps(data))
+
+
+def test_old_manifest_without_dpi_keeps_historical_3600():
+    data = json.loads(to_json(_manifest()))
+    del data["defaults"]["dpi"]
+    loaded = from_json(json.dumps(data))
+    assert loaded.defaults.dpi == 3600
+    assert from_json(to_json(loaded)) == loaded
+    assert json.loads(to_json(loaded))["defaults"]["dpi"] == 3600

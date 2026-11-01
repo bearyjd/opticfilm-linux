@@ -58,9 +58,9 @@ def test_new_slide_record_starts_pending_and_undecided():
     assert slide.owner_decided is False and slide.exported is False
 
 
-def test_batch_defaults_match_the_pipeline_defaults():
+def test_batch_defaults_match_new_batch_defaults():
     defaults = BatchDefaults()
-    assert (defaults.dpi, defaults.infrared, defaults.mode) == (3600, True, "positive")
+    assert (defaults.dpi, defaults.infrared, defaults.mode) == (7200, True, "positive")
     assert (defaults.color_strength, defaults.grain_strength, defaults.sharpen_amount) == (
         1.0,
         0.3,
@@ -71,3 +71,24 @@ def test_batch_defaults_match_the_pipeline_defaults():
 def test_manifest_starts_empty():
     manifest = BatchManifest(name="Trips")
     assert manifest.trays == () and manifest.version == 1 and Flag.TOO_DARK == "too_dark"
+
+
+def test_export_defaults_start_with_full_size_jpeg():
+    defaults = BatchDefaults()
+    assert (defaults.export_dir, defaults.export_format, defaults.jpeg_size) == ("", "jpeg", "full")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"export_dir": None},
+        {"export_dir": 123},
+        {"export_format": "gif"},
+        {"export_format": None},
+        {"jpeg_size": "half"},
+        {"jpeg_size": 3600},
+    ],
+)
+def test_bad_export_defaults_rejected(kwargs):
+    with pytest.raises(ValueError):
+        BatchDefaults(**kwargs)

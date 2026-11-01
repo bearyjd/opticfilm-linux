@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal
 
+from opticfilm_linux.output import Format, JpegSize
+
 ROTATIONS = (0, 90, 180, 270)
 BRIGHTNESS_RANGE = (-2.0, 2.0)
 
@@ -117,7 +119,7 @@ def _check_slots(slots: object) -> None:
 
 @dataclass(frozen=True)
 class BatchDefaults:
-    dpi: int = 3600
+    dpi: int = 7200
     infrared: bool = True
     mode: Mode = "positive"
     skip_blank: bool = True
@@ -129,9 +131,19 @@ class BatchDefaults:
     mirror: bool = False  # whether every slide of the batch is flipped left-right
     slots: tuple[SlotOrientation, ...] = ()  # per holder slot, applied after the above
 
+    export_dir: str = ""
+    export_format: Format = "jpeg"
+    jpeg_size: JpegSize = "full"
+
     def __post_init__(self) -> None:
         _check_orientation(self.rotation, self.mirror)
         _check_slots(self.slots)
+        if not isinstance(self.export_dir, str):
+            raise ValueError("export_dir must be a string")
+        if self.export_format not in ("tiff16", "png8", "jpeg"):
+            raise ValueError("export_format must be tiff16, png8 or jpeg")
+        if self.jpeg_size not in ("full", "3600"):
+            raise ValueError("jpeg_size must be full or 3600")
 
 
 @dataclass(frozen=True)

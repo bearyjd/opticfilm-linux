@@ -14,6 +14,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import (  # noqa: E402
     QCoreApplication,
+    QEvent,
     QMetaObject,
     QObject,
     QPoint,
@@ -48,6 +49,11 @@ def _wait(bridge, condition, timeout=TIMEOUT):
             return
         time.sleep(0.01)
     raise AssertionError("timed out waiting for the window")
+
+
+def _drain_deferred_deletes():
+    """Release old Loader pages before finding controls in the active page."""
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 @pytest.fixture
@@ -442,3 +448,208 @@ def test_the_new_batch_form_sets_slot_orientations(loaded, tmp_path):
         slots = store.snapshot().defaults.slots
     assert slots == (SlotOrientation(2, 180), SlotOrientation(3, 0, True))
     assert warnings == []
+
+
+def _qml_call(engine, expression):
+    from PySide6.QtQml import QQmlComponent
+
+    component = QQmlComponent(engine)
+    component.setData(
+        ("import QtQml\nQtObject { function run() { " + expression + " } }").encode(),
+        QUrl(),
+    )
+    obj = component.create()
+    assert obj is not None, component.errors()
+    assert QMetaObject.invokeMethod(obj, "run")
+    obj.deleteLater()
+
+
+@pytest.mark.parametrize("size", [None, "3600"])
+def test_start_export_qml_overloads(loaded, tmp_path, size):
+    import json
+
+    bridge, engine, warnings = loaded
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Overload", "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch)
+    url = QUrl.fromLocalFile(str(tmp_path / "photos")).toString()
+    args = [url, "jpeg"] + ([] if size is None else [size])
+    _qml_call(engine, "bridge.startExport(" + ",".join(map(json.dumps, args)) + ")")
+    _wait(bridge, lambda: bridge.exportFinished)
+    assert bridge.batchExportFolder == url
+    assert bridge.batchJpegSize == (size or "full")
+    assert not warnings
+
+
+def _dialog_fields(root, dialog):
+    return (
+        dialog.property("folderUrl"),
+        root.findChild(QObject, "exportFormat").property("currentValue"),
+        root.findChild(QObject, "exportSize").property("currentValue"),
+    )
+
+
+def test_export_dialog_reopens_from_batch(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    bridge._prefs.set("export_format", "tiff16")
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Remember", "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch)
+    assert bridge.batchExportFormat == "jpeg"
+    bridge._controller.set_export_settings(tmp_path / "photos", "jpeg", "3600")
+    _wait(bridge, lambda: bridge.batchJpegSize == "3600")
+    root = engine.rootObjects()[0]
+    dialog = root.findChild(QObject, "exportDialog")
+    expected = (QUrl.fromLocalFile(str(tmp_path / "photos")).toString(), "jpeg", "3600")
+    for _ in range(2):
+        QMetaObject.invokeMethod(dialog, "open")
+        _wait(bridge, lambda: dialog.property("opened"))
+        assert _dialog_fields(root, dialog) == expected
+        dialog.setProperty("folderUrl", "file:///unsaved")
+        root.findChild(QObject, "exportFormat").setProperty("currentIndex", 0)
+        root.findChild(QObject, "exportSize").setProperty("currentIndex", 0)
+        bridge._controller._command.submit(lambda: None).result(10)
+        bridge._controller._rebuild()
+        bridge._apply(bridge._controller.state())
+        QCoreApplication.processEvents()
+        assert dialog.property("folderUrl") == "file:///unsaved"
+        assert not root.findChild(QObject, "exportSize").property("enabled")
+        QMetaObject.invokeMethod(dialog, "close")
+        _wait(bridge, lambda: not dialog.property("visible"))
+    assert not warnings
+
+
+def test_export_dialog_resets_for_same_name_batch_replacement(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    parent = QUrl.fromLocalFile(str(tmp_path)).toString()
+    bridge.newBatch(parent, "Same", "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch)
+    root = engine.rootObjects()[0]
+    dialog = root.findChild(QObject, "exportDialog")
+    QMetaObject.invokeMethod(dialog, "open")
+    _wait(bridge, lambda: dialog.property("opened"))
+    dialog.setProperty("folderUrl", "file:///unsaved")
+    root.findChild(QObject, "exportFormat").setProperty("currentIndex", 0)
+    root.findChild(QObject, "exportSize").setProperty("currentIndex", 1)
+    bridge.newBatch(
+        QUrl.fromLocalFile(str(tmp_path / "other")).toString(),
+        "Same",
+        "",
+        "",
+        600,
+        0,
+        False,
+        [],
+        [],
+        str(tmp_path / "b-photos"),
+        "png8",
+        "full",
+    )
+    expected = (QUrl.fromLocalFile(str(tmp_path / "b-photos")).toString(), "png8", "full")
+    _wait(bridge, lambda: bridge.batchExportFolder == expected[0])
+    # Detaching a batch can recreate MainPage. Its old dialog survives until Qt
+    # processes deferred deletes, but its QML context has already been destroyed.
+    _drain_deferred_deletes()
+    dialog = root.findChild(QObject, "exportDialog")
+    QMetaObject.invokeMethod(dialog, "open")
+    _wait(bridge, lambda: dialog.property("opened"))
+    assert _dialog_fields(root, dialog) == expected
+    assert not warnings
+
+
+@pytest.mark.parametrize("demo_dpi,expected", [(0, 7200), (600, 600)])
+def test_start_page_defaults_to_7200(qapp, sweep600_dir, demo_dpi, expected):
+    controller = Controller(scanner_factory(sweep600_dir))
+    bridge = Bridge(controller, MemoryPrefs(), demo_dpi=demo_dpi)
+    provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
+    engine, warnings = create_engine(bridge, provider)
+    try:
+        assert engine.rootObjects(), warnings
+        root = engine.rootObjects()[0]
+        resolution = root.findChild(QObject, "newBatchDpi")
+        assert resolution.property("currentValue") == expected
+        assert root.findChild(QObject, "newBatchJpegSize").property("currentValue") == "full"
+        assert not warnings
+    finally:
+        bridge.shutdown()
+        engine.deleteLater()
+
+
+def test_start_page_saves_export_folder_and_size(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    root = engine.rootObjects()[0]
+    page = root.findChild(QObject, "startPage")
+    page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
+    page.setProperty("exportFolder", QUrl.fromLocalFile(str(tmp_path / "photos")))
+    root.findChild(QObject, "newBatchName").setProperty("text", "Destination")
+    root.findChild(QObject, "newBatchJpegSize").setProperty("currentIndex", 1)
+    create = root.findChild(QObject, "createBatch")
+    _wait(bridge, lambda: create.property("enabled"))  # bindings need an event-loop turn
+    QMetaObject.invokeMethod(create, "click")
+    _wait(bridge, lambda: bridge.hasBatch)
+    assert bridge.batchExportFolder == QUrl.fromLocalFile(str(tmp_path / "photos")).toString()
+    assert bridge.batchExportFormat == "jpeg"
+    assert bridge.batchJpegSize == "3600"
+    assert not warnings
+
+
+@pytest.mark.parametrize(
+    "fmt,trailing_slash", [("jpeg", False), ("png8", False), ("tiff16", False), ("jpeg", True)]
+)
+def test_last_export_initializes_next_batch_without_changing_existing_batch(
+    loaded, tmp_path, fmt, trailing_slash
+):
+    bridge, engine, warnings = loaded
+    parent = QUrl.fromLocalFile(str(tmp_path)).toString()
+    bridge.newBatch(parent, "Original", "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch)
+    original_session = bridge._state.batch_session
+    bridge.newBatch(parent, "Exporting", "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch and bridge._state.batch_session != original_session)
+    folder_url = QUrl.fromLocalFile(str(tmp_path / "photos")).toString()
+    bridge.startExport(folder_url + ("/" if trailing_slash else ""), fmt, "3600")
+    _wait(bridge, lambda: bridge.exportFinished)
+    assert bridge.lastExportFolder == folder_url
+    bridge.closeBatch()
+    _wait(bridge, lambda: not bridge.hasBatch)
+    _drain_deferred_deletes()
+    root = engine.rootObjects()[0]
+    page = root.findChild(QObject, "startPage")
+    assert page.property("exportFolder") == QUrl(folder_url)
+    assert root.findChild(QObject, "newBatchExportFormat").property("currentValue") == fmt
+    size = root.findChild(QObject, "newBatchJpegSize")
+    assert size.property("currentValue") == "3600"
+    assert size.property("enabled") == (fmt == "jpeg")
+    page.setProperty("parentFolder", QUrl(parent))
+    root.findChild(QObject, "newBatchName").setProperty("text", "Next")
+    create = root.findChild(QObject, "createBatch")
+    _wait(bridge, lambda: create.property("enabled"))
+    assert QMetaObject.invokeMethod(create, "click")
+    _wait(bridge, lambda: bridge.hasBatch)
+    assert (bridge.batchExportFolder, bridge.batchExportFormat, bridge.batchJpegSize) == (
+        folder_url,
+        fmt,
+        "3600",
+    )
+    bridge.openBatch(str(tmp_path / "Original"), False)
+    _wait(bridge, lambda: bridge.batchName == "Original")
+    assert (bridge.batchExportFolder, bridge.batchExportFormat, bridge.batchJpegSize) == (
+        "",
+        "jpeg",
+        "full",
+    )
+    assert not warnings
+
+
+def test_rejected_export_does_not_replace_remembered_defaults(loaded, tmp_path):
+    from opticfilm_linux.app.prefs import export_defaults, remember_export
+
+    bridge, _engine, warnings = loaded
+    remember_export(bridge._prefs, "file:///previous", "png8", "3600")
+    before = export_defaults(bridge._prefs)
+    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Reject", "", "", 600)
+    _wait(bridge, lambda: bridge.hasBatch)
+    bridge.startExport(
+        QUrl.fromLocalFile(str(tmp_path / "Reject" / "raw")).toString(), "jpeg", "full"
+    )
+    _wait(bridge, lambda: bridge.hasBanner)
+    assert export_defaults(bridge._prefs) == before
+    assert not warnings

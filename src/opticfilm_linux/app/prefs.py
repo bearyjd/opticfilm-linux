@@ -6,13 +6,18 @@ The Qt layer backs ``Prefs`` with ``QSettings``; tests use ``MemoryPrefs``.
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
+
+from opticfilm_linux.output import Format, JpegSize
 
 DPI_CHOICES = (600, 1200, 2400, 3600, 7200)
-DEFAULT_DPI = 3600
+DEFAULT_DPI = 7200
 MAX_RECENT = 10
 RECENT_KEY = "recent_batches"
 FALLBACK_NAME = "batch"
+EXPORT_FOLDER_KEY = "export_folder"
+EXPORT_FORMAT_KEY = "export_format"
+EXPORT_JPEG_SIZE_KEY = "export_jpeg_size"
 
 
 class Prefs(Protocol):
@@ -36,6 +41,31 @@ class MemoryPrefs:
 class RecentBatch:
     path: Path
     exists: bool
+
+
+@dataclass(frozen=True)
+class ExportDefaults:
+    """Starting choices for a new batch; existing batches use their manifest."""
+
+    folder: str = ""
+    format: Format = "jpeg"
+    jpeg_size: JpegSize = "full"
+
+
+def export_defaults(prefs: Prefs) -> ExportDefaults:
+    fmt = prefs.get(EXPORT_FORMAT_KEY)
+    size = prefs.get(EXPORT_JPEG_SIZE_KEY)
+    return ExportDefaults(
+        folder=prefs.get(EXPORT_FOLDER_KEY, "") or "",
+        format=cast(Format, fmt) if fmt in ("jpeg", "png8", "tiff16") else "jpeg",
+        jpeg_size=cast(JpegSize, size) if size in ("full", "3600") else "full",
+    )
+
+
+def remember_export(prefs: Prefs, folder: str, fmt: Format, jpeg_size: JpegSize) -> None:
+    prefs.set(EXPORT_FOLDER_KEY, folder)
+    prefs.set(EXPORT_FORMAT_KEY, fmt)
+    prefs.set(EXPORT_JPEG_SIZE_KEY, jpeg_size)
 
 
 def _stored(prefs: Prefs) -> list[str]:
