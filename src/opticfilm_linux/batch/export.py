@@ -26,7 +26,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
-from opticfilm_linux.output import Format, OutputSpec, write_slide
+from opticfilm_linux.output import Format, JpegSize, OutputSpec, write_slide
 from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
 from opticfilm_linux.sweepstore import load_sweep
@@ -58,6 +58,11 @@ def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
     return next(t for t in manifest.trays if t.number == number)
 
 
+def _render_defaults(defaults: BatchDefaults) -> BatchDefaults:
+    """Remembered destinations and delivery sizes do not invalidate an active render."""
+    return dataclasses.replace(defaults, export_dir="", export_format="jpeg", jpeg_size="full")
+
+
 def _mark_exported(
     store: BatchStore,
     number: int,
@@ -77,7 +82,7 @@ def _mark_exported(
 
     def change(manifest: BatchManifest) -> BatchManifest:
         nonlocal outcome
-        if manifest.defaults != defaults:
+        if _render_defaults(manifest.defaults) != _render_defaults(defaults):
             return manifest
         trays = []
         for tray in manifest.trays:
@@ -163,6 +168,7 @@ def _export_tray(
         return True
     defaults = store.snapshot().defaults
     sweep = load_sweep(store.sweep_dir(tray.number, tray.sweep_version))
+    spec = dataclasses.replace(spec, scan_dpi=sweep.dpi)
     slides = split_slides(sweep)
     for record in pending:
         if cancel is not None and cancel.is_set():
@@ -193,13 +199,17 @@ def export_batch(
     cancel: threading.Event | None = None,
     keys: frozenset[SlideKey] | None = None,
     on_selection: Callable[[BatchManifest], None] | None = None,
+    *,
+    jpeg_size: JpegSize = "full",
 ) -> ExportResult:
     if directory.resolve().is_relative_to(store.directory.resolve()):
         raise BatchError(f"export to a folder outside the batch folder, not {directory}")
     manifest = store.snapshot()
     if on_selection is not None:
         on_selection(manifest)
-    spec = OutputSpec(directory=directory, fmt=fmt, album=manifest.album, date=manifest.date)
+    spec = OutputSpec(
+        directory=directory, fmt=fmt, album=manifest.album, date=manifest.date, jpeg_size=jpeg_size
+    )
     exportable = [t for t in manifest.trays if t.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)]
     total = sum(len(_pending_slides(t, keys)) for t in exportable)
     written: list[Path] = []

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from opticfilm_linux.app.state import ExportView, FreeSpaceView
 from opticfilm_linux.batch.export import (
+    ExportResult,
     FreeableTray,
     export_batch,
     free_space,
@@ -14,7 +15,7 @@ from opticfilm_linux.batch.export import (
 )
 from opticfilm_linux.batch.model import BatchManifest, SlideKey, SlideStatus, TrayStage
 from opticfilm_linux.batch.store import BatchStore
-from opticfilm_linux.output import Format
+from opticfilm_linux.output import Format, JpegSize
 
 
 def run_export(
@@ -24,6 +25,8 @@ def run_export(
     cancel: threading.Event,
     publish: Callable[[ExportView], None],
     keys: frozenset[SlideKey] | None = None,
+    *,
+    jpeg_size: JpegSize = "full",
 ) -> None:
     """Export accepted slides; always ends by publishing a finished view, then re-raises errors."""
     last = ExportView(True, 0, 0)
@@ -33,11 +36,7 @@ def run_export(
     def selection(manifest: BatchManifest) -> None:
         nonlocal last, reexport_blocked
         last = _export_counts(manifest, keys)
-        reexport_blocked = any(
-            tray.raw_removed and any(s.status is SlideStatus.ACCEPTED for s in tray.slides)
-            for tray in manifest.trays
-            if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)
-        )
+        reexport_blocked = _reexport_blocked(manifest)
 
     def progress(update) -> None:
         nonlocal last
@@ -53,6 +52,7 @@ def run_export(
             cancel=cancel,
             keys=keys,
             on_selection=selection,
+            jpeg_size=jpeg_size,
         )
     except BaseException:
         publish(
@@ -65,21 +65,27 @@ def run_export(
             )
         )
         raise
-    publish(
-        replace(
-            last,
-            running=False,
-            done=last.done,
-            total=last.total,
-            finished=True,
-            written=len(result.written),
-            cancelled=result.cancelled,
-            message=(
-                _nothing_to_write(last, reexport_blocked)
-                if not result.written and not result.cancelled
-                else ""
-            ),
-        )
+    publish(_export_finished(last, result, reexport_blocked))
+
+
+def _reexport_blocked(manifest: BatchManifest) -> bool:
+    return any(
+        tray.raw_removed and any(s.status is SlideStatus.ACCEPTED for s in tray.slides)
+        for tray in manifest.trays
+        if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)
+    )
+
+
+def _export_finished(last: ExportView, result: ExportResult, reexport_blocked: bool) -> ExportView:
+    return replace(
+        last,
+        running=False,
+        finished=True,
+        written=len(result.written),
+        cancelled=result.cancelled,
+        message=_nothing_to_write(last, reexport_blocked)
+        if not result.written and not result.cancelled
+        else "",
     )
 
 
