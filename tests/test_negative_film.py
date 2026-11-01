@@ -87,14 +87,15 @@ def test_negative_mode_recovers_the_scene_and_positive_mode_does_not():
     pos = split_slides(make_sweep(dpi=600))[0]
     neg = split_slides(make_negative_sweep(dpi=600))[0]
     assert pos.rgb.shape == neg.rgb.shape
-    scene = _luma(enhance_slide(pos, ProcessOptions(**PLAIN), 600))
+    # The synthetic positive encodes a finished scene, like the density-inverted negative.
+    scene = _luma(enhance_slide(pos, ProcessOptions(**PLAIN), 600, linear=False))
     inverted = _luma(enhance_slide(neg, ProcessOptions(mode="negative", **PLAIN), 600))
     uninverted = _luma(enhance_slide(neg, ProcessOptions(mode="positive", **PLAIN), 600))
     assert _corr(inverted, scene) > 0.9
     assert _corr(uninverted, scene) < 0.0
     # Channel by channel too, so a swapped or mixed channel cannot hide in the average.
     fixed = enhance_slide(neg, ProcessOptions(mode="negative", **PLAIN), 600)
-    reference = enhance_slide(pos, ProcessOptions(**PLAIN), 600)
+    reference = enhance_slide(pos, ProcessOptions(**PLAIN), 600, linear=False)
     for channel in range(3):
         assert _corr(fixed[..., channel], reference[..., channel]) > 0.9
 
@@ -186,7 +187,9 @@ def test_negative_tray_reaches_review_with_inverted_previews(tmp_path):
     enhance_tray(store, 1)
     assert _tray(store).stage is TrayStage.REVIEW and len(_tray(store).slides) == 4
     reference = _luma(
-        enhance_slide(split_slides(make_sweep(dpi=600))[0], ProcessOptions(**PLAIN), 600)
+        enhance_slide(
+            split_slides(make_sweep(dpi=600))[0], ProcessOptions(**PLAIN), 600, linear=False
+        )
     )
     preview = _after_preview(store)
     small = Image.fromarray((reference * 255).astype(np.uint8)).resize(preview.shape[::-1])

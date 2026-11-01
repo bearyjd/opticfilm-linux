@@ -13,7 +13,6 @@ from opticfilm_linux.pipeline.dust import remove_dust
 from opticfilm_linux.pipeline.orient import mirror, rotate
 from opticfilm_linux.pipeline.split import is_blank, split_slides
 from opticfilm_linux.pipeline.tone import (
-    LINEAR_GAMMA_LIMITS,
     adjust_brightness,
     auto_exposure,
     invert_negative,
@@ -48,9 +47,9 @@ class RunResult:
 def _tone(image: np.ndarray, options: ProcessOptions, linear: bool) -> np.ndarray:
     """Exposure and colour. Linear positives get both in linear light, before the shared curve.
 
-    Raw scans are dark and each channel has its own black level; a gamma bends any per-channel
-    offset or stretch differently, which shows as a cast that no later stretch can undo. Tone
-    mapped pixels (inverted negatives, finished images) keep the conservative order and floor.
+    Raw scans are dark and each channel has its own black level; the display curve bends any
+    per-channel offset or stretch differently, producing a cast. Tone mapped pixels (inverted
+    negatives, finished images) keep the conservative order and gamma floor.
     At full colour strength ``restore_color`` re-takes each channel's black from the whole frame,
     mount included; opaque mount reads the sensor's dark level, which carries the same
     per-channel offset as the film, so cropped and uncropped slides come out alike.
@@ -59,7 +58,7 @@ def _tone(image: np.ndarray, options: ProcessOptions, linear: bool) -> np.ndarra
         image = subtract_black(image)
         if options.color_strength > 0:
             image = restore_color(image, strength=options.color_strength)
-        return auto_exposure(image, gamma_limits=LINEAR_GAMMA_LIMITS)
+        return auto_exposure(image, linear=True)
     image = auto_exposure(image)
     if options.color_strength > 0:
         image = restore_color(image, strength=options.color_strength)
