@@ -63,11 +63,12 @@ What this scanner app does (my calls, for the owner to check):
   side; `NNN` is three digits so 140 fits). A "Finish box / next section" action advances the box
   number or section and always starts a fresh holder. The batch records collection slug, box
   number, section and section size. `NNN` counts scanned positions in the section in load order;
-  many carousel slots are empty, so the owner loads only occupied slides (compact, consecutive
-  numbering, my recommendation) unless the owner says the painted slot numbers matter, in which
-  case an optional per-slide 'carousel slot' is stored in the metadata. A slide skipped as blank
-  leaves a gap so a rescan keeps its place. Idea, unchecked: skip empty frames inside a holder
-  (the driver takes a slide list; non-consecutive lists not verified).
+  many carousel slots are empty, so the owner loads only the occupied slides, in carousel order
+  (decided 2026-11-01: only the order matters, so numbering is compact and consecutive in scan
+  order, and no carousel-slot field is stored). A frame detected as blank still leaves a gap
+  rather than shifting later numbers, so a rescan or re-export keeps its place. Idea, unchecked:
+  skip empty frames inside a holder (the driver takes a slide list; non-consecutive lists not
+  verified).
 - Output folder layout is chosen per batch: `box-<N>/<section>/` (default, for slide boxes) or a
   dated event folder. The batch records the collection root, box number and section.
 - The slide's number comes from its position: section start plus holder and slot, so a rescan
