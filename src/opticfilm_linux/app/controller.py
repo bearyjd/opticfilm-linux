@@ -29,6 +29,7 @@ from opticfilm_linux.app.state import (
 )
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
+from opticfilm_linux.batch.export import clear_exported
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     BatchDefaults,
@@ -294,6 +295,15 @@ class Controller(HolderCommands):
         if not self._closing.is_set():
             self._cancel_export.clear()  # at submit: a queued job must not undo a later cancel
         self._after_pending_commands(job, "Could not export")
+
+    def reexport_all_accepted(self) -> None:
+        """After confirmation, let the next export rewrite accepted slides."""
+
+        def job(_runner: BatchRunner) -> None:
+            clear_exported(self._open_store())
+            self._set(_export=None)
+
+        self._after_pending_commands(job, "Could not prepare re-export")
 
     def cancel_export(self) -> None:
         self._cancel_export.set()

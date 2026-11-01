@@ -18,6 +18,8 @@ from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
     Mode,
+    SlideKey,
+    SlideRecord,
     SlideSettings,
     SlideStatus,
     TrayRecord,
@@ -104,10 +106,47 @@ def _finish_tray_if_done(store: BatchStore, number: int) -> None:
     store.update_tray_if(number, done, stage=TrayStage.EXPORTED)
 
 
-def _pending_slides(tray: TrayRecord) -> list:
+def clear_exported(store: BatchStore, keys: frozenset[SlideKey] | None = None) -> None:
+    """Allow chosen accepted slides to be exported again, in one atomic manifest change."""
+
+    def change(manifest: BatchManifest) -> BatchManifest:
+        trays = []
+        for tray in manifest.trays:
+            if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED):
+                trays.append(tray)
+                continue
+            chosen = {
+                s.position
+                for s in tray.slides
+                if s.status is SlideStatus.ACCEPTED
+                and (keys is None or (tray.number, s.position) in keys)
+            }
+            if chosen and tray.raw_removed:
+                raise BatchError(
+                    f"Cannot re-export tray {tray.number}: its raw scans were removed."
+                )
+            if chosen:
+                slides = tuple(
+                    dataclasses.replace(s, exported=False) if s.position in chosen else s
+                    for s in tray.slides
+                )
+                tray = dataclasses.replace(tray, slides=slides, stage=TrayStage.REVIEW)
+            trays.append(tray)
+        return dataclasses.replace(manifest, trays=tuple(trays))
+
+    store.update(change)
+
+
+def _pending_slides(tray: TrayRecord, keys: frozenset[SlideKey] | None = None) -> list[SlideRecord]:
     if tray.raw_removed:
         return []
-    return [s for s in tray.slides if s.status is SlideStatus.ACCEPTED and not s.exported]
+    return [
+        s
+        for s in tray.slides
+        if s.status is SlideStatus.ACCEPTED
+        and not s.exported
+        and (keys is None or (tray.number, s.position) in keys)
+    ]
 
 
 def _export_tray(
@@ -116,9 +155,10 @@ def _export_tray(
     spec: OutputSpec,
     report: Callable[[Path], None],
     cancel: threading.Event | None,
+    keys: frozenset[SlideKey] | None,
 ) -> bool:
     """Write a tray's pending slides; returns False if cancelled before finishing."""
-    pending = _pending_slides(tray)
+    pending = _pending_slides(tray, keys)
     if not pending:
         return True
     defaults = store.snapshot().defaults
@@ -151,13 +191,17 @@ def export_batch(
     fmt: Format = "tiff16",
     on_progress: Callable[[ExportProgress], None] | None = None,
     cancel: threading.Event | None = None,
+    keys: frozenset[SlideKey] | None = None,
+    on_selection: Callable[[BatchManifest], None] | None = None,
 ) -> ExportResult:
     if directory.resolve().is_relative_to(store.directory.resolve()):
         raise BatchError(f"export to a folder outside the batch folder, not {directory}")
     manifest = store.snapshot()
+    if on_selection is not None:
+        on_selection(manifest)
     spec = OutputSpec(directory=directory, fmt=fmt, album=manifest.album, date=manifest.date)
     exportable = [t for t in manifest.trays if t.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)]
-    total = sum(len(_pending_slides(t)) for t in exportable)
+    total = sum(len(_pending_slides(t, keys)) for t in exportable)
     written: list[Path] = []
 
     def report(path: Path | None) -> None:
@@ -168,7 +212,7 @@ def export_batch(
 
     report(None)
     for tray in exportable:
-        finished = _export_tray(store, tray, spec, report, cancel)
+        finished = _export_tray(store, tray, spec, report, cancel, keys)
         _finish_tray_if_done(store, tray.number)
         if not finished:
             return ExportResult(written=tuple(written), cancelled=True)
