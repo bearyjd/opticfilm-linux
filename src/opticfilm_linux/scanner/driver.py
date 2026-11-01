@@ -32,6 +32,7 @@ import numpy as np
 import tifffile
 
 from opticfilm_linux.model import HolderKind, RawSweep, ScanSettings
+from opticfilm_linux.provenance import diagnostics_from_files
 from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import (
     BUTTON_STATUSES,
@@ -423,10 +424,12 @@ class DriverScanner:
         self._needs_power_cycle = False  # set when the driver failed; cleared by a power cycle
         self._failed_address: str | None = None  # the USB address it failed on
         self._last_address: str | None = None
+        self.scan_diagnostics: tuple[str, ...] | None = None
 
     # -- Scanner protocol ----------------------------------------------------------------
 
     def scan_holder(self, settings: ScanSettings) -> RawSweep:
+        self.scan_diagnostics = None
         self._require_driver()
         self._scanning.set()  # status() answers BUSY from now on, without touching the scanner
         try:
@@ -467,7 +470,9 @@ class DriverScanner:
             if failed:
                 self._note_failure()
             self._keep_sidecars(work, failed=failed)
-            return _stitch(work, settings.dpi, result)
+            sweep = _stitch(work, settings.dpi, result)
+            self.scan_diagnostics = diagnostics_from_files(list(work.glob("*.diag.json")), 4)
+            return sweep
         finally:
             shutil.rmtree(work, ignore_errors=True)
 

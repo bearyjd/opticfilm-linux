@@ -33,6 +33,7 @@ from opticfilm_linux.app.state import (
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.export import clear_exported
+from opticfilm_linux.batch.layout import advance_section
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     BatchDefaults,
@@ -167,6 +168,10 @@ class Controller(HolderCommands):
         export_dir: str = "",
         export_format: Format = "jpeg",
         jpeg_size: JpegSize = "full",
+        collection: str = "",
+        box: int = 1,
+        section: str = "a",
+        section_size: int = 140,
     ) -> None:
         def job() -> None:
             if export_dir:
@@ -180,7 +185,19 @@ class Controller(HolderCommands):
                 export_format=export_format,
                 jpeg_size=jpeg_size,
             )
-            self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
+            self._replace_batch(
+                lambda: BatchStore.create(
+                    directory,
+                    name,
+                    album,
+                    date,
+                    defaults,
+                    collection=collection,
+                    box=box,
+                    section=section,
+                    section_size=section_size,
+                )
+            )
 
         if self._holder_move_running():
             return
@@ -210,6 +227,44 @@ class Controller(HolderCommands):
             runner.rescan_tray(number)
 
         self._reserved_scan(job, f"Could not re-scan tray {number}")
+
+    def _section_refusal(self) -> str | None:
+        """Called under the controller lock before reserving the transition."""
+        session = self._session
+        runner = session.runner if session is not None else None
+        if self._holder_busy:
+            return "Wait for the eject/load to finish"
+        if self._scans_queued or (runner is not None and runner.scan_pending()):
+            return "Wait for the scan to finish"
+        if self._long_jobs or self._job_futures:
+            return "Wait for the export or disk-space job to finish"
+        if self._updating or self._enhancing or (runner is not None and runner.work_pending()):
+            return "Wait for enhancement to finish"
+        return None
+
+    def finish_box(self, next_box: bool = True) -> None:
+        with self._lock:
+            refusal = self._section_refusal()
+        if refusal is not None:
+            self._set(_banner=Banner(refusal))
+            return
+
+        def job(_runner: BatchRunner) -> None:
+            with self._lock:
+                refusal = self._section_refusal()
+                if refusal is not None:
+                    raise BatchError(refusal)
+                session = self._session
+                if session is None:
+                    raise BatchError("no batch is open")
+                self._scans_queued += 1  # reserve against holder moves during the store write
+            try:
+                advance_section(session.store, next_box=next_box)
+                self._set(_selected=None)
+            finally:
+                self._scan_handed_over()
+
+        self._run_writer(job, "Could not finish the section")
 
     def select_tray(self, number: int) -> None:
         self._set(_selected=number)
@@ -686,7 +741,10 @@ class Controller(HolderCommands):
                 manifest,
                 preview_tokens=tokens,
                 scanner=status,
-                scan_pending=bool(session and session.runner and session.runner.scan_pending()),
+                scan_pending=bool(
+                    self._scans_queued
+                    or (session and session.runner and session.runner.scan_pending())
+                ),
                 readonly=bool(session and session.runner is None),
                 selected=selected,
                 updating=self._updating,
@@ -701,6 +759,7 @@ class Controller(HolderCommands):
                 next_strip=self._next_strip,
                 jobs_running=bool(self._long_jobs or self._job_futures),
                 batch_session=self._batch_session if session else 0,
+                runner_busy=bool(session and session.runner and session.runner.work_pending()),
             )
 
     @staticmethod

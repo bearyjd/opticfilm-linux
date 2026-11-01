@@ -34,6 +34,27 @@ def test_ir_is_optional(tmp_path):
     assert load_sweep(tmp_path).ir is None
 
 
+def test_evidence_survives_sweep_roundtrip(tmp_path):
+    from dataclasses import replace
+
+    from opticfilm_linux.provenance import ScanEvidence
+
+    evidence = ScanEvidence(
+        "2026-11-01T12:00:00+00:00",
+        827.0,
+        "opticfilm-linux 0.1.0",
+        None,
+        ('{"frame":1}', "{}", "{}", "{}"),
+    )
+    save_sweep(replace(_sweep(), evidence=evidence), tmp_path)
+    assert load_sweep(tmp_path).evidence == evidence
+
+
+def test_old_sweep_has_no_invented_evidence(tmp_path):
+    save_sweep(_sweep(), tmp_path)
+    assert load_sweep(tmp_path).evidence is None
+
+
 def test_truncated_rgb_file_raises_sweepformaterror(tmp_path):
     save_sweep(_sweep(), tmp_path)
     rgb_file = tmp_path / "rgb.npy"

@@ -653,3 +653,41 @@ def test_rejected_export_does_not_replace_remembered_defaults(loaded, tmp_path):
     _wait(bridge, lambda: bridge.hasBanner)
     assert export_defaults(bridge._prefs) == before
     assert not warnings
+
+
+def test_section_controls_bind(loaded, tmp_path):
+    from opticfilm_linux.batch.store import BatchStore
+
+    bridge, engine, warnings = loaded
+    root = engine.rootObjects()[0]
+    page = root.findChild(QObject, "startPage")
+    page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
+    root.findChild(QObject, "newBatchName").setProperty("text", "Section UI")
+    collection = root.findChild(QObject, "newBatchCollection")
+    assert collection is not None
+    collection.setProperty("text", "family")
+    root.findChild(QObject, "newBatchBox").setProperty("value", 2)
+    root.findChild(QObject, "newBatchSection").setProperty("text", "01")
+    root.findChild(QObject, "newBatchSectionSize").setProperty("value", 10)
+    create = root.findChild(QObject, "createBatch")
+    _wait(bridge, lambda: create.property("enabled"))
+    assert QMetaObject.invokeMethod(create, "click")
+    _wait(bridge, lambda: bridge.hasBatch or bridge.hasBanner)
+    assert bridge.hasBatch, (bridge.bannerMessage, bridge.bannerDetail, warnings)
+    _wait(bridge, lambda: bridge.canFinishBox)
+    assert (bridge.collection, bridge.box, bridge.section, bridge.sectionSize) == (
+        "family",
+        2,
+        "01",
+        10,
+    )
+    _wait(bridge, lambda: root.findChild(QObject, "nextSectionButton") is not None)
+    QMetaObject.invokeMethod(root.findChild(QObject, "nextSectionButton"), "click")
+    _wait(bridge, lambda: bridge.section == "02")
+    QMetaObject.invokeMethod(root.findChild(QObject, "finishBoxButton"), "click")
+    _wait(bridge, lambda: bridge.box == 3)
+    assert bridge.section == "01" and bridge.selectedTray == -1
+    with BatchStore.open(tmp_path / "Section UI", readonly=True) as store:
+        m = store.snapshot()
+        assert (m.collection, m.box, m.section, m.section_size) == ("family", 3, "01", 10)
+    assert not warnings

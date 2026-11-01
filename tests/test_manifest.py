@@ -134,3 +134,19 @@ def test_old_manifest_without_dpi_keeps_historical_3600():
     assert loaded.defaults.dpi == 3600
     assert from_json(to_json(loaded)) == loaded
     assert json.loads(to_json(loaded))["defaults"]["dpi"] == 3600
+
+
+def test_tray_scan_evidence_roundtrips_and_old_trays_remain_unknown():
+    from opticfilm_linux.provenance import ScanEvidence
+
+    evidence = ScanEvidence(
+        "2026-11-01T12:00:00+00:00",
+        12.0,
+        "opticfilm-linux test",
+        None,
+        ('{"total_seconds":3}',) * 4,
+    )
+    original = _manifest()
+    custom = replace(original, trays=(replace(original.trays[0], evidence=evidence),))
+    assert from_json(to_json(custom)) == custom
+    assert from_json(to_json(original)).trays[0].evidence is None

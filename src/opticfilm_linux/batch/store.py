@@ -54,14 +54,26 @@ class BatchStore:
         album: str = "",
         date: str | None = None,
         defaults: BatchDefaults | None = None,
+        *,
+        collection: str = "",
+        box: int = 1,
+        section: str = "a",
+        section_size: int = 140,
     ) -> "BatchStore":
         if (directory / MANIFEST_FILE).exists():
             raise BatchError(f"a batch already exists in {directory}")
+        manifest = BatchManifest(
+            name=name,
+            album=album,
+            date=date,
+            defaults=defaults or BatchDefaults(),
+            collection=collection,
+            box=box,
+            section=section,
+            section_size=section_size,
+        )
         directory.mkdir(parents=True, exist_ok=True)
         lock_file = _acquire_lock(directory)
-        manifest = BatchManifest(
-            name=name, album=album, date=date, defaults=defaults or BatchDefaults()
-        )
         store = cls(directory, manifest, lock_file)
         try:
             store._write(manifest)

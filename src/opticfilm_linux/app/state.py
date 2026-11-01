@@ -95,6 +95,11 @@ class AppState:
     export_format: Format = "jpeg"
     jpeg_size: JpegSize = "full"
     batch_session: int = 0  # changes on every attach, including a reopen of the same batch
+    collection: str = ""
+    box: int = 1
+    section: str = "a"
+    section_size: int = 140
+    can_finish_box: bool = False
 
 
 EMPTY_STATE = AppState(
@@ -171,6 +176,10 @@ def _batch_fields(
         "export_dir": manifest.defaults.export_dir if manifest is not None else "",
         "export_format": manifest.defaults.export_format if manifest is not None else "jpeg",
         "jpeg_size": manifest.defaults.jpeg_size if manifest is not None else "full",
+        "collection": manifest.collection if manifest is not None else "",
+        "box": manifest.box if manifest is not None else 1,
+        "section": manifest.section if manifest is not None else "a",
+        "section_size": manifest.section_size if manifest is not None else 140,
     }
 
 
@@ -194,6 +203,7 @@ def build_state(
     next_strip: bool = False,
     jobs_running: bool = False,
     batch_session: int = 0,
+    runner_busy: bool = False,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
     idle = manifest is not None and holder_control and not busy
@@ -220,4 +230,12 @@ def build_state(
         next_strip_enabled=next_strip,
         can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED and not busy,
         holder_busy=holder_busy,
+        can_finish_box=bool(manifest and manifest.collection)
+        and not runner_busy
+        and not busy
+        and not updating
+        and not any(
+            t.stage in (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
+            for t in (manifest.trays if manifest else ())
+        ),
     )

@@ -348,3 +348,113 @@ def test_a_crashing_enhancement_fails_the_tray(tmp_path, sweep_dir, monkeypatch)
     assert runner.wait_idle(TIMEOUT)
     assert _tray(store).stage is TrayStage.FAILED and "boom" in _tray(store).error
     runner.close()
+
+
+def test_scan_allocation_and_rescan_keep_location(tmp_path, sweep_dir):
+    store, runner = _make(tmp_path, sweep_dir)
+    store.update(lambda m: dataclasses.replace(m, collection="family", section_size=10))
+    try:
+        runner.scan_tray()
+        assert runner.wait_idle(TIMEOUT)
+        original = _tray(store).location
+        runner.rescan_tray(1)
+        assert runner.wait_idle(TIMEOUT)
+        assert _tray(store).location == original
+        runner.scan_tray()
+        assert runner.wait_idle(TIMEOUT)
+        assert _tray(store, 2).location.start == original.start + original.capacity
+    finally:
+        runner.close()
+        store.close()
+
+
+def test_scan_and_rescan_replace_evidence(tmp_path, sweep_dir):
+    from opticfilm_linux.provenance import ScanEvidence
+    from opticfilm_linux.sweepstore import load_sweep
+
+    original = load_sweep(sweep_dir)
+    evidence = ScanEvidence(
+        "2026-11-01T12:00:00+00:00", 12.0, "opticfilm-linux test", "abc", ("{}",) * 4
+    )
+
+    class EvidenceScanner(FakeScanner):
+        def scan_holder(self, settings):
+            return dataclasses.replace(original, evidence=self.evidence)
+
+    scanner = EvidenceScanner(sweep_dir)
+    scanner.evidence = evidence
+    store = BatchStore.create(tmp_path / "evidence", "T", defaults=BatchDefaults(dpi=600))
+    runner = BatchRunner(store, scanner)
+    try:
+        runner.scan_tray()
+        assert runner.wait_idle(TIMEOUT)
+        assert store.snapshot().trays[0].evidence == evidence
+        store_evidence = dataclasses.replace(evidence, digitized_at="2026-11-02T12:00:00+00:00")
+        scanner.evidence = store_evidence
+        runner.rescan_tray(1)
+        assert runner.wait_idle(TIMEOUT)
+        assert store.snapshot().trays[0].evidence == store_evidence
+        scanner.evidence = None
+        runner.rescan_tray(1)
+        assert runner.wait_idle(TIMEOUT)
+        assert store.snapshot().trays[0].evidence is None
+    finally:
+        runner.close()
+        store.close()
+
+
+@pytest.mark.parametrize("scan_fails", [False, True])
+def test_rescan_preserves_export_history_after_reopen(tmp_path, sweep_dir, scan_fails):
+    from opticfilm_linux.batch.model import ExportRecord, Flag, SlideRecord, TrayLocation
+    from opticfilm_linux.provenance import ScanEvidence
+
+    history = ExportRecord("family/box-1/a/001.jpg", 11, 9, 7200, 3600, "T001S1", "a" * 64)
+    evidence = ScanEvidence("2026-11-01T12:00:00+00:00", 12.0, "test", None, ("{}",) * 4)
+    newer_evidence = dataclasses.replace(evidence, digitized_at="2026-11-02T12:00:00+00:00")
+    location = TrayLocation("family", 1, "a", 1, 4)
+
+    class RescanScanner(FakeScanner):
+        def scan_holder(self, settings):
+            if scan_fails:
+                raise ScanError("rescan failed")
+            return dataclasses.replace(super().scan_holder(settings), evidence=newer_evidence)
+
+    directory = tmp_path / "history"
+    store = BatchStore.create(directory, "T", defaults=BatchDefaults(dpi=600), collection="family")
+    old_slide = SlideRecord(
+        1,
+        SlideStatus.BLANK,
+        flags=(Flag.DUST,),
+        settings=SlideSettings(rotation=90),
+        owner_decided=True,
+        exported=True,
+        preview_stale=True,
+        exports=(history,),
+    )
+    tray = TrayRecord(
+        1, TrayStage.REVIEW, slides=(old_slide,), location=location, evidence=evidence
+    )
+    store.update(lambda m: dataclasses.replace(m, trays=(tray,)))
+    runner = BatchRunner(store, RescanScanner(sweep_dir))
+    try:
+        runner.rescan_tray(1)
+        assert runner.wait_idle(TIMEOUT)
+        after = store.snapshot().trays[0]
+        assert after.location == location and after.sweep_version == 2
+        assert after.evidence == (evidence if scan_fails else newer_evidence)
+        assert after.slides, "a failed rescan must retain durable export history"
+        slide = after.slides[0]
+        assert slide.exports == (history,)
+        assert slide.settings == SlideSettings()
+        assert not slide.owner_decided and not slide.exported and not slide.preview_stale
+        assert slide.status is not SlideStatus.BLANK
+        if scan_fails:
+            assert after.stage is TrayStage.FAILED
+            assert slide == SlideRecord(1, exports=(history,))
+        else:
+            assert after.stage is TrayStage.REVIEW
+    finally:
+        runner.close()
+        store.close()
+    with BatchStore.open(directory) as reopened:
+        assert reopened.snapshot().trays[0] == after

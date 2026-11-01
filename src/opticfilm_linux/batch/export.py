@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Literal
 
 from opticfilm_linux.batch.enhance import options_for
+from opticfilm_linux.batch.layout import section_directory, slide_number
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
+    ExportRecord,
     Mode,
     SlideKey,
     SlideRecord,
@@ -26,9 +28,10 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
-from opticfilm_linux.output import Format, JpegSize, OutputSpec, write_slide
+from opticfilm_linux.output import Format, JpegSize, OutputSpec, jpeg_geometry, write_slide
 from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
+from opticfilm_linux.provenance import jpeg_metadata, raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
 
 
@@ -71,6 +74,8 @@ def _mark_exported(
     mode: Mode,
     settings: SlideSettings,
     defaults: BatchDefaults,
+    *,
+    record: ExportRecord | None = None,
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
     """Mark one slide exported, only if the file written still matches it.
 
@@ -92,7 +97,9 @@ def _mark_exported(
                 for s in tray.slides:
                     if s.position == position and s.settings == settings:
                         outcome = "marked"
-                        s = dataclasses.replace(s, exported=True)
+                        s = dataclasses.replace(
+                            s, exported=True, exports=s.exports + ((record,) if record else ())
+                        )
                     slides.append(s)
                 tray = dataclasses.replace(tray, slides=tuple(slides))
             trays.append(tray)
@@ -154,6 +161,80 @@ def _pending_slides(tray: TrayRecord, keys: frozenset[SlideKey] | None = None) -
     ]
 
 
+def _checked_export_parent(directory: Path, root: Path, store: BatchStore) -> None:
+    """Reject symlinks before creating a directory or opening an output file."""
+    for component in (directory.absolute(), *directory.absolute().parents):
+        if component.is_symlink():
+            raise BatchError(f"export folder {component} is a symlink; choose a regular folder")
+    resolved = directory.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise BatchError("export section must remain inside the export folder")
+    if resolved.is_relative_to(store.directory.resolve()):
+        raise BatchError("export to a folder outside the batch folder")
+
+
+def _slide_spec(
+    manifest: BatchManifest, tray: TrayRecord, record: SlideRecord, spec: OutputSpec
+) -> OutputSpec:
+    position = slide_number(tray.location, record.position) if tray.location else None
+    if position is not None and position > manifest.section_size:
+        raise BatchError(
+            f"Tray {tray.number} slot {record.position} exceeds the section size "
+            f"{manifest.section_size}; mark that empty position blank before export."
+        )
+    return dataclasses.replace(spec, position=position)
+
+
+def _metadata_spec(
+    manifest: BatchManifest, tray: TrayRecord, record: SlideRecord, slide, options, spec: OutputSpec
+) -> OutputSpec:
+    delivered_dpi = spec.scan_dpi
+    if spec.fmt == "jpeg":
+        _, _, delivered_dpi = jpeg_geometry(1, 1, spec.scan_dpi, spec.jpeg_size)
+        spec = dataclasses.replace(
+            spec,
+            metadata=jpeg_metadata(
+                manifest,
+                tray,
+                record,
+                slide,
+                options,
+                spec.scan_dpi,
+                delivered_dpi,
+            ),
+        )
+    return spec
+
+
+def _write_export(
+    store: BatchStore,
+    root: Path,
+    tray: TrayRecord,
+    record: SlideRecord,
+    slide,
+    options,
+    spec: OutputSpec,
+) -> tuple[Path, ExportRecord]:
+    delivered_dpi = spec.scan_dpi
+    raw_hash = spec.metadata.raw_sha256 if spec.metadata else raw_region_sha256(slide)
+    image = enhance_slide(slide, options, spec.scan_dpi)
+    height, width = image.shape[:2]
+    if spec.fmt == "jpeg":
+        width, height, delivered_dpi = jpeg_geometry(width, height, spec.scan_dpi, spec.jpeg_size)
+    _checked_export_parent(spec.directory, root, store)
+    path = write_slide(image, spec)
+    exported = ExportRecord(
+        str(path.relative_to(root)),
+        width,
+        height,
+        spec.scan_dpi,
+        delivered_dpi,
+        f"T{tray.number:03d}S{record.position}",
+        raw_sha256=raw_hash,
+    )
+    return path, exported
+
+
 def _export_tray(
     store: BatchStore,
     tray: TrayRecord,
@@ -166,16 +247,27 @@ def _export_tray(
     pending = _pending_slides(tray, keys)
     if not pending:
         return True
-    defaults = store.snapshot().defaults
+    manifest = store.snapshot()
+    defaults = manifest.defaults
+    root = spec.directory
+    if tray.location is not None:
+        spec = dataclasses.replace(
+            spec,
+            directory=section_directory(root, tray.location),
+            sequence_stride=manifest.section_size,
+        )
+    _checked_export_parent(spec.directory, root, store)
     sweep = load_sweep(store.sweep_dir(tray.number, tray.sweep_version))
     spec = dataclasses.replace(spec, scan_dpi=sweep.dpi)
     slides = split_slides(sweep)
     for record in pending:
         if cancel is not None and cancel.is_set():
             return False
+        slide_spec = _slide_spec(manifest, tray, record, spec)
         options = options_for(defaults, tray.mode, record.settings, record.position)
-        image = enhance_slide(slides[record.position - 1], options, sweep.dpi)
-        path = write_slide(image, spec)
+        slide = slides[record.position - 1]
+        slide_spec = _metadata_spec(manifest, tray, record, slide, options, slide_spec)
+        path, exported = _write_export(store, root, tray, record, slide, options, slide_spec)
         report(path)
         outcome = _mark_exported(
             store,
@@ -185,6 +277,7 @@ def _export_tray(
             tray.mode,
             record.settings,
             defaults,
+            record=exported,
         )
         if outcome == "stale_tray":
             return True  # re-scanned, mode or orientation changed: the next export redoes it

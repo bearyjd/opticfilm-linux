@@ -207,6 +207,11 @@ class Bridge(QObject):
     )
     batchExportFormat = _p(str, changed, lambda s, _: s.export_format)  # noqa: N815
     batchJpegSize = _p(str, changed, lambda s, _: s.jpeg_size)  # noqa: N815
+    collection = _p(str, changed, lambda s, _: s.collection)
+    box = _p(int, changed, lambda s, _: s.box)
+    section = _p(str, changed, lambda s, _: s.section)
+    sectionSize = _p(int, changed, lambda s, _: s.section_size)  # noqa: N815
+    canFinishBox = _p(bool, changed, lambda s, _: s.can_finish_box)  # noqa: N815
     scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
     canScan = _p(bool, changed, lambda s, _: s.can_scan)  # noqa: N815
     canEject = _p(bool, changed, lambda s, _: s.can_eject)  # noqa: N815
@@ -283,6 +288,45 @@ class Bridge(QObject):
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str)
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str)
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str)
+    @Slot(
+        str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str, int
+    )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+    )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+        int,
+    )
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -297,6 +341,10 @@ class Bridge(QObject):
         export_dir: str = "",
         export_format: str = "jpeg",
         jpeg_size: str = "full",
+        collection: str = "",
+        box: int = 1,
+        section: str = "a",
+        section_size: int = 140,
     ) -> None:
         """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
         rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
@@ -316,7 +364,16 @@ class Bridge(QObject):
             export_dir=QUrl(export_dir).toLocalFile() or export_dir,
             export_format=export_format,  # type: ignore[arg-type]
             jpeg_size=jpeg_size,  # type: ignore[arg-type]
+            collection=collection,
+            box=box,
+            section=section,
+            section_size=section_size,
         )
+
+    @Slot(bool)
+    def finishBox(self, next_box: bool) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.finish_box(next_box)
 
     @Slot(str, bool)
     def openBatch(self, path: str, readonly: bool) -> None:  # noqa: N802
