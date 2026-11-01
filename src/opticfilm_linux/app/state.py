@@ -12,6 +12,7 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
     TrayStage,
 )
+from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import ScannerStatus
 
 
@@ -90,6 +91,10 @@ class AppState:
     next_strip_enabled: bool = False  # the experimental non-interactive load is switched on
     holder_busy: bool = False  # an eject or load is queued or running
     can_confirm_scanner: bool = False  # a command was cut off; the owner may confirm a reset
+    export_dir: str = ""
+    export_format: Format = "jpeg"
+    jpeg_size: JpegSize = "full"
+    batch_session: int = 0  # changes on every attach, including a reopen of the same batch
 
 
 EMPTY_STATE = AppState(
@@ -147,6 +152,28 @@ def _slide_card(
     )
 
 
+def _batch_fields(
+    manifest: BatchManifest | None,
+    selected: int | None,
+    preview_tokens: Mapping[tuple[int, int], int],
+    updating: frozenset[tuple[int, int]],
+) -> dict:
+    trays = manifest.trays if manifest is not None else ()
+    current = next((t for t in trays if t.number == selected), None)
+    return {
+        "batch_name": manifest.name if manifest is not None else None,
+        "selected": current.number if current is not None else None,
+        "slides": tuple(_slide_card(current, s, preview_tokens, updating) for s in current.slides)
+        if current is not None
+        else (),
+        "default_rotation": manifest.defaults.rotation if manifest is not None else 0,
+        "default_mirror": manifest.defaults.mirror if manifest is not None else False,
+        "export_dir": manifest.defaults.export_dir if manifest is not None else "",
+        "export_format": manifest.defaults.export_format if manifest is not None else "jpeg",
+        "jpeg_size": manifest.defaults.jpeg_size if manifest is not None else "full",
+    }
+
+
 def build_state(
     manifest: BatchManifest | None,
     *,
@@ -166,16 +193,13 @@ def build_state(
     holder_busy: bool = False,
     next_strip: bool = False,
     jobs_running: bool = False,
+    batch_session: int = 0,
 ) -> AppState:
-    trays = manifest.trays if manifest is not None else ()
-    current = next((t for t in trays if t.number == selected), None)
-    idle = (
-        manifest is not None
-        and holder_control
-        and not (holder_busy or scan_pending or readonly or jobs_running)
-    )
+    busy = holder_busy or scan_pending or readonly or jobs_running
+    idle = manifest is not None and holder_control and not busy
     return AppState(
-        batch_name=manifest.name if manifest is not None else None,
+        **_batch_fields(manifest, selected, preview_tokens, updating),
+        batch_session=batch_session,
         readonly=readonly,
         scanner=scanner,
         scanner_text=scanner_text(scanner),
@@ -185,20 +209,15 @@ def build_state(
         and not holder_busy
         and not readonly,
         scan_pending=scan_pending,
-        trays=tuple(_tray_row(t, progress, scan_started, now) for t in trays),
-        selected=current.number if current is not None else None,
-        slides=tuple(_slide_card(current, s, preview_tokens, updating) for s in current.slides)
-        if current is not None
+        trays=tuple(_tray_row(t, progress, scan_started, now) for t in manifest.trays)
+        if manifest is not None
         else (),
         banner=banner,
         export=export,
         free_space=free_space,
-        default_rotation=manifest.defaults.rotation if manifest is not None else 0,
-        default_mirror=manifest.defaults.mirror if manifest is not None else False,
         can_eject=idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY),
         can_load_next=idle and next_strip and scanner is ScannerStatus.NOT_READY,
         next_strip_enabled=next_strip,
-        can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED
-        and not (holder_busy or scan_pending or readonly or jobs_running),
+        can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED and not busy,
         holder_busy=holder_busy,
     )

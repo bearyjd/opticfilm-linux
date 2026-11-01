@@ -25,8 +25,12 @@ class ManifestFormatError(ValueError):
 
 def to_json(manifest: BatchManifest) -> str:
     data = asdict(manifest)
-    if not manifest.defaults.slots:  # older versions refuse the key: keep such batches readable
-        data["defaults"] = {k: v for k, v in data["defaults"].items() if k != "slots"}
+    omitted_defaults = {"slots": (), "export_dir": "", "export_format": "jpeg", "jpeg_size": "full"}
+    data["defaults"] = {
+        key: value
+        for key, value in data["defaults"].items()
+        if key not in omitted_defaults or value != omitted_defaults[key]
+    }
     return json.dumps(data, indent=2)
 
 
@@ -71,7 +75,7 @@ def _defaults(data: dict[str, Any]) -> BatchDefaults:
     slots = data.get("slots", [])  # absent in batches made before slot orientations
     if not isinstance(slots, list):
         raise ManifestFormatError("slots must be a list")
-    return BatchDefaults(**{**data, "slots": tuple(_slot(s) for s in slots)})
+    return BatchDefaults(**{"dpi": 3600, **data, "slots": tuple(_slot(s) for s in slots)})
 
 
 def from_json(text: str) -> BatchManifest:

@@ -8,6 +8,9 @@ replaced, never changed.
 
 import dataclasses
 import logging
+import os
+import stat
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -40,7 +43,7 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
-from opticfilm_linux.output import Format
+from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 
 SLIDES_PER_TRAY = 4
@@ -88,6 +91,7 @@ class Controller(HolderCommands):
         self._refresher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-status")
         self._refreshing = False
         self._session: _Session | None = None
+        self._batch_session = 0
         self._closing = threading.Event()
         self._job_futures: set[Future] = set()
         self._jobs_idle = threading.Condition(self._lock)
@@ -159,9 +163,23 @@ class Controller(HolderCommands):
         rotation: int = 0,
         mirror: bool = False,
         slots: tuple[SlotOrientation, ...] = (),
+        *,
+        export_dir: str = "",
+        export_format: Format = "jpeg",
+        jpeg_size: JpegSize = "full",
     ) -> None:
         def job() -> None:
-            defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror, slots=slots)
+            if export_dir:
+                _check_export_directory(directory, Path(export_dir))
+            defaults = BatchDefaults(
+                dpi=dpi,
+                rotation=rotation,
+                mirror=mirror,
+                slots=slots,
+                export_dir=export_dir,
+                export_format=export_format,
+                jpeg_size=jpeg_size,
+            )
             self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
 
         if self._holder_move_running():
@@ -282,7 +300,28 @@ class Controller(HolderCommands):
 
     # -- export and free disk space ------------------------------------------------------
 
-    def export(self, directory: Path, fmt: Format) -> None:
+    def set_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
+        self._run_writer(
+            lambda _runner: self._save_export_settings(directory, fmt, jpeg_size),
+            "Could not save export settings",
+        )
+
+    def _save_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
+        store = self._open_store()
+        _check_export_directory(store.directory, directory)
+        store.update(
+            lambda manifest: dataclasses.replace(
+                manifest,
+                defaults=dataclasses.replace(
+                    manifest.defaults,
+                    export_dir=str(directory),
+                    export_format=fmt,
+                    jpeg_size=jpeg_size,
+                ),
+            )
+        )
+
+    def export(self, directory: Path, fmt: Format, jpeg_size: JpegSize = "full") -> None:
         def job(_runner: BatchRunner) -> None:
             run_export(
                 self._open_store(),
@@ -290,11 +329,16 @@ class Controller(HolderCommands):
                 fmt,
                 self._cancel_export,
                 lambda view: self._set(_export=view),
+                jpeg_size=jpeg_size,
             )
 
         if not self._closing.is_set():
             self._cancel_export.clear()  # at submit: a queued job must not undo a later cancel
-        self._after_pending_commands(job, "Could not export")
+        self._after_pending_commands(
+            job,
+            "Could not export",
+            prepare=lambda _runner: self._save_export_settings(directory, fmt, jpeg_size),
+        )
 
     def reexport_all_accepted(self) -> None:
         """After confirmation, let the next export rewrite accepted slides."""
@@ -337,14 +381,23 @@ class Controller(HolderCommands):
             self._cancel_free.clear()
         self._after_pending_commands(job, "Could not free disk space")
 
-    def _after_pending_commands(self, job: Callable[[BatchRunner], None], message: str) -> None:
+    def _after_pending_commands(
+        self,
+        job: Callable[[BatchRunner], None],
+        message: str,
+        prepare: Callable[[BatchRunner], None] | None = None,
+    ) -> None:
         """Queue a long job behind every command already submitted (an edit made a moment
         ago must be stored before an export reads the slides), then run it on the jobs worker."""
         with self._lock:
             self._long_jobs += 1  # until it reaches the jobs worker: no holder move meanwhile
-        future = self._run_writer(
-            lambda _runner: self._run_writer(job, message, pool=self._jobs), message
-        )
+
+        def handover(runner: BatchRunner) -> None:
+            if prepare is not None:
+                prepare(runner)
+            self._run_writer(job, message, pool=self._jobs)
+
+        future = self._run_writer(handover, message)
         self._track(future, self._long_job_handed_over)
 
     def _long_job_handed_over(self) -> None:
@@ -492,6 +545,7 @@ class Controller(HolderCommands):
         first = store.snapshot().trays[0].number if store.snapshot().trays else None
         with self._lock:
             self._session = _Session(store, runner, poller, holder)
+            self._batch_session += 1
             self._selected = first
             self._banner = None
             self._updating = frozenset()
@@ -646,6 +700,7 @@ class Controller(HolderCommands):
                 holder_busy=self._holder_busy,
                 next_strip=self._next_strip,
                 jobs_running=bool(self._long_jobs or self._job_futures),
+                batch_session=self._batch_session if session else 0,
             )
 
     @staticmethod
@@ -663,6 +718,42 @@ class Controller(HolderCommands):
             except OSError:
                 continue
         return tokens
+
+
+def _check_export_directory(batch: Path, directory: Path) -> None:
+    try:
+        resolved = directory.resolve()
+        batch = batch.resolve()
+        for component in (directory, *directory.parents):
+            if component.is_symlink() and not component.exists():
+                raise BatchError(f"export folder {directory} contains a broken symbolic link")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
+    if resolved.is_relative_to(batch):
+        raise BatchError(f"export to a folder outside the batch folder, not {directory}")
+
+    # Validate the closest existing parent without creating the user's destination.
+    parent = resolved
+    while True:
+        try:
+            mode = parent.stat().st_mode
+            break
+        except FileNotFoundError:
+            parent = parent.parent
+        except NotADirectoryError as exc:
+            raise BatchError(f"export folder {directory} is not a directory") from exc
+        except (OSError, ValueError) as exc:
+            raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise BatchError(f"export folder {parent} is not a directory")
+    if not mode & 0o222 or not os.access(parent, os.W_OK | os.X_OK):
+        raise BatchError(f"export folder {parent} is not writable")
+    try:
+        with tempfile.TemporaryFile(dir=parent) as probe:
+            probe.write(b"\0")
+            probe.flush()
+    except OSError as exc:
+        raise BatchError(f"export folder {parent} is not writable: {exc}") from exc
 
 
 def _skipped_text(numbers: tuple[int, ...]) -> str:

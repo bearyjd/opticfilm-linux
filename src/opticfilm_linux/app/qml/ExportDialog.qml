@@ -8,12 +8,25 @@ Kirigami.Dialog {
     id: dialog
     objectName: "exportDialog"
 
-    property string folderUrl: bridge.lastExportFolder
+    property string folderUrl: ""
     readonly property var formats: [
         {key: "tiff16", label: qsTr("16-bit TIFF (best quality)")},
         {key: "png8", label: qsTr("8-bit PNG")},
         {key: "jpeg", label: qsTr("JPEG")}
     ]
+
+    function resetSettings() {
+        folderUrl = bridge.batchExportFolder;
+        formatBox.currentIndex = Math.max(0, formatBox.indexOfValue(bridge.batchExportFormat));
+        sizeBox.currentIndex = Math.max(0, sizeBox.indexOfValue(bridge.batchJpegSize));
+    }
+
+    onOpened: resetSettings()
+
+    Connections {
+        target: bridge
+        function onBatchReplaced() { dialog.resetSettings(); }
+    }
 
     title: qsTr("Export accepted slides")
     padding: Kirigami.Units.largeSpacing
@@ -63,20 +76,30 @@ Kirigami.Dialog {
             }
             QQC2.ComboBox {
                 id: formatBox
+                objectName: "exportFormat"
 
                 Layout.fillWidth: true
                 model: dialog.formats
                 textRole: "label"
                 valueRole: "key"
-                Component.onCompleted: currentIndex = Math.max(0, indexOfValue(bridge.lastExportFormat))
+            }
+            QQC2.ComboBox {
+                id: sizeBox
+                objectName: "exportSize"
+                Layout.fillWidth: true
+                model: [{key: "full", label: qsTr("Full size")}, {key: "3600", label: qsTr("3600 dpi size")}]
+                textRole: "label"
+                valueRole: "key"
+                enabled: formatBox.currentValue === "jpeg"
             }
             QQC2.Button {
+                objectName: "startExport"
                 Layout.alignment: Qt.AlignRight
                 text: qsTr("Export")
                 icon.name: "document-export"
                 highlighted: true
                 enabled: dialog.folderUrl !== ""
-                onClicked: bridge.startExport(dialog.folderUrl, formatBox.currentValue)
+                onClicked: bridge.startExport(dialog.folderUrl, formatBox.currentValue, sizeBox.currentValue)
             }
         }
 
