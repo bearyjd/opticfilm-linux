@@ -11,6 +11,35 @@ Kirigami.ApplicationWindow {
     width: 1220
     height: 780
     visible: true
+    color: Theme.window
+
+    Binding { target: Theme; property: "dark"; value: bridge.theme === "dark" }
+    WindowPalette { window: root; colors: bridge.paletteColors }
+
+    Kirigami.Theme.inherit: false
+    Kirigami.Theme.backgroundColor: Theme.window
+    Kirigami.Theme.alternateBackgroundColor: Theme.card
+    Kirigami.Theme.textColor: Theme.text
+    Kirigami.Theme.disabledTextColor: Theme.muted
+    Kirigami.Theme.highlightColor: Theme.accent
+    Kirigami.Theme.highlightedTextColor: Theme.accentText
+    Kirigami.Theme.linkColor: Theme.accent
+
+    footer: QQC2.ToolBar {
+        implicitHeight: themeToggle.implicitHeight + Theme.spacingSmall * 2
+        background: Rectangle { color: Theme.window }
+        SegmentedControl {
+            id: themeToggle
+            objectName: "themeToggle"
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacing
+            anchors.verticalCenter: parent.verticalCenter
+            model: [qsTr("Dark"), qsTr("Light")]
+            currentIndex: bridge.theme === "dark" ? 0 : 1
+            Accessible.name: qsTr("Color theme")
+            onActivated: function(index) { bridge.setTheme(index === 0 ? "dark" : "light"); }
+        }
+    }
 
     pageStack.globalToolBar.style: Kirigami.ApplicationHeaderStyle.None
     pageStack.initialPage: Kirigami.Page {

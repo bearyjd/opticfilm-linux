@@ -27,8 +27,7 @@ EXIT_BAD_ARGS = 2
 APP_ID = "io.github.bearyjd.OpticFilmLinux"
 APP_NAME = "opticfilm"
 DISPLAY_NAME = "OpticFilm Linux"
-STYLE = "org.kde.desktop"
-STYLE_ENV_VAR = "QT_QUICK_CONTROLS_STYLE"
+STYLE = "Basic"
 LOAD_COMMAND_ENV = "OPTICFILM_LOAD_COMMAND"  # replaces the shown first-load terminal command
 MISSING_QT_MESSAGE = (
     "opticfilm: the desktop app needs the distribution's PySide6 and Kirigami (the PyPI PySide6 "
@@ -77,6 +76,7 @@ def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
     from PySide6.QtCore import QUrl  # noqa: PLC0415 - Qt is imported only when it runs
     from PySide6.QtQml import QQmlApplicationEngine  # noqa: PLC0415
 
+    configure_style()
     engine = QQmlApplicationEngine()
     warnings: list[str] = []
     engine.warnings.connect(lambda items: warnings.extend(item.toString() for item in items))
@@ -87,14 +87,10 @@ def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
 
 
 def configure_style() -> None:
-    """Use the KDE desktop style when installed; a style the user chose is left alone."""
-    from PySide6.QtQml import QQmlEngine  # noqa: PLC0415
+    """Force the palette-aware style before any QML controls are loaded."""
     from PySide6.QtQuickControls2 import QQuickStyle  # noqa: PLC0415
 
-    if os.environ.get(STYLE_ENV_VAR) or QQuickStyle.name() == STYLE:
-        return
-    paths = QQmlEngine().importPathList()
-    if any(Path(p, "org", "kde", "desktop").is_dir() for p in paths if "://" not in p):
+    if QQuickStyle.name() != STYLE:
         QQuickStyle.setStyle(STYLE)
 
 
