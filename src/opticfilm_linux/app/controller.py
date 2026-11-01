@@ -18,6 +18,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+from opticfilm_linux.app.auto import AutoPipeline
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
 from opticfilm_linux.app.holder import HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
@@ -116,6 +117,9 @@ class Controller(HolderCommands):
         self._free_space: FreeSpaceView | None = None
         self._cancel_export = threading.Event()
         self._cancel_free = threading.Event()
+        self._cancel_auto = threading.Event()
+        self._auto_due: set[int] = set()
+        self._auto_active: set[int] = set()
         self._jobs = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
         )
@@ -185,6 +189,8 @@ class Controller(HolderCommands):
         export_dir: str = "",
         export_format: Format = "jpeg",
         jpeg_size: JpegSize = "full",
+        auto_export: bool = False,
+        keep_raw: bool = False,
     ) -> None:
         def job() -> None:
             if export_dir:
@@ -197,6 +203,8 @@ class Controller(HolderCommands):
                 export_dir=export_dir,
                 export_format=export_format,
                 jpeg_size=jpeg_size,
+                auto_export=auto_export,
+                keep_raw=keep_raw,
             )
             self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
 
@@ -218,6 +226,9 @@ class Controller(HolderCommands):
 
     def rescan(self, number: int) -> None:
         def job(runner: BatchRunner) -> None:
+            with self._lock:
+                if number in self._auto_active:
+                    raise BatchError("Wait for this tray’s automatic export to finish")
             self._drop_progress(number)
             return runner.rescan_tray(number)
 
@@ -441,6 +452,7 @@ class Controller(HolderCommands):
         self._closing.set()
         self._cancel_export.set()
         self._cancel_free.set()
+        self._cancel_auto.set()
         self._holder_pool.shutdown(wait=True, cancel_futures=True)  # a running move completes
         self._jobs.shutdown(wait=True, cancel_futures=True)
         self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
@@ -600,6 +612,14 @@ class Controller(HolderCommands):
             self._enhancing = set()
             self._export = None
             self._free_space = None
+            self._auto_due = set()
+            self._auto_active = set()
+            self._cancel_auto = threading.Event()
+        if not readonly:
+            pipeline = self._auto_pipeline(store)
+            with self._lock:
+                self._auto_due.update(pipeline.resume())
+            self._submit_auto_due()
         if readonly:
             self._restore_eject_watch()  # no scanner is opened for a read-only batch
 
@@ -610,6 +630,7 @@ class Controller(HolderCommands):
         """Cancel a running export or free-space job and wait until every job has ended."""
         self._cancel_export.set()
         self._cancel_free.set()
+        self._cancel_auto.set()
         with self._jobs_idle:
             self._jobs_idle.wait_for(lambda: not self._job_futures)
 
@@ -693,6 +714,8 @@ class Controller(HolderCommands):
                 )
             with self._lock:
                 self._apply_event(event)
+        if session is self._session:
+            self._submit_auto_due()
 
     def _apply_event(self, event) -> None:
         if isinstance(event, TrayStageChanged):
@@ -710,6 +733,8 @@ class Controller(HolderCommands):
             self._updating = frozenset(k for k in self._updating if k[0] != event.number)
 
     def _on_stage(self, number: int, stage: TrayStage) -> None:
+        if stage is TrayStage.REVIEW:
+            self._auto_due.add(number)
         if stage is TrayStage.SCANNING:
             self._scan_started = {**self._scan_started, number: self._clock()}
             if self._selected is None:
@@ -721,6 +746,65 @@ class Controller(HolderCommands):
         else:
             self._enhancing = self._enhancing - {number}
             self._progress = {k: v for k, v in self._progress.items() if k != number}
+
+    def _auto_pipeline(self, store: BatchStore) -> AutoPipeline:
+        return AutoPipeline(store, cancel=self._cancel_auto, on_update=self._rebuild)
+
+    def _submit_auto_due(self) -> None:
+        """Leave the event lock before handing any job to the command/jobs workers."""
+        with self._lock:
+            session = self._session
+            due, self._auto_due = self._auto_due, set()
+            if session is None or session.runner is None or self._cancel_auto.is_set():
+                return
+            due -= self._auto_active
+            self._auto_active.update(due)
+        for number in sorted(due):
+            self._queue_auto(session, number)
+
+    def _queue_auto(self, session: _Session, number: int, release: bool = False) -> None:
+        def job(_runner: BatchRunner) -> None:
+            try:
+                if self._session is not session or self._cancel_auto.is_set():
+                    return
+                pipeline = self._auto_pipeline(session.store)
+                if release:
+                    pipeline.confirm_free_held(number)
+                    # Trays checked before the owner released the first were held too.
+                    # Queue each through the same per-tray reservation as a new auto job.
+                    if session.store.snapshot().first_tray_released:
+                        backlog = pipeline.resume()
+                        with self._lock:
+                            if self._session is session:
+                                self._auto_due.update(backlog)
+                        self._submit_auto_due()
+                else:
+                    pipeline.arm(number)
+                    pipeline.run(number)
+                tray = next(t for t in session.store.snapshot().trays if t.number == number)
+                if tray.auto == "failed":
+                    self._set(
+                        _banner=Banner(
+                            f"Tray {number}: automatic export failed; raw data kept",
+                            tray.auto_error,
+                        )
+                    )
+                self._rebuild()
+            finally:
+                with self._lock:
+                    if self._session is session:
+                        self._auto_active.discard(number)
+
+        self._after_pending_commands(job, "Could not complete automatic export")
+
+    def confirm_free_held(self, number: int) -> None:
+        """The owner's one explicit release of the checked first tray."""
+        with self._lock:
+            session = self._session
+            if session is None or session.runner is None or number in self._auto_active:
+                return
+            self._auto_active.add(number)
+        self._queue_auto(session, number, release=True)
 
     def _refresh(self) -> None:
         try:

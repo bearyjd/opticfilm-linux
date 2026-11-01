@@ -39,6 +39,9 @@ class TrayRow:
     error: str | None
     needs_look: int
     raw_removed: bool
+    auto: str = ""
+    auto_failed: tuple[int, ...] = ()
+    auto_flagged: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,11 @@ class AppState:
     holder_latch_text: str = holder_latch_text(HolderLatch.UNKNOWN)
     can_confirm_holder_latched: bool = False
     holder_latch_warning: bool = False
+    auto_export: bool = False
+    auto_status: str = ""
+    auto_flagged: int = 0
+    auto_failed: int = 0
+    held_tray: int | None = None
 
 
 EMPTY_STATE = AppState(
@@ -134,6 +142,9 @@ def _tray_row(
         error=tray.error,
         needs_look=sum(1 for s in tray.slides if s.status is SlideStatus.NEEDS_LOOK),
         raw_removed=tray.raw_removed,
+        auto=tray.auto,
+        auto_failed=tray.auto_failed,
+        auto_flagged=tray.auto_flagged,
     )
 
 
@@ -204,6 +215,7 @@ def build_state(
     idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return AppState(
         **_batch_fields(manifest, selected, preview_tokens, updating),
+        **_auto_fields(manifest, readonly),
         batch_session=batch_session,
         readonly=readonly,
         scanner=scanner,
@@ -232,3 +244,35 @@ def build_state(
         and holder_latch is HolderLatch.RELEASED,
         holder_latch_warning=manifest is not None and holder_latch is HolderLatch.UNKNOWN,
     )
+
+
+def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
+    if manifest is None:
+        return {}
+    trays = manifest.trays
+    flagged = sum(len(t.auto_flagged) for t in trays)
+    failed = sum(len(t.auto_failed) or int(t.auto == "failed") for t in trays)
+    finished = sum(t.auto in ("held", "freed") for t in trays)
+    active = sum(t.auto in ("pending", "exported", "verified") for t in trays)
+    first = min(trays, key=lambda t: t.number) if trays else None
+    held = (
+        first.number
+        if first is not None
+        and first.auto == "held"
+        and not first.raw_removed
+        and not manifest.defaults.keep_raw
+        and not readonly
+        else None
+    )
+    return {
+        "auto_export": manifest.defaults.auto_export,
+        "auto_flagged": flagged,
+        "auto_failed": failed,
+        "held_tray": held,
+        "auto_status": (
+            f"Automatic export: {finished} finished, {active} in progress, "
+            f"{flagged} flagged, {failed} failed"
+        )
+        if any(t.auto and t.auto != "off" for t in trays)
+        else "",
+    }

@@ -136,6 +136,19 @@ Kirigami.ScrollablePage {
                 enabled: exportFormatBox.currentValue === "jpeg"
                 Component.onCompleted: currentIndex = Math.max(0, indexOfValue(bridge.lastExportJpegSize))
             }
+            QQC2.Switch {
+                id: autoExportSwitch
+                objectName: "newBatchAutoExport"
+                Kirigami.FormData.label: qsTr("Automatic export:")
+                text: qsTr("Export JPEGs after each tray")
+                checked: false
+            }
+            QQC2.Label {
+                visible: autoExportSwitch.checked
+                text: qsTr("Raw data is kept until you check and free the first tray. Later trays are freed after verification.")
+                wrapMode: Text.Wrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+            }
             RowLayout {
                 Kirigami.FormData.label: qsTr("Slide orientation:")
 
@@ -201,7 +214,7 @@ Kirigami.ScrollablePage {
                 onClicked: {
                     // hidden slot rows do not count: the owner said all slots are loaded alike
                     const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
-                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue);
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, autoExportSwitch.checked);
                 }
             }
         }

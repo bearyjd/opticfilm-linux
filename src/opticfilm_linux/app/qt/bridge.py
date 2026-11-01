@@ -39,6 +39,9 @@ TRAY_KEYS = (
     "error",
     "needsLook",
     "rawRemoved",
+    "auto",
+    "autoFailed",
+    "autoFlagged",
 )
 SLIDE_KEYS = (
     "position",
@@ -77,6 +80,9 @@ def _tray_dict(row: TrayRow) -> dict[str, Any]:
         "error": row.error or "",
         "needsLook": row.needs_look,
         "rawRemoved": row.raw_removed,
+        "auto": row.auto,
+        "autoFailed": ", ".join(map(str, row.auto_failed)),
+        "autoFlagged": ", ".join(map(str, row.auto_flagged)),
     }
 
 
@@ -207,6 +213,9 @@ class Bridge(QObject):
     )
     batchExportFormat = _p(str, changed, lambda s, _: s.export_format)  # noqa: N815
     batchJpegSize = _p(str, changed, lambda s, _: s.jpeg_size)  # noqa: N815
+    batchAutoExport = _p(bool, changed, lambda s, _: s.auto_export)  # noqa: N815
+    autoStatus = _p(str, changed, lambda s, _: s.auto_status)  # noqa: N815
+    heldTray = _p(int, changed, lambda s, _: s.held_tray or 0)  # noqa: N815
     scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
     holderLatchText = _p(str, changed, lambda s, _: s.holder_latch_text)  # noqa: N815
     holderLatchWarning = _p(bool, changed, lambda s, _: s.holder_latch_warning)  # noqa: N815
@@ -286,6 +295,7 @@ class Bridge(QObject):
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str)
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str)
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, bool)
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -300,6 +310,7 @@ class Bridge(QObject):
         export_dir: str = "",
         export_format: str = "jpeg",
         jpeg_size: str = "full",
+        auto_export: bool = False,
     ) -> None:
         """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
         rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
@@ -319,6 +330,7 @@ class Bridge(QObject):
             export_dir=QUrl(export_dir).toLocalFile() or export_dir,
             export_format=export_format,  # type: ignore[arg-type]
             jpeg_size=jpeg_size,  # type: ignore[arg-type]
+            auto_export=auto_export,
         )
 
     @Slot(str, bool)
@@ -451,6 +463,10 @@ class Bridge(QObject):
     @Slot()
     def confirmFreeSpace(self) -> None:  # noqa: N802
         self._controller.confirm_free_space()
+
+    @Slot(int)
+    def confirmFreeHeld(self, number: int) -> None:  # noqa: N802
+        self._controller.confirm_free_held(number)
 
     @Slot()
     def cancelFreeSpace(self) -> None:  # noqa: N802

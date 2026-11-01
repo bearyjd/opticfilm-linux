@@ -591,6 +591,57 @@ def test_start_page_saves_export_folder_and_size(loaded, tmp_path):
     assert not warnings
 
 
+def test_start_page_automatic_export_is_opt_in_and_saved(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    root = engine.rootObjects()[0]
+    switch = root.findChild(QObject, "newBatchAutoExport")
+    assert switch is not None
+    assert not switch.property("checked")
+    page = root.findChild(QObject, "startPage")
+    page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
+    page.setProperty("exportFolder", QUrl.fromLocalFile(str(tmp_path / "photos")))
+    root.findChild(QObject, "newBatchName").setProperty("text", "Automatic")
+    switch.setProperty("checked", True)
+    create = root.findChild(QObject, "createBatch")
+    _wait(bridge, lambda: create.property("enabled"))
+    QMetaObject.invokeMethod(create, "click")
+    _wait(bridge, lambda: bridge.hasBatch)
+    assert bridge.batchAutoExport
+    _drain_deferred_deletes()
+    assert root.findChild(QObject, "autoPipelineStatus") is not None
+    assert root.findChild(QObject, "freeHeldRaw") is not None
+    assert not warnings
+
+
+def test_automatic_first_tray_can_be_checked_and_freed(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    bridge.newBatch(
+        QUrl.fromLocalFile(str(tmp_path)).toString(),
+        "Hands free",
+        "",
+        "",
+        600,
+        export_dir=str(tmp_path / "photos"),
+        auto_export=True,
+    )
+    _wait(bridge, lambda: bridge.hasBatch and bridge.canScan)
+    bridge.scan()
+    _wait(bridge, lambda: bridge.heldTray == 1)
+    root = engine.rootObjects()[0]
+    _drain_deferred_deletes()
+    button = root.findChild(QObject, "freeHeldRaw")
+    assert button.property("visible")
+    assert "flagged" in bridge.autoStatus.lower()
+    assert len(list((tmp_path / "photos").glob("*.jpg"))) == 4
+    QMetaObject.invokeMethod(button, "click")
+    raw_role = next(
+        role for role, name in bridge.trays.roleNames().items() if bytes(name) == b"rawRemoved"
+    )
+    _wait(bridge, lambda: bridge.trays.data(bridge.trays.index(0), raw_role))
+    assert bridge.heldTray == 0
+    assert not warnings
+
+
 @pytest.mark.parametrize(
     "fmt,trailing_slash", [("jpeg", False), ("png8", False), ("tiff16", False), ("jpeg", True)]
 )

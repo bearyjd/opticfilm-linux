@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from PIL import Image
+
 from opticfilm_linux.batch.enhance import options_for
 from opticfilm_linux.batch.model import (
     BatchDefaults,
@@ -26,7 +28,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
-from opticfilm_linux.output import Format, JpegSize, OutputSpec, write_slide
+from opticfilm_linux.output import Format, JpegSize, OutputSpec, jpeg_geometry, write_slide
 from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
 from opticfilm_linux.sweepstore import load_sweep
@@ -71,6 +73,8 @@ def _mark_exported(
     mode: Mode,
     settings: SlideSettings,
     defaults: BatchDefaults,
+    path: Path | None = None,
+    size: tuple[int, ...] = (),
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
     """Mark one slide exported, only if the file written still matches it.
 
@@ -92,7 +96,12 @@ def _mark_exported(
                 for s in tray.slides:
                     if s.position == position and s.settings == settings:
                         outcome = "marked"
-                        s = dataclasses.replace(s, exported=True)
+                        s = dataclasses.replace(
+                            s,
+                            exported=True,
+                            export_path=str(path.resolve()) if path else "",
+                            export_size=size,
+                        )
                     slides.append(s)
                 tray = dataclasses.replace(tray, slides=tuple(slides))
             trays.append(tray)
@@ -175,6 +184,9 @@ def _export_tray(
             return False
         options = options_for(defaults, tray.mode, record.settings, record.position)
         image = enhance_slide(slides[record.position - 1], options, sweep.dpi)
+        size = (image.shape[1], image.shape[0])
+        if spec.fmt == "jpeg":
+            size = jpeg_geometry(*size, sweep.dpi, spec.jpeg_size)[:2]
         path = write_slide(image, spec)
         report(path)
         outcome = _mark_exported(
@@ -185,6 +197,8 @@ def _export_tray(
             tray.mode,
             record.settings,
             defaults,
+            path,
+            size,
         )
         if outcome == "stale_tray":
             return True  # re-scanned, mode or orientation changed: the next export redoes it
@@ -227,6 +241,47 @@ def export_batch(
         if not finished:
             return ExportResult(written=tuple(written), cancelled=True)
     return ExportResult(written=tuple(written))
+
+
+class ExportVerificationFailed(BatchError):
+    """A particular slide failed its decoded JPEG verification."""
+
+    def __init__(self, number: int, position: int, reason: Exception):
+        self.position = position
+        super().__init__(f"tray {number} slide {position}: verification failed: {reason}")
+
+
+MIN_JPEG_BYTES = 512
+
+
+def verify_tray_export(store: BatchStore, number: int) -> None:
+    """Decode every recorded JPEG and check its actual write-time geometry.
+
+    Successful decoding alone cannot detect a valid but incorrectly sized replacement, so the
+    geometry comes from the rendered array (including rotation, crop and delivery scaling).
+    """
+    tray = _tray(store.snapshot(), number)
+    if tray.stage is not TrayStage.EXPORTED or not tray.slides:
+        raise BatchError(f"tray {number} is not fully exported")
+    for slide in tray.slides:
+        try:
+            if not slide.exported or slide.preview_stale:
+                raise ValueError("slide is not marked exported or has pending edits")
+            if not slide.export_path or len(slide.export_size) != 2:
+                raise ValueError("missing export record")
+            path = Path(slide.export_path)
+            if path.stat().st_size <= MIN_JPEG_BYTES:
+                raise ValueError("JPEG is too short")
+            with Image.open(path) as image:
+                if image.format != "JPEG":
+                    raise ValueError("export is not a JPEG")
+                image.load()
+                if image.size != slide.export_size:
+                    raise ValueError(
+                        f"JPEG size {image.size} differs from written {slide.export_size}"
+                    )
+        except (OSError, ValueError) as exc:
+            raise ExportVerificationFailed(number, slide.position, exc) from exc
 
 
 def _stale(tray: TrayRecord) -> bool:

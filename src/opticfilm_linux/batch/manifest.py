@@ -25,12 +25,35 @@ class ManifestFormatError(ValueError):
 
 def to_json(manifest: BatchManifest) -> str:
     data = asdict(manifest)
-    omitted_defaults = {"slots": (), "export_dir": "", "export_format": "jpeg", "jpeg_size": "full"}
+    omitted_defaults = {
+        "slots": (),
+        "export_dir": "",
+        "export_format": "jpeg",
+        "jpeg_size": "full",
+        "auto_export": False,
+        "keep_raw": False,
+    }
     data["defaults"] = {
         key: value
         for key, value in data["defaults"].items()
         if key not in omitted_defaults or value != omitted_defaults[key]
     }
+    if not manifest.first_tray_released:
+        data.pop("first_tray_released")
+    for tray in data["trays"]:
+        for key, default in (
+            ("auto", ""),
+            ("auto_error", ""),
+            ("auto_failed", ()),
+            ("auto_flagged", ()),
+        ):
+            if tray[key] == default:
+                tray.pop(key)
+        for slide in tray["slides"]:
+            if not slide["export_path"]:
+                slide.pop("export_path")
+            if not slide["export_size"]:
+                slide.pop("export_size")
     return json.dumps(data, indent=2)
 
 
@@ -47,6 +70,8 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         owner_decided=data["owner_decided"],
         exported=data["exported"],
         preview_stale=data.get("preview_stale", False),
+        export_path=data.get("export_path", ""),
+        export_size=tuple(data.get("export_size", ())),
     )
 
 
@@ -59,6 +84,10 @@ def _tray(data: dict[str, Any]) -> TrayRecord:
         slides=tuple(_slide(s) for s in data["slides"]),
         error=data["error"],
         raw_removed=data["raw_removed"],
+        auto=data.get("auto", ""),
+        auto_error=data.get("auto_error", ""),
+        auto_failed=tuple(data.get("auto_failed", ())),
+        auto_flagged=tuple(data.get("auto_flagged", ())),
     )
 
 
@@ -92,6 +121,7 @@ def from_json(text: str) -> BatchManifest:
             defaults=_defaults(data["defaults"]),
             trays=tuple(_tray(t) for t in data["trays"]),
             version=data["version"],
+            first_tray_released=data.get("first_tray_released", False),
         )
     except ManifestFormatError:
         raise

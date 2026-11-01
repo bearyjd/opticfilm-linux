@@ -76,6 +76,8 @@ class SlideRecord:
     owner_decided: bool = False
     exported: bool = False
     preview_stale: bool = False  # settings changed but the preview was not redone yet
+    export_path: str = ""
+    export_size: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,10 @@ class TrayRecord:
     slides: tuple[SlideRecord, ...] = ()
     error: str | None = None
     raw_removed: bool = False
+    auto: Literal["", "pending", "exported", "verified", "freed", "held", "failed", "off"] = ""
+    auto_error: str = ""
+    auto_failed: tuple[int, ...] = ()
+    auto_flagged: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +140,8 @@ class BatchDefaults:
     export_dir: str = ""
     export_format: Format = "jpeg"
     jpeg_size: JpegSize = "full"
+    auto_export: bool = False
+    keep_raw: bool = False
 
     def __post_init__(self) -> None:
         _check_orientation(self.rotation, self.mirror)
@@ -154,3 +162,4 @@ class BatchManifest:
     defaults: BatchDefaults = field(default_factory=BatchDefaults)
     trays: tuple[TrayRecord, ...] = ()
     version: int = 1
+    first_tray_released: bool = False

@@ -115,6 +115,28 @@ def accept_all(store: BatchStore) -> None:
     store.update(change)
 
 
+def accept_tray(store: BatchStore, number: int) -> None:
+    """Accept every position for automatic export, preserving flags and owner choices."""
+
+    def change(manifest: BatchManifest) -> BatchManifest:
+        tray, _ = _find(manifest, number)
+        if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED) or tray.raw_removed:
+            raise BatchError(f"tray {number} is not ready for automatic acceptance")
+        slides = tuple(
+            dataclasses.replace(s, status=SlideStatus.ACCEPTED, owner_decided=True)
+            for s in tray.slides
+        )
+        return dataclasses.replace(
+            manifest,
+            trays=tuple(
+                dataclasses.replace(t, slides=slides) if t.number == number else t
+                for t in manifest.trays
+            ),
+        )
+
+    store.update(change)
+
+
 def set_tray_mode(store: BatchStore, number: int, mode: Mode) -> None:
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, _ = _find(manifest, number)

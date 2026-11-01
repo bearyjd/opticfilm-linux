@@ -183,3 +183,43 @@ def test_can_scan_respects_holder_latch(latch, allowed):
     state = _build(holder_latch=HolderLatch[latch], holder_control=True)
     assert state.can_scan is allowed
     assert state.can_confirm_holder_latched is (latch == "RELEASED")
+
+
+def test_auto_status_counts_flagged_and_failed_after_acceptance():
+    from dataclasses import replace
+
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        auto="held",
+        auto_flagged=(2, 4),
+        slides=tuple(replace(s, status=SlideStatus.ACCEPTED) for s in manifest.trays[0].slides),
+    )
+    second = replace(manifest.trays[1], stage=TrayStage.REVIEW, auto="failed", auto_failed=(1,))
+    manifest = replace(
+        manifest, trays=(first, second), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    state = _build(manifest)
+    assert state.auto_export
+    assert state.auto_flagged == 2
+    assert state.auto_failed == 1
+    assert "1 finished" in state.auto_status
+    assert "2 flagged" in state.auto_status
+    assert "1 failed" in state.auto_status
+    assert state.held_tray == 1
+    assert state.trays[0].auto == "held"
+    assert state.trays[1].auto_failed == (1,)
+
+
+def test_keep_raw_and_readonly_hide_first_tray_release():
+    from dataclasses import replace
+
+    manifest = _manifest()
+    manifest = replace(
+        manifest,
+        trays=(replace(manifest.trays[0], auto="held"),),
+        defaults=replace(manifest.defaults, auto_export=True, keep_raw=True),
+    )
+    assert _build(manifest).held_tray is None
+    manifest = replace(manifest, defaults=replace(manifest.defaults, keep_raw=False))
+    assert _build(manifest, readonly=True).held_tray is None

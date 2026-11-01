@@ -124,6 +124,25 @@ Kirigami.Page {
         anchors.fill: parent
         spacing: 0
 
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            visible: bridge.batchAutoExport || bridge.autoStatus !== ""
+
+            QQC2.Label {
+                objectName: "autoPipelineStatus"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: bridge.autoStatus
+            }
+            QQC2.Button {
+                objectName: "freeHeldRaw"
+                visible: bridge.heldTray > 0 && !bridge.readonly
+                text: qsTr("Free raw data for the first tray")
+                onClicked: bridge.confirmFreeHeld(bridge.heldTray)
+            }
+        }
+
         QQC2.Label {
             objectName: "holderLatchText"
             Layout.fillWidth: true

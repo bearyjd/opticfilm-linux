@@ -30,6 +30,9 @@ ListView {
         required property string elapsed
         required property string error
         required property int needsLook
+        required property string auto
+        required property string autoFailed
+        required property string autoFlagged
 
         width: ListView.view.width
         highlighted: number === bridge.selectedTray
@@ -54,6 +57,18 @@ ListView {
                 visible: row.stage === "scanning" || row.stage === "scanned" || row.stage === "enhancing"
                 indeterminate: row.progress < 0
                 value: Math.max(0, row.progress)
+            }
+            QQC2.Label {
+                visible: row.auto !== ""
+                text: row.auto
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            QQC2.Label {
+                visible: row.autoFailed !== "" || row.autoFlagged !== ""
+                text: (row.autoFailed !== "" ? qsTr("Failed slides: %1. Raw kept. ").arg(row.autoFailed) : "") + (row.autoFlagged !== "" ? qsTr("Flagged slides: %1").arg(row.autoFlagged) : "")
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
             }
             QQC2.Label {
                 visible: row.stage === "review" && row.needsLook > 0
