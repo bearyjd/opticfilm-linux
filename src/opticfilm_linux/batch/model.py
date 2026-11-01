@@ -147,6 +147,9 @@ class BatchDefaults:
     def __post_init__(self) -> None:
         _check_orientation(self.rotation, self.mirror)
         _check_slots(self.slots)
+        for name in ("auto_export", "keep_raw"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
         if not isinstance(self.export_dir, str):
             raise ValueError("export_dir must be a string")
         if self.export_format not in ("tiff16", "png8", "jpeg"):
@@ -164,3 +167,7 @@ class BatchManifest:
     trays: tuple[TrayRecord, ...] = ()
     version: int = 1
     first_tray_released: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.first_tray_released) is not bool:
+            raise ValueError("first_tray_released must be a boolean")

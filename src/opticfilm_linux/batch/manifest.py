@@ -1,6 +1,7 @@
 """JSON (de)serialization of a batch manifest."""
 
 import json
+import logging
 from dataclasses import asdict
 from typing import Any
 
@@ -17,6 +18,7 @@ from opticfilm_linux.batch.model import (
 )
 
 MANIFEST_VERSION = 1
+logger = logging.getLogger(__name__)
 
 
 class ManifestFormatError(ValueError):
@@ -110,6 +112,24 @@ def _defaults(data: dict[str, Any]) -> BatchDefaults:
     return BatchDefaults(**{"dpi": 3600, **data, "slots": tuple(_slot(s) for s in slots)})
 
 
+def _safe_policy(data: dict[str, Any]) -> None:
+    defaults = data["defaults"]
+    if not isinstance(defaults, dict):
+        raise ManifestFormatError("defaults must be a JSON object")
+    fields = (
+        (defaults, "auto_export"),
+        (defaults, "keep_raw"),
+        (data, "first_tray_released"),
+    )
+    invalid = [key for source, key in fields if key in source and type(source[key]) is not bool]
+    if invalid:
+        logger.warning(
+            "Invalid boolean policy fields %s; applying safe batch policy", ", ".join(invalid)
+        )
+        defaults.update(auto_export=False, keep_raw=True)
+        data["first_tray_released"] = False
+
+
 def from_json(text: str) -> BatchManifest:
     try:
         data = json.loads(text)
@@ -117,6 +137,7 @@ def from_json(text: str) -> BatchManifest:
             raise ManifestFormatError("manifest must be a JSON object")
         if data.get("version") != MANIFEST_VERSION:
             raise ManifestFormatError(f"unsupported manifest version {data.get('version')!r}")
+        _safe_policy(data)
         return BatchManifest(
             name=data["name"],
             album=data["album"],

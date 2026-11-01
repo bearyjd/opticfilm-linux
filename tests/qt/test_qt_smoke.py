@@ -643,6 +643,48 @@ def test_automatic_first_tray_can_be_checked_and_freed(loaded, tmp_path):
 
 
 @pytest.mark.parametrize(
+    "outcome",
+    [
+        "raw data kept",
+        "raw data partly removed",
+        "raw data removed; could not save cleanup completion",
+    ],
+)
+def test_failed_automatic_cleanup_renders_actual_raw_outcome(loaded, tmp_path, outcome):
+    bridge, engine, warnings = loaded
+    _scanned(bridge, tmp_path, "Cleanup failure")
+    store = bridge._controller._session.store
+    store.update_tray(1, auto="failed", auto_failed=(1,), auto_error=f"{outcome}. Disk fault")
+    bridge._controller._rebuild()
+    _drain_deferred_deletes()
+    root = engine.rootObjects()[0]
+    queue = root.findChild(QQuickItem, "trayQueue")
+    queue.setProperty("currentIndex", 0)
+    # Keep the parentless delegate/content wrappers alive while reading their labels.
+    retained_items = []
+
+    def row_label(name):
+        row = queue.property("currentItem")
+        content = row.property("contentItem") if row is not None else None
+        label = content.findChild(QQuickItem, name) if content is not None else None
+        retained_items.extend((row, content, label))
+        return label
+
+    def outcome_is_rendered():
+        label = row_label("trayAutoStatus1")
+        return label is not None and label.isVisible() and outcome in label.property("text")
+
+    _wait(bridge, outcome_is_rendered)
+    status = row_label("trayAutoStatus1")
+    slides = row_label("trayAutoSlides1")
+    assert slides is not None and slides.isVisible()
+    assert "Failed slides: 1" in slides.property("text")
+    assert "Raw kept" not in status.property("text")
+    assert "Raw kept" not in slides.property("text")
+    assert not warnings
+
+
+@pytest.mark.parametrize(
     "fmt,trailing_slash", [("jpeg", False), ("png8", False), ("tiff16", False), ("jpeg", True)]
 )
 def test_last_export_initializes_next_batch_without_changing_existing_batch(

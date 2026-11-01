@@ -41,6 +41,7 @@ TRAY_KEYS = (
     "rawRemoved",
     "auto",
     "autoFailed",
+    "autoError",
     "autoFlagged",
 )
 SLIDE_KEYS = (
@@ -82,6 +83,7 @@ def _tray_dict(row: TrayRow) -> dict[str, Any]:
         "rawRemoved": row.raw_removed,
         "auto": row.auto,
         "autoFailed": ", ".join(map(str, row.auto_failed)),
+        "autoError": row.auto_error,
         "autoFlagged": ", ".join(map(str, row.auto_flagged)),
     }
 

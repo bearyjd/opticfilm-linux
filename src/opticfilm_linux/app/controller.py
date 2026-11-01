@@ -105,6 +105,11 @@ class Controller(HolderCommands):
         self._session: _Session | None = None
         self._batch_session = 0
         self._closing = threading.Event()
+        self._initialize_jobs()
+        self._state = EMPTY_STATE
+        self._reported = EMPTY_STATE
+
+    def _initialize_jobs(self) -> None:
         self._job_futures: set[Future] = set()
         self._jobs_idle = threading.Condition(self._lock)
         self._selected: int | None = None
@@ -123,8 +128,6 @@ class Controller(HolderCommands):
         self._jobs = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
         )
-        self._state = EMPTY_STATE
-        self._reported = EMPTY_STATE
 
     # -- what the UI thread uses (never blocks) ------------------------------------------
 
@@ -599,18 +602,28 @@ class Controller(HolderCommands):
             store.close()  # never leave the writer lock held after a failed open
             self._restore_eject_watch()
             raise
-        first = store.snapshot().trays[0].number if store.snapshot().trays else None
+        self._attach_session(_Session(store, runner, poller, holder, scanner))
+        if not readonly:
+            pipeline = self._auto_pipeline(store)
+            with self._lock:
+                self._auto_due.update(pipeline.resume())
+            self._submit_auto_due()
+        if readonly:
+            self._restore_eject_watch()  # no scanner is opened for a read-only batch
+
+    def _attach_session(self, session: _Session) -> None:
+        trays = session.store.snapshot().trays
         with self._lock:
             self._next_latch_sequence()
             self._latch_applied = self._latch_sequence
-            self._session = _Session(store, runner, poller, holder, scanner)
+            self._session = session
             self._batch_session += 1
             self._holder_latch = HolderLatch.UNKNOWN
             self._latch_address = None
             self._latch_loss = None
             self._latch_invalidated = True
-            self._sync_holder_latch(scanner)
-            self._selected = first
+            self._sync_holder_latch(session.scanner)
+            self._selected = trays[0].number if trays else None
             self._banner = None
             self._updating = frozenset()
             self._progress = {}
@@ -621,13 +634,6 @@ class Controller(HolderCommands):
             self._auto_due = set()
             self._auto_active = set()
             self._cancel_auto = threading.Event()
-        if not readonly:
-            pipeline = self._auto_pipeline(store)
-            with self._lock:
-                self._auto_due.update(pipeline.resume())
-            self._submit_auto_due()
-        if readonly:
-            self._restore_eject_watch()  # no scanner is opened for a read-only batch
 
     def _scanner_problem(self, message: str, detail: str) -> None:
         self._set(_banner=Banner(message, detail))

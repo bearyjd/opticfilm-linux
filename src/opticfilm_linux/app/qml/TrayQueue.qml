@@ -5,6 +5,7 @@ import org.kde.kirigami as Kirigami
 
 ListView {
     id: queue
+    objectName: "trayQueue"
 
     clip: true
     model: bridge.trays
@@ -32,6 +33,7 @@ ListView {
         required property int needsLook
         required property string auto
         required property string autoFailed
+        required property string autoError
         required property string autoFlagged
 
         width: ListView.view.width
@@ -59,14 +61,16 @@ ListView {
                 value: Math.max(0, row.progress)
             }
             QQC2.Label {
+                objectName: "trayAutoStatus" + row.number
                 visible: row.auto !== ""
-                text: row.auto
+                text: row.auto + (row.autoError !== "" ? ": " + row.autoError : "")
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }
             QQC2.Label {
+                objectName: "trayAutoSlides" + row.number
                 visible: row.autoFailed !== "" || row.autoFlagged !== ""
-                text: (row.autoFailed !== "" ? qsTr("Failed slides: %1. Raw kept. ").arg(row.autoFailed) : "") + (row.autoFlagged !== "" ? qsTr("Flagged slides: %1").arg(row.autoFlagged) : "")
+                text: (row.autoFailed !== "" ? qsTr("Failed slides: %1. ").arg(row.autoFailed) : "") + (row.autoFlagged !== "" ? qsTr("Flagged slides: %1").arg(row.autoFlagged) : "")
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }

@@ -127,6 +127,53 @@ def test_cleanup_refuses_unrelated_same_size_valid_jpeg(delivery):
     _assert_raw_kept(store)
 
 
+@pytest.mark.parametrize("replacement", ["missing", "different"])
+def test_cleanup_rechecks_jpeg_after_committing(delivery, monkeypatch, replacement):
+    store, path = _delivered(delivery)
+    original = store.update
+
+    def change_after_commit(change):
+        manifest = original(change)
+        if replacement == "missing":
+            path.unlink()
+        else:
+            Image.new("RGB", (40, 32), "red").save(path, "JPEG")
+        return manifest
+
+    monkeypatch.setattr(store, "update", change_after_commit)
+    with pytest.raises(export.ExportVerificationFailed):
+        export.cleanup_raw(store, 1)
+    assert store.sweep_dir(1, 1).is_dir()
+    assert store.snapshot().trays[0].raw_removed  # committed before the final refusal
+
+
+@pytest.mark.parametrize("ancestor", ["tray", "trays"])
+def test_cleanup_rechecks_ancestor_symlink_after_committing(delivery, monkeypatch, ancestor):
+    store, _ = _delivered(delivery)
+    target = store.tray_dir(1) if ancestor == "tray" else store.directory / "trays"
+    preserved = target.with_name(target.name + "-preserved")
+    outside = store.directory.parent / "outside"
+    relative_raw = store.sweep_dir(1, 1).relative_to(target)
+    outside_raw = outside / relative_raw
+    outside_raw.mkdir(parents=True)
+    sentinel = outside_raw / "unrelated-raw"
+    sentinel.write_bytes(b"outside scans must survive")
+    original = store.update
+
+    def swap_after_commit(change):
+        manifest = original(change)
+        target.rename(preserved)
+        target.symlink_to(outside, target_is_directory=True)
+        return manifest
+
+    monkeypatch.setattr(store, "update", swap_after_commit)
+    with pytest.raises(export.CleanupRefused, match="symlink|outside"):
+        export.cleanup_raw(store, 1)
+    assert (preserved / relative_raw / "scan").read_bytes() == b"precious raw scan"
+    assert sentinel.read_bytes() == b"outside scans must survive"
+    assert store.snapshot().trays[0].raw_removed
+
+
 def test_verify_rejects_unrelated_same_size_valid_jpeg(delivery):
     store, path = _delivered(delivery)
     Image.new("RGB", (40, 32), "red").save(path, "JPEG")

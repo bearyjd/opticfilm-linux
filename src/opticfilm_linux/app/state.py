@@ -42,6 +42,7 @@ class TrayRow:
     auto: str = ""
     auto_failed: tuple[int, ...] = ()
     auto_flagged: tuple[int, ...] = ()
+    auto_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,7 @@ def _tray_row(
         auto=tray.auto,
         auto_failed=tray.auto_failed,
         auto_flagged=tray.auto_flagged,
+        auto_error=tray.auto_error,
     )
 
 

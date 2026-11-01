@@ -445,6 +445,75 @@ def test_auto_run_coordinates_work_in_under_fifty_lines():
     assert run.end_lineno - run.lineno + 1 < 50
 
 
+@pytest.mark.parametrize(
+    "module_name,names",
+    [
+        ("opticfilm_linux.app.auto", None),
+        (
+            "opticfilm_linux.app.controller",
+            {
+                "__init__",
+                "new_batch",
+                "rescan",
+                "confirm_free_space",
+                "shutdown",
+                "_attach",
+                "_stop_jobs",
+                "_drain_events",
+                "_on_stage",
+                "_auto_pipeline",
+                "_submit_auto_due",
+                "_queue_auto",
+                "_resume_auto_backlog",
+                "confirm_free_held",
+                "_initialize_jobs",
+                "_attach_session",
+            },
+        ),
+        (
+            "opticfilm_linux.batch.export",
+            {
+                "_mark_exported",
+                "_export_tray",
+                "__init__",
+                "_durable_digest",
+                "_verify_export",
+                "verify_tray_export",
+                "_cleanup_policy",
+                "check_cleanup_allowed",
+                "cleanup_raw",
+                "free_space",
+                "_delete",
+            },
+        ),
+    ],
+)
+def test_pr4_added_or_changed_functions_stay_under_fifty_lines(module_name, names):
+    """PR function inventory against merge base b7b0633, including nested functions."""
+    import importlib
+
+    module = importlib.import_module(module_name)
+    tree = ast.parse(inspect.getsource(module))
+    checked = [
+        function
+        for function in ast.walk(tree)
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and (names is None or function.name in names)
+    ]
+    functions = {
+        child
+        for function in checked
+        for child in ast.walk(function)
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert functions
+    assert not [
+        f"{module_name}:{node.lineno} {node.name} ({node.end_lineno - node.lineno + 1} lines)"
+        for node in functions
+        if node.end_lineno - node.lineno + 1 >= 50
+    ]
+
+
 @pytest.mark.parametrize("fault", [errno.ENOSPC, errno.EACCES])
 def test_auto_destination_fault_keeps_raw_and_lists_every_failed_slide(store, monkeypatch, fault):
     def fail(*args, **kwargs):

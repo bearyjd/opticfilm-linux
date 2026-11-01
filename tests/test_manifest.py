@@ -134,3 +134,59 @@ def test_old_manifest_without_dpi_keeps_historical_3600():
     assert loaded.defaults.dpi == 3600
     assert from_json(to_json(loaded)) == loaded
     assert json.loads(to_json(loaded))["defaults"]["dpi"] == 3600
+
+
+POLICY_FIELDS = ("auto_export", "keep_raw", "first_tray_released")
+INVALID_POLICY_VALUES = ("false", "true", "", 0, 1, None, [], {})
+
+
+@pytest.mark.parametrize("key", POLICY_FIELDS)
+@pytest.mark.parametrize("value", INVALID_POLICY_VALUES)
+def test_invalid_policy_value_loads_entire_safe_policy(key, value, caplog):
+    data = json.loads(to_json(_manifest()))
+    data["defaults"].update(auto_export=True, keep_raw=False)
+    data["first_tray_released"] = True
+    target = data if key == "first_tray_released" else data["defaults"]
+    target[key] = value
+
+    loaded = from_json(json.dumps(data))
+
+    assert loaded.defaults.auto_export is False
+    assert loaded.defaults.keep_raw is True
+    assert loaded.first_tray_released is False
+    assert any(key in record.message and record.levelname == "WARNING" for record in caplog.records)
+
+
+@pytest.mark.parametrize("key", POLICY_FIELDS)
+@pytest.mark.parametrize("value", INVALID_POLICY_VALUES)
+def test_model_rejects_invalid_policy_boolean(key, value):
+    with pytest.raises(ValueError, match=key):
+        if key == "first_tray_released":
+            BatchManifest(name="Trips", first_tray_released=value)
+        else:
+            BatchDefaults(**{key: value})
+
+
+def test_legacy_manifest_without_policy_preserves_defaults(caplog):
+    data = json.loads(to_json(_manifest()))
+    for key in POLICY_FIELDS:
+        target = data if key == "first_tray_released" else data["defaults"]
+        target.pop(key, None)
+    loaded = from_json(json.dumps(data))
+    assert loaded.defaults.auto_export is False
+    assert loaded.defaults.keep_raw is False
+    assert loaded.first_tray_released is False
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("auto_export", [False, True])
+@pytest.mark.parametrize("keep_raw", [False, True])
+@pytest.mark.parametrize("released", [False, True])
+def test_boolean_policy_roundtrip(auto_export, keep_raw, released, caplog):
+    manifest = replace(
+        _manifest(),
+        defaults=BatchDefaults(auto_export=auto_export, keep_raw=keep_raw),
+        first_tray_released=released,
+    )
+    assert from_json(to_json(manifest)) == manifest
+    assert not caplog.records

@@ -3,6 +3,11 @@
 Export always recomputes a slide from its raw sweep and stored settings; previews are never the
 source. A slide is marked exported only after its file is written, so a crash can at worst
 produce a duplicate file on the next export, never a missing one.
+
+Cleanup defends against application bugs, crashes, power loss, concurrent application actions,
+malformed or stale manifests, and owner mistakes such as moved exports or symlinked raw folders.
+It does not defend against hostile local processes racing checks within microseconds, or an
+owner deliberately hand-forging export receipts in the manifest.
 """
 
 import dataclasses
@@ -350,13 +355,17 @@ def _half_cleaned(store: BatchStore, tray: TrayRecord) -> bool:
     )
 
 
-def _delete(number: int, folders: list[Path]) -> None:
+def _delete(store: BatchStore, tray: TrayRecord) -> None:
+    # Recheck after committing: a refusal keeps the files, but conservatively leaves the tray
+    # marked unusable until cleanup is retried, just like an interrupted deletion.
+    _verify_export(tray, jpeg_only=False)
+    folders = _checked_sweep_folders(store, tray.number)
     try:
         for path in folders:
             shutil.rmtree(path)
     except OSError as exc:
         raise BatchError(
-            f"the raw scans of tray {number} were only partly removed and can no longer be "
+            f"the raw scans of tray {tray.number} were only partly removed and can no longer be "
             f"used; free disk space again to finish: {exc}"
         ) from exc
 
@@ -417,7 +426,7 @@ def cleanup_raw(store: BatchStore, number: int, *, release_first: bool = False) 
         )
 
     store.update(commit)
-    _delete(number, folders)
+    _delete(store, tray)
     if tray.auto:
         store.update_tray(number, auto="freed", auto_error="", auto_failed=())
     return freed
