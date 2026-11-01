@@ -8,15 +8,15 @@ SAMPLE_PIXELS = 250_000
 MIN_SPAN = 1e-4
 TARGET_MEDIAN = 0.45
 GAMMA_LIMITS = (0.5, 2.0)  # tone-mapped input: inverted negatives, finished images
-# Linear scanner positives sit with their median at 2-5 % of full range and want gammas of about
-# 0.2-0.3; 0.2 lifts a mid level of 1.8 % to the target, and anything darker is mostly noise.
-LINEAR_GAMMA_LIMITS = (0.2, 2.0)
 BLACK_PERCENTILE = 0.5
 BLACK_INSET = 0.2  # black levels come from the central 60 % of the frame, clear of any mount
 # The scanner's channels differ by about 0.011 of full range; a larger difference is the scene's
 # own colour (a red sunset has no blue-free shadows), which this step must not take away.
 MAX_BLACK_OFFSET = 0.03
 EXPOSURE_PERCENTILES = (0.1, 99.9)
+LINEAR_TARGET_DISPLAY = 0.425
+MAX_LINEAR_GAIN = 8.0
+HIGHLIGHT_KNEE = 0.75
 NEGATIVE_PERCENTILES = (0.5, 99.5)
 MIN_TRANSMITTANCE = 1e-4
 
@@ -27,8 +27,15 @@ def _sample(image: np.ndarray) -> np.ndarray:
     return to_float(image[::step, ::step])
 
 
-def auto_exposure(rgb: np.ndarray, gamma_limits: tuple[float, float] = GAMMA_LIMITS) -> np.ndarray:
-    """One shared black/white stretch and gamma for all channels, keeping colour balance."""
+def auto_exposure(
+    rgb: np.ndarray, gamma_limits: tuple[float, float] = GAMMA_LIMITS, *, linear: bool = False
+) -> np.ndarray:
+    """Apply a shared exposure curve, keeping colour balance.
+
+    With ``linear=True``, use linear gain, highlight rolloff and sRGB encoding;
+    ``gamma_limits`` is ignored. Otherwise apply a stretch and bounded gamma
+    for tone-mapped input.
+    """
     sample = _sample(rgb)
     # Black/white points come from the darkest and brightest channel at each pixel, so that
     # one shared stretch never clips a single channel by more than the percentile allows.
@@ -37,17 +44,43 @@ def auto_exposure(rgb: np.ndarray, gamma_limits: tuple[float, float] = GAMMA_LIM
     median = np.percentile(sample.mean(axis=2), 50)
     if high - low < MIN_SPAN:
         return rgb.copy()
+    if linear:
+        return _linear_exposure(rgb, float(low), float(high), float(median))
     mid = float(np.clip((median - low) / (high - low), 1e-3, 1 - 1e-3))
     gamma = float(np.clip(np.log(TARGET_MEDIAN) / np.log(mid), *gamma_limits))
     return map_strips(rgb, lambda x: np.clip((x - low) / (high - low), 0.0, 1.0) ** gamma)
 
 
+def _linear_exposure(rgb: np.ndarray, low: float, high: float, median: float) -> np.ndarray:
+    """Apply up to three stops of shared gain, a highlight shoulder and sRGB encoding."""
+    target = ((LINEAR_TARGET_DISPLAY + 0.055) / 1.055) ** 2.4
+    mid = (median - low) / (high - low)
+    gain = float(np.clip(target / max(mid, 1e-8), 1.0, MAX_LINEAR_GAIN))
+
+    def apply(x: np.ndarray) -> np.ndarray:
+        linear = np.clip((x - low) / (high - low), 0.0, 1.0) * gain
+        linear = _highlight_rolloff(linear)
+        return np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * linear ** (1 / 2.4) - 0.055)
+
+    return map_strips(rgb, apply)
+
+
+def _highlight_rolloff(linear: np.ndarray) -> np.ndarray:
+    """Compress values above the knee smoothly towards display white."""
+    knee = HIGHLIGHT_KNEE
+    excess = np.maximum(linear - knee, 0)
+    denominator = excess + 1 - knee
+    excess *= 1 - knee
+    excess /= denominator
+    excess += knee
+    return np.minimum(linear, excess, out=excess)
+
+
 def subtract_black(rgb: np.ndarray) -> np.ndarray:
     """Bring every channel of linear data down to the darkest channel's black level.
 
-    Raw scans have a slightly different black level per channel. A shared gamma bends each
-    offset differently, a cast that no later stretch undoes, so the per-channel part goes first;
-    the shared part is left to ``auto_exposure``, which takes it from the whole frame.
+    Raw scans have a slightly different black level per channel. Removing these offsets before
+    the display curve prevents them from becoming a colour cast.
     Black levels are a low percentile of the frame's interior, so dark mount at the edges
     (cropped or not) never sets them. A channel's offset is also never larger than the same
     offset measured on the whole frame: a scanner offset is in every pixel (the opaque mount
