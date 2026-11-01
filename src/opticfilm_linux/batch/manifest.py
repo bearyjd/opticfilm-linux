@@ -7,14 +7,17 @@ from typing import Any
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
+    ExportRecord,
     Flag,
     SlideRecord,
     SlideSettings,
     SlideStatus,
     SlotOrientation,
+    TrayLocation,
     TrayRecord,
     TrayStage,
 )
+from opticfilm_linux.provenance import ScanEvidence
 
 MANIFEST_VERSION = 1
 
@@ -31,6 +34,17 @@ def to_json(manifest: BatchManifest) -> str:
         for key, value in data["defaults"].items()
         if key not in omitted_defaults or value != omitted_defaults[key]
     }
+    for key, default in {"collection": "", "box": 1, "section": "a", "section_size": 140}.items():
+        if data[key] == default:
+            del data[key]
+    for tray in data["trays"]:
+        if tray["evidence"] is None:
+            del tray["evidence"]
+        if tray["location"] is None:
+            del tray["location"]
+        for slide in tray["slides"]:
+            if not slide["exports"]:
+                del slide["exports"]
     return json.dumps(data, indent=2)
 
 
@@ -47,7 +61,14 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         owner_decided=data["owner_decided"],
         exported=data["exported"],
         preview_stale=data.get("preview_stale", False),
+        exports=tuple(ExportRecord(**record) for record in data.get("exports", [])),
     )
+
+
+def _evidence(data: dict[str, Any] | None) -> ScanEvidence | None:
+    if data is None:
+        return None
+    return ScanEvidence(**{**data, "diagnostics": tuple(data["diagnostics"])})
 
 
 def _tray(data: dict[str, Any]) -> TrayRecord:
@@ -59,6 +80,8 @@ def _tray(data: dict[str, Any]) -> TrayRecord:
         slides=tuple(_slide(s) for s in data["slides"]),
         error=data["error"],
         raw_removed=data["raw_removed"],
+        location=TrayLocation(**data["location"]) if data.get("location") is not None else None,
+        evidence=_evidence(data.get("evidence")),
     )
 
 
@@ -92,6 +115,10 @@ def from_json(text: str) -> BatchManifest:
             defaults=_defaults(data["defaults"]),
             trays=tuple(_tray(t) for t in data["trays"]),
             version=data["version"],
+            collection=data.get("collection", ""),
+            box=data.get("box", 1),
+            section=data.get("section", "a"),
+            section_size=data.get("section_size", 140),
         )
     except ManifestFormatError:
         raise

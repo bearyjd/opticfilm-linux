@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
-from opticfilm_linux.app.holder import HolderCommands
+from opticfilm_linux.app.holder import WAIT_BATCH, HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
 from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.state import (
@@ -33,6 +33,7 @@ from opticfilm_linux.app.state import (
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.export import clear_exported
+from opticfilm_linux.batch.layout import advance_section
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     BatchDefaults,
@@ -185,6 +186,10 @@ class Controller(HolderCommands):
         export_dir: str = "",
         export_format: Format = "jpeg",
         jpeg_size: JpegSize = "full",
+        collection: str = "",
+        box: int = 1,
+        section: str = "a",
+        section_size: int = 140,
     ) -> None:
         def job() -> None:
             if export_dir:
@@ -198,7 +203,19 @@ class Controller(HolderCommands):
                 export_format=export_format,
                 jpeg_size=jpeg_size,
             )
-            self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
+            self._replace_batch(
+                lambda: BatchStore.create(
+                    directory,
+                    name,
+                    album,
+                    date,
+                    defaults,
+                    collection=collection,
+                    box=box,
+                    section=section,
+                    section_size=section_size,
+                )
+            )
 
         self._run_lifecycle(job, "Could not create the batch")
 
@@ -222,6 +239,59 @@ class Controller(HolderCommands):
             return runner.rescan_tray(number)
 
         self._reserved_scan(job, f"Could not re-scan tray {number}")
+
+    def _section_refusal(self, reserved: bool = False) -> str | None:
+        """Called under the controller lock before reserving the transition."""
+        if self._lifecycle_pending or self._closing.is_set():
+            return WAIT_BATCH
+        session = self._session
+        runner = session.runner if session is not None else None
+        if self._holder_busy:
+            return "Wait for the eject/load to finish"
+        if self._scans_queued > int(reserved) or (runner is not None and runner.scan_pending()):
+            return "Wait for the scan or section change to finish"
+        if self._long_jobs or self._job_futures:
+            return "Wait for the export or disk-space job to finish"
+        if self._updating or self._enhancing or (runner is not None and runner.work_pending()):
+            return "Wait for enhancement to finish"
+        return None
+
+    def finish_box(self, next_box: bool = True) -> None:
+        with self._lock:
+            refusal = self._section_refusal()
+            if refusal is None:
+                self._scans_queued += 1  # reserve while queued, including against holder moves
+        if refusal is not None:
+            self._set(_banner=Banner(refusal))
+            return
+        reserved = True
+
+        def release() -> None:
+            nonlocal reserved
+            with self._lock:
+                if reserved:
+                    self._scans_queued -= 1
+                    reserved = False
+
+        def job(_runner: BatchRunner) -> None:
+            try:
+                with self._lock:
+                    refusal = self._section_refusal(reserved=True)
+                    session = self._session
+                if refusal is not None:
+                    raise BatchError(refusal)
+                if session is None:
+                    raise BatchError("no batch is open")
+                advance_section(session.store, next_box=next_box)
+                self._set(_selected=None)
+            finally:
+                release()
+
+        future = None
+        try:
+            future = self._run_writer(job, "Could not finish the section")
+        finally:
+            self._track(future, release)  # also release when writer validation skips the job
 
     def select_tray(self, number: int) -> None:
         self._set(_selected=number)
@@ -740,29 +810,17 @@ class Controller(HolderCommands):
         with self._lock:
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do
-            if session is not None:
-                self._sync_holder_latch(session.scanner)
-            if (
-                status
-                in (
-                    ScannerStatus.INTERRUPTED,
-                    ScannerStatus.ERROR,
-                    ScannerStatus.NOT_CONNECTED,
-                )
-                and sequence >= self._latch_applied
-                and (self._holder_latch is not HolderLatch.UNKNOWN or not self._latch_invalidated)
-            ):
-                self._latch_applied = sequence
-                self._holder_latch = HolderLatch.UNKNOWN
-                self._latch_invalidated = True
-                self._save_holder_latch()
+            self._update_holder_status(session, status, sequence)
             selected = self._selected
             tokens = self._preview_tokens(session, manifest, selected)
             self._state = build_state(
                 manifest,
                 preview_tokens=tokens,
                 scanner=status,
-                scan_pending=bool(session and session.runner and session.runner.scan_pending()),
+                scan_pending=bool(
+                    self._scans_queued
+                    or (session and session.runner and session.runner.scan_pending())
+                ),
                 readonly=bool(session and session.runner is None),
                 selected=selected,
                 updating=self._updating,
@@ -777,8 +835,26 @@ class Controller(HolderCommands):
                 next_strip=self._next_strip,
                 jobs_running=bool(self._long_jobs or self._job_futures),
                 batch_session=self._batch_session if session else 0,
+                runner_busy=bool(
+                    self._lifecycle_pending
+                    or (session and session.runner and session.runner.work_pending())
+                ),
                 holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
             )
+
+    def _update_holder_status(self, session, status: ScannerStatus, sequence: int) -> None:
+        """Apply the scanner status while the controller lock is held."""
+        if session is not None:
+            self._sync_holder_latch(session.scanner)
+        if (
+            status in (ScannerStatus.INTERRUPTED, ScannerStatus.ERROR, ScannerStatus.NOT_CONNECTED)
+            and sequence >= self._latch_applied
+            and (self._holder_latch is not HolderLatch.UNKNOWN or not self._latch_invalidated)
+        ):
+            self._latch_applied = sequence
+            self._holder_latch = HolderLatch.UNKNOWN
+            self._latch_invalidated = True
+            self._save_holder_latch()
 
     @staticmethod
     def _preview_tokens(session, manifest, selected) -> dict[tuple[int, int], int]:

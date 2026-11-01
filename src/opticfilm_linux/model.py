@@ -6,6 +6,8 @@ from typing import Literal
 
 import numpy as np
 
+from opticfilm_linux.provenance import ScanEvidence
+
 
 class HolderKind(StrEnum):
     SLIDE4 = "slide4"
@@ -37,6 +39,7 @@ class RawSweep:
     ir: np.ndarray | None
     dpi: int
     holder: HolderKind
+    evidence: ScanEvidence | None = None
 
     def __post_init__(self) -> None:
         if self.rgb.dtype != np.uint16:

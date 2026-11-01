@@ -77,6 +77,37 @@ Kirigami.ScrollablePage {
                 placeholderText: qsTr("Family trips")
             }
             QQC2.TextField {
+                id: collectionField
+                objectName: "newBatchCollection"
+                Kirigami.FormData.label: qsTr("Collection:")
+                placeholderText: qsTr("Optional folder name")
+            }
+            QQC2.SpinBox {
+                id: boxField
+                objectName: "newBatchBox"
+                Kirigami.FormData.label: qsTr("Box:")
+                from: 1
+                to: 999999
+                value: 1
+                editable: true
+            }
+            QQC2.TextField {
+                id: sectionField
+                objectName: "newBatchSection"
+                Kirigami.FormData.label: qsTr("Section:")
+                text: "a"
+                validator: RegularExpressionValidator { regularExpression: /[a-f]|0[1-9]|[1-9][0-9]/ }
+            }
+            QQC2.SpinBox {
+                id: sectionSizeField
+                objectName: "newBatchSectionSize"
+                Kirigami.FormData.label: qsTr("Slides per section:")
+                from: 1
+                to: 999
+                value: 140
+                editable: true
+            }
+            QQC2.TextField {
                 id: albumField
 
                 Kirigami.FormData.label: qsTr("Album:")
@@ -201,7 +232,7 @@ Kirigami.ScrollablePage {
                 onClicked: {
                     // hidden slot rows do not count: the owner said all slots are loaded alike
                     const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
-                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue);
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value);
                 }
             }
         }

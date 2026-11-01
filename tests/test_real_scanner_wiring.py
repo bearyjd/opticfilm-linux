@@ -50,7 +50,13 @@ def test_batch_scan_runs_on_the_real_scanner(fake_driver_env, tmp_path, capsys):
 
 
 def test_the_app_uses_the_real_scanner_unless_demo_mode(fake_driver_env, sweep600_dir):
-    assert isinstance(scanner_factory(None)(600), DriverScanner)
+    from opticfilm_linux.app.provenance import ProvenanceScanner
+    from opticfilm_linux.scanner.base import HolderControl
+
+    scanner = scanner_factory(None)(600)
+    assert isinstance(scanner, ProvenanceScanner)
+    assert isinstance(scanner._scanner, DriverScanner)
+    assert isinstance(scanner, HolderControl)
 
 
 def test_next_strip_is_off_unless_switched_on(monkeypatch):

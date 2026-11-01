@@ -10,7 +10,7 @@ Kirigami.Page {
 
     objectName: "mainPage"
     padding: 0
-    title: bridge.batchName
+    title: bridge.collection !== "" ? qsTr("%1 — Box %2, section %3").arg(bridge.batchName).arg(bridge.box).arg(bridge.section) : bridge.batchName
 
     // Keyboard use for the review loop.
     Keys.onLeftPressed: currentSlide = Math.max(1, currentSlide - 1)
@@ -75,6 +75,20 @@ Kirigami.Page {
                 highlighted: true
                 enabled: bridge.canScan
                 onClicked: bridge.scan()
+            }
+            QQC2.Button {
+                objectName: "nextSectionButton"
+                text: qsTr("Next section")
+                visible: bridge.collection !== ""
+                enabled: bridge.canFinishBox
+                onClicked: bridge.finishBox(false)
+            }
+            QQC2.Button {
+                objectName: "finishBoxButton"
+                text: qsTr("Finish box")
+                visible: bridge.collection !== ""
+                enabled: bridge.canFinishBox
+                onClicked: bridge.finishBox(true)
             }
             Item {
                 Layout.fillWidth: true

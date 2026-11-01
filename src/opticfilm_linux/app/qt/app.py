@@ -10,6 +10,7 @@ from typing import Any
 from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.eject_watch import EjectWatch
 from opticfilm_linux.app.messages import load_command, runner_note
+from opticfilm_linux.app.provenance import ProvenanceScanner
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -46,7 +47,10 @@ def scanner_factory(fake_sweep: Path | None):
     def build(_dpi: int) -> Scanner:
         if fake_sweep is not None:
             return FakeScanner(fake_sweep)
-        return DriverScanner(DriverConfig.from_env())
+        config = DriverConfig.from_env()
+        return ProvenanceScanner(
+            DriverScanner(config), log_dir=config.log_dir, driver_dir=config.driver_dir
+        )
 
     return build
 

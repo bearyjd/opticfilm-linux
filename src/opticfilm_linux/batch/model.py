@@ -1,10 +1,17 @@
 """Immutable records describing a batch of trays and the slides in them."""
 
+from __future__ import annotations
+
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from opticfilm_linux.output import Format, JpegSize
+
+if TYPE_CHECKING:
+    from opticfilm_linux.provenance import ScanEvidence
 
 ROTATIONS = (0, 90, 180, 270)
 BRIGHTNESS_RANGE = (-2.0, 2.0)
@@ -68,6 +75,17 @@ class SlideSettings:
 
 
 @dataclass(frozen=True)
+class ExportRecord:
+    path: str
+    width: int
+    height: int
+    scan_dpi: int
+    delivered_dpi: int
+    scan_token: str
+    raw_sha256: str = ""
+
+
+@dataclass(frozen=True)
 class SlideRecord:
     position: int  # 1-based holder position
     status: SlideStatus = SlideStatus.PENDING
@@ -76,6 +94,50 @@ class SlideRecord:
     owner_decided: bool = False
     exported: bool = False
     preview_stale: bool = False  # settings changed but the preview was not redone yet
+    exports: tuple[ExportRecord, ...] = ()
+
+
+def _check_location(collection: str, box: int, section: str) -> str:
+    if not isinstance(collection, str):
+        raise ValueError("collection must be a string")
+    collection = unicodedata.normalize("NFC", collection)
+    if (
+        (collection and not collection.strip())
+        or collection.lstrip().startswith(".")
+        or any(c in collection for c in ("/", "\\"))
+        or any(unicodedata.category(c) in ("Cc", "Cs") for c in collection)
+    ):
+        raise ValueError(
+            "collection must be a nonblank folder name "
+            "without a leading dot, separators or controls"
+        )
+    if len(collection) > 64 or len(collection.encode("utf-8")) > 200:
+        raise ValueError("collection must be at most 64 characters and 200 UTF-8 bytes")
+    if type(box) is not int or box < 1:
+        raise ValueError("box must be a positive integer")
+    if not isinstance(section, str) or re.fullmatch(r"[a-f]|0[1-9]|[1-9][0-9]", section) is None:
+        raise ValueError("section must be a-f or 01-99")
+    return collection
+
+
+@dataclass(frozen=True)
+class TrayLocation:
+    collection: str
+    box: int
+    section: str
+    start: int
+    capacity: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "collection", _check_location(self.collection, self.box, self.section)
+        )
+        if not self.collection:
+            raise ValueError("a tray location needs a collection")
+        if type(self.start) is not int or not 1 <= self.start <= 999:
+            raise ValueError("start must be between 1 and 999")
+        if type(self.capacity) is not int or self.capacity not in (4, 6):
+            raise ValueError("capacity must be 4 or 6")
 
 
 @dataclass(frozen=True)
@@ -87,6 +149,8 @@ class TrayRecord:
     slides: tuple[SlideRecord, ...] = ()
     error: str | None = None
     raw_removed: bool = False
+    location: TrayLocation | None = None
+    evidence: ScanEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -154,3 +218,14 @@ class BatchManifest:
     defaults: BatchDefaults = field(default_factory=BatchDefaults)
     trays: tuple[TrayRecord, ...] = ()
     version: int = 1
+    collection: str = ""
+    box: int = 1
+    section: str = "a"
+    section_size: int = 140
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "collection", _check_location(self.collection, self.box, self.section)
+        )
+        if type(self.section_size) is not int or not 1 <= self.section_size <= 999:
+            raise ValueError("section_size must be between 1 and 999")
