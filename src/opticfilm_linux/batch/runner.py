@@ -35,6 +35,7 @@ from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import Scanner, ScannerNotReady, ScannerStatus
 from opticfilm_linux.scanner.interrupted import ScanInterrupted
 from opticfilm_linux.sweepstore import save_sweep
+from opticfilm_linux.worker import lower_worker_priority
 
 RESCANNABLE = (TrayStage.REVIEW, TrayStage.FAILED)
 IN_FLIGHT = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
@@ -48,7 +49,9 @@ class BatchRunner:
         self._scanner = scanner
         self.events: queue.Queue[BatchEvent] = queue.Queue()
         self._scan_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan")
-        self._enhance_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="enhance")
+        self._enhance_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="enhance", initializer=lower_worker_priority
+        )
         self._pending: set[Future] = set()
         self._scans: set[Future] = set()
         self._lock = threading.Lock()

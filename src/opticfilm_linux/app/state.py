@@ -201,7 +201,7 @@ def build_state(
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
-    idle = manifest is not None and holder_control and not busy
+    idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return AppState(
         **_batch_fields(manifest, selected, preview_tokens, updating),
         batch_session=batch_session,
@@ -227,6 +227,8 @@ def build_state(
         can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED and not busy,
         holder_busy=holder_busy,
         holder_latch_text=holder_latch_text(holder_latch),
-        can_confirm_holder_latched=idle and holder_latch is HolderLatch.RELEASED,
+        can_confirm_holder_latched=idle
+        and not jobs_running
+        and holder_latch is HolderLatch.RELEASED,
         holder_latch_warning=manifest is not None and holder_latch is HolderLatch.UNKNOWN,
     )
