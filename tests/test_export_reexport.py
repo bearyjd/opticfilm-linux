@@ -17,6 +17,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
+from opticfilm_linux.model import Box, Slide
 from test_export import _mark
 from test_export import template as template
 
@@ -165,10 +166,11 @@ def test_render_defaults_changed_during_write_still_stale_the_tray(store, change
 @pytest.fixture
 def jpeg_store(tmp_path, monkeypatch):
     rgb = np.random.default_rng(12).integers(0, 65536, (105, 107, 3), dtype=np.uint16)
-    monkeypatch.setattr(export, "split_slides", lambda sweep: [rgb])
+    slide = Slide(0, rgb, None, Box(0, 0, 107, 105))
+    monkeypatch.setattr(export, "split_slides", lambda sweep: [slide])
 
     def enhance(slide, options, dpi):
-        return np.rot90(slide[:99, :101], options.rotation // 90)
+        return np.rot90(slide.rgb[:99, :101], options.rotation // 90)
 
     monkeypatch.setattr(export, "enhance_slide", enhance)
     with BatchStore.create(tmp_path / "jpeg-batch", name="JPEG") as opened:

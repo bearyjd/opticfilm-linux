@@ -12,6 +12,7 @@ from opticfilm_linux.batch import export
 from opticfilm_linux.batch.manifest import from_json, to_json
 from opticfilm_linux.batch.model import SlideRecord, SlideStatus, TrayRecord, TrayStage
 from opticfilm_linux.batch.store import BatchError, BatchStore
+from opticfilm_linux.model import Box, Slide
 
 
 @pytest.fixture
@@ -33,7 +34,10 @@ def delivery(tmp_path, monkeypatch):
         raw.mkdir(parents=True)
         (raw / "scan").write_bytes(b"precious raw scan")
         monkeypatch.setattr(export, "load_sweep", lambda _: SimpleNamespace(dpi=600))
-        monkeypatch.setattr(export, "split_slides", lambda _: [None])
+        rgb = np.full((32, 40, 3), 32000, dtype=np.uint16)
+        monkeypatch.setattr(
+            export, "split_slides", lambda _: [Slide(0, rgb, None, Box(0, 0, 40, 32))]
+        )
         monkeypatch.setattr(
             export, "enhance_slide", lambda *_: np.full((32, 40, 3), 32000, dtype=np.uint16)
         )

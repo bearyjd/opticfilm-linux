@@ -15,6 +15,9 @@ DEFAULT_DPI = 7200
 MAX_RECENT = 10
 RECENT_KEY = "recent_batches"
 FALLBACK_NAME = "batch"
+THEME_KEY = "theme"
+DEFAULT_THEME = "dark"
+THEMES = ("dark", "light")
 EXPORT_FOLDER_KEY = "export_folder"
 EXPORT_FORMAT_KEY = "export_format"
 EXPORT_JPEG_SIZE_KEY = "export_jpeg_size"
@@ -35,6 +38,18 @@ class MemoryPrefs:
 
     def set(self, key: str, value: str) -> None:
         self._values[key] = value
+
+
+def read_theme(prefs: Prefs) -> str:
+    """Old settings and unrecognized values start in the application's dark theme."""
+    value = prefs.get(THEME_KEY, DEFAULT_THEME)
+    return value if value in THEMES else DEFAULT_THEME
+
+
+def remember_theme(prefs: Prefs, name: str) -> None:
+    if name not in THEMES:
+        raise ValueError(f"Unknown theme: {name}")
+    prefs.set(THEME_KEY, name)
 
 
 @dataclass(frozen=True)

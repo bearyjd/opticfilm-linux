@@ -23,9 +23,11 @@ from typing import Literal
 from PIL import Image
 
 from opticfilm_linux.batch.enhance import RawRemoved, options_for
+from opticfilm_linux.batch.layout import section_directory, slide_number
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
+    ExportRecord,
     Mode,
     SlideKey,
     SlideRecord,
@@ -38,6 +40,7 @@ from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.output import Format, JpegSize, OutputSpec, jpeg_geometry, write_slide
 from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
+from opticfilm_linux.provenance import jpeg_metadata, raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
 
 
@@ -80,9 +83,8 @@ def _mark_exported(
     mode: Mode,
     settings: SlideSettings,
     defaults: BatchDefaults,
-    path: Path | None = None,
-    size: tuple[int, ...] = (),
-    sha256: str = "",
+    *,
+    record: ExportRecord | None = None,
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
     """Mark one slide exported, only if the file written still matches it.
 
@@ -109,9 +111,10 @@ def _mark_exported(
                         s = dataclasses.replace(
                             s,
                             exported=True,
-                            export_path=str(path.resolve()) if path else "",
-                            export_size=size,
-                            export_sha256=sha256,
+                            export_path=record.export_path if record else "",
+                            export_size=(record.width, record.height) if record else (),
+                            export_sha256=record.sha256 if record else "",
+                            exports=s.exports + ((record,) if record else ()),
                         )
                     slides.append(s)
                 tray = dataclasses.replace(tray, slides=tuple(slides))
@@ -176,6 +179,90 @@ def _pending_slides(tray: TrayRecord, keys: frozenset[SlideKey] | None = None) -
     ]
 
 
+def _checked_export_parent(directory: Path, root: Path, store: BatchStore) -> None:
+    """Reject symlinks before creating a directory or opening an output file."""
+    for component in (directory.absolute(), *directory.absolute().parents):
+        if component.is_symlink():
+            raise BatchError(f"export folder {component} is a symlink; choose a regular folder")
+    resolved = directory.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise BatchError("export section must remain inside the export folder")
+    if resolved.is_relative_to(store.directory.resolve()):
+        raise BatchError("export to a folder outside the batch folder")
+
+
+def _slide_spec(
+    manifest: BatchManifest, tray: TrayRecord, record: SlideRecord, spec: OutputSpec
+) -> OutputSpec:
+    position = slide_number(tray.location, record.position) if tray.location else None
+    if position is not None and position > manifest.section_size:
+        raise BatchError(
+            f"Tray {tray.number} slot {record.position} exceeds the section size "
+            f"{manifest.section_size}; mark that empty position blank before export."
+        )
+    return dataclasses.replace(spec, position=position)
+
+
+def _metadata_spec(
+    manifest: BatchManifest, tray: TrayRecord, record: SlideRecord, slide, options, spec: OutputSpec
+) -> OutputSpec:
+    delivered_dpi = spec.scan_dpi
+    if spec.fmt == "jpeg":
+        _, _, delivered_dpi = jpeg_geometry(1, 1, spec.scan_dpi, spec.jpeg_size)
+        spec = dataclasses.replace(
+            spec,
+            metadata=jpeg_metadata(
+                manifest,
+                tray,
+                record,
+                slide,
+                options,
+                spec.scan_dpi,
+                delivered_dpi,
+            ),
+        )
+    return spec
+
+
+def _write_export(
+    store: BatchStore,
+    root: Path,
+    tray: TrayRecord,
+    record: SlideRecord,
+    slide,
+    options,
+    spec: OutputSpec,
+) -> tuple[Path, ExportRecord]:
+    delivered_dpi = spec.scan_dpi
+    raw_hash = spec.metadata.raw_sha256 if spec.metadata else raw_region_sha256(slide)
+    image = enhance_slide(slide, options, spec.scan_dpi)
+    height, width = image.shape[:2]
+    if spec.fmt == "jpeg":
+        width, height, delivered_dpi = jpeg_geometry(width, height, spec.scan_dpi, spec.jpeg_size)
+    _checked_export_parent(spec.directory, root, store)
+    receipts: list[tuple[Path, str, int]] = []
+    path = write_slide(
+        image,
+        spec,
+        on_written=lambda p, digest: receipts.append((p, digest, p.stat().st_size)),
+    )
+    if len(receipts) != 1 or receipts[0][0] != path:
+        raise BatchError("export writer did not provide a matching durable artifact record")
+    exported = ExportRecord(
+        str(path.relative_to(root)),
+        width,
+        height,
+        spec.scan_dpi,
+        delivered_dpi,
+        f"T{tray.number:03d}S{record.position}",
+        raw_sha256=raw_hash,
+        export_path=str(path.absolute()),
+        size_bytes=receipts[0][2],
+        sha256=receipts[0][1],
+    )
+    return path, exported
+
+
 def _export_tray(
     store: BatchStore,
     tray: TrayRecord,
@@ -188,27 +275,27 @@ def _export_tray(
     pending = _pending_slides(tray, keys)
     if not pending:
         return True
-    defaults = store.snapshot().defaults
+    manifest = store.snapshot()
+    defaults = manifest.defaults
+    root = spec.directory
+    if tray.location is not None:
+        spec = dataclasses.replace(
+            spec,
+            directory=section_directory(root, tray.location),
+            sequence_stride=manifest.section_size,
+        )
+    _checked_export_parent(spec.directory, root, store)
     sweep = load_sweep(store.sweep_dir(tray.number, tray.sweep_version))
     spec = dataclasses.replace(spec, scan_dpi=sweep.dpi)
     slides = split_slides(sweep)
     for record in pending:
         if cancel is not None and cancel.is_set():
             return False
+        slide_spec = _slide_spec(manifest, tray, record, spec)
         options = options_for(defaults, tray.mode, record.settings, record.position)
-        image = enhance_slide(slides[record.position - 1], options, sweep.dpi)
-        size = (image.shape[1], image.shape[0])
-        if spec.fmt == "jpeg":
-            size = jpeg_geometry(*size, sweep.dpi, spec.jpeg_size)[:2]
-        receipts: list[tuple[Path, str]] = []
-        path = write_slide(
-            image,
-            spec,
-            on_written=lambda p, digest, receipts=receipts: receipts.append((p, digest)),
-        )
-        if len(receipts) != 1 or receipts[0][0] != path:
-            raise BatchError("export writer did not provide a matching durable artifact record")
-        digest = receipts[0][1]
+        slide = slides[record.position - 1]
+        slide_spec = _metadata_spec(manifest, tray, record, slide, options, slide_spec)
+        path, exported = _write_export(store, root, tray, record, slide, options, slide_spec)
         report(path)
         outcome = _mark_exported(
             store,
@@ -218,9 +305,7 @@ def _export_tray(
             tray.mode,
             record.settings,
             defaults,
-            path,
-            size,
-            digest,
+            record=exported,
         )
         if outcome == "stale_tray":
             return True  # re-scanned, mode or orientation changed: the next export redoes it
@@ -291,6 +376,31 @@ def _durable_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _export_receipt(slide: SlideRecord) -> tuple[Path, tuple[int, ...], str, int | None]:
+    if not slide.exports:
+        if not slide.export_path or len(slide.export_size) != 2 or not slide.export_sha256:
+            raise ValueError("missing export record")
+        return Path(slide.export_path), slide.export_size, slide.export_sha256, None
+    record = slide.exports[-1]
+    if (
+        not record.export_path
+        or not Path(record.export_path).is_absolute()
+        or record.width <= 0
+        or record.height <= 0
+        or record.size_bytes <= 0
+        or not record.sha256
+    ):
+        raise ValueError("missing export record")
+    size = (record.width, record.height)
+    if (slide.export_path, slide.export_size, slide.export_sha256) != (
+        record.export_path,
+        size,
+        record.sha256,
+    ):
+        raise ValueError("export record differs from current delivery")
+    return Path(record.export_path), size, record.sha256, record.size_bytes
+
+
 def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
     if tray.stage is not TrayStage.EXPORTED or not tray.slides:
         raise BatchError(f"tray {tray.number} is not fully exported")
@@ -304,21 +414,20 @@ def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
                 or slide.preview_stale
             ):
                 raise ValueError("slide is not marked exported or has pending edits")
-            if not slide.export_path or len(slide.export_size) != 2 or not slide.export_sha256:
-                raise ValueError("missing export record")
-            path = Path(slide.export_path)
-            if jpeg_only and path.stat().st_size <= MIN_JPEG_BYTES:
+            path, size, digest, byte_length = _export_receipt(slide)
+            actual_length = path.stat().st_size
+            if jpeg_only and actual_length <= MIN_JPEG_BYTES:
                 raise ValueError("JPEG is too short")
-            if _durable_digest(path) != slide.export_sha256:
+            if _durable_digest(path) != digest:
                 raise ValueError("export digest differs from written artifact")
+            if byte_length is not None and actual_length != byte_length:
+                raise ValueError("export byte length differs from written artifact")
             with Image.open(path) as image:
                 if jpeg_only and image.format != "JPEG":
                     raise ValueError("export is not a JPEG")
                 image.load()
-                if image.size != slide.export_size:
-                    raise ValueError(
-                        f"export size {image.size} differs from written {slide.export_size}"
-                    )
+                if image.size != size:
+                    raise ValueError(f"export size {image.size} differs from written {size}")
         except (OSError, ValueError) as exc:
             raise ExportVerificationFailed(tray.number, slide.position, exc) from exc
 
@@ -362,7 +471,7 @@ def _half_cleaned(store: BatchStore, tray: TrayRecord) -> bool:
 def _delete(store: BatchStore, tray: TrayRecord) -> None:
     # Recheck after committing: a refusal keeps the files, but conservatively leaves the tray
     # marked unusable until cleanup is retried, just like an interrupted deletion.
-    _verify_export(tray, jpeg_only=False)
+    check_cleanup_allowed(store, tray.number)
     folders = _checked_sweep_folders(store, tray.number)
     try:
         for path in folders:

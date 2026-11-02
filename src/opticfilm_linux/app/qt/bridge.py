@@ -15,15 +15,19 @@ from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
     DPI_CHOICES,
+    THEMES,
     Prefs,
     batch_subfolder,
     export_defaults,
     forget_batch,
+    read_theme,
     recent_batches,
     remember_batch,
     remember_export,
+    remember_theme,
 )
 from opticfilm_linux.app.qt.models import DictListModel
+from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
 from opticfilm_linux.batch.slots import slot_orientations
@@ -116,6 +120,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
 
 class Bridge(QObject):
     changed = Signal()
+    themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
 
     def __init__(
@@ -132,6 +137,8 @@ class Bridge(QObject):
         self._load_command = load_command_text or load_command(None)
         self._load_runner_note = load_runner_note
         self._prefs = prefs
+        self._theme = read_theme(prefs)
+        self._update_palette()
         self._demo_dpi = demo_dpi or 0
         self._state: AppState = EMPTY_STATE
         self._trays = DictListModel(TRAY_KEYS, self)
@@ -150,6 +157,26 @@ class Bridge(QObject):
 
     def start(self) -> None:
         self._timer.start()
+
+    def _update_palette(self) -> None:
+        self._palette = make_palette(self._theme)
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.setPalette(self._palette)
+
+    theme = Property(str, lambda self: self._theme, notify=themeChanged)
+    paletteColors = Property(  # noqa: N815
+        "QVariantMap", lambda self: qml_palette_colors(self._palette), notify=themeChanged
+    )
+
+    @Slot(str)
+    def setTheme(self, name: str) -> None:
+        if name not in THEMES or name == self._theme:
+            return
+        remember_theme(self._prefs, name)
+        self._theme = name
+        self._update_palette()
+        self.themeChanged.emit()
 
     # -- state mirror --------------------------------------------------------------------
 
@@ -218,6 +245,11 @@ class Bridge(QObject):
     batchAutoExport = _p(bool, changed, lambda s, _: s.auto_export)  # noqa: N815
     autoStatus = _p(str, changed, lambda s, _: s.auto_status)  # noqa: N815
     heldTray = _p(int, changed, lambda s, _: s.held_tray or 0)  # noqa: N815
+    collection = _p(str, changed, lambda s, _: s.collection)
+    box = _p(int, changed, lambda s, _: s.box)
+    section = _p(str, changed, lambda s, _: s.section)
+    sectionSize = _p(int, changed, lambda s, _: s.section_size)  # noqa: N815
+    canFinishBox = _p(bool, changed, lambda s, _: s.can_finish_box)  # noqa: N815
     scannerText = _p(str, changed, lambda s, _: s.scanner_text)  # noqa: N815
     holderLatchText = _p(str, changed, lambda s, _: s.holder_latch_text)  # noqa: N815
     holderLatchWarning = _p(bool, changed, lambda s, _: s.holder_latch_warning)  # noqa: N815
@@ -297,7 +329,64 @@ class Bridge(QObject):
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str)
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str)
     @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, bool)
+    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str)
+    @Slot(
+        str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str, int
+    )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+    )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+        int,
+    )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+        int,
+        bool,
+    )
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -312,6 +401,10 @@ class Bridge(QObject):
         export_dir: str = "",
         export_format: str = "jpeg",
         jpeg_size: str = "full",
+        collection: str = "",
+        box: int = 1,
+        section: str = "a",
+        section_size: int = 140,
         auto_export: bool = False,
     ) -> None:
         """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
@@ -333,7 +426,16 @@ class Bridge(QObject):
             export_format=export_format,  # type: ignore[arg-type]
             jpeg_size=jpeg_size,  # type: ignore[arg-type]
             auto_export=auto_export,
+            collection=collection,
+            box=box,
+            section=section,
+            section_size=section_size,
         )
+
+    @Slot(bool)
+    def finishBox(self, next_box: bool) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.finish_box(next_box)
 
     @Slot(str, bool)
     def openBatch(self, path: str, readonly: bool) -> None:  # noqa: N802

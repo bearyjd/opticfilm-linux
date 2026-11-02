@@ -193,6 +193,8 @@ def test_shutdown_resumes_next_time(controller, tmp_path, sweep600_dir):
     open_new(c, tmp_path / "b")
     scan_when_ready(c)
     scan_when_ready(c)
+    c._command.submit(lambda: None).result(10)  # hand both scans to the runner before closing
+    assert c._session.runner.wait_scans_idle(10)  # shutdown may cancel queued raw scans
     c.shutdown()
     with BatchStore.open(tmp_path / "b") as store:
         stages = [t.stage for t in store.snapshot().trays]

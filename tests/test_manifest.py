@@ -7,10 +7,12 @@ from opticfilm_linux.batch.manifest import ManifestFormatError, from_json, to_js
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
+    ExportRecord,
     Flag,
     SlideRecord,
     SlideSettings,
     SlideStatus,
+    TrayLocation,
     TrayRecord,
     TrayStage,
 )
@@ -190,3 +192,70 @@ def test_boolean_policy_roundtrip(auto_export, keep_raw, released, caplog):
     )
     assert from_json(to_json(manifest)) == manifest
     assert not caplog.records
+
+
+def test_tray_scan_evidence_roundtrips_and_old_trays_remain_unknown():
+    from opticfilm_linux.provenance import ScanEvidence
+
+    evidence = ScanEvidence(
+        "2026-11-01T12:00:00+00:00",
+        12.0,
+        "opticfilm-linux test",
+        None,
+        ('{"total_seconds":3}',) * 4,
+    )
+    original = _manifest()
+    custom = replace(original, trays=(replace(original.trays[0], evidence=evidence),))
+    assert from_json(to_json(custom)) == custom
+    assert from_json(to_json(original)).trays[0].evidence is None
+
+
+def test_collection_and_pipeline_receipts_roundtrip_together():
+    receipt = ExportRecord(
+        path="family/box-2/b/005.jpg",
+        width=100,
+        height=80,
+        scan_dpi=7200,
+        delivered_dpi=3600,
+        scan_token="T001S1",
+        raw_sha256="a" * 64,
+        export_path="/photos/family/box-2/b/005.jpg",
+        size_bytes=1234,
+        sha256="b" * 64,
+    )
+    slide = SlideRecord(
+        position=1,
+        exported=True,
+        export_path=receipt.export_path,
+        export_size=(100, 80),
+        export_sha256=receipt.sha256,
+        exports=(receipt,),
+    )
+    tray = TrayRecord(
+        number=1,
+        stage=TrayStage.EXPORTED,
+        slides=(slide,),
+        auto="held",
+        auto_error="check slide",
+        auto_failed=(2,),
+        auto_flagged=(3,),
+        location=TrayLocation("family", 2, "b", 5, 4),
+    )
+    manifest = BatchManifest(
+        name="Family",
+        collection="family",
+        box=2,
+        section="b",
+        section_size=100,
+        defaults=BatchDefaults(auto_export=True, keep_raw=True),
+        first_tray_released=True,
+        trays=(tray,),
+    )
+    assert from_json(to_json(manifest)) == manifest
+
+    data = json.loads(to_json(manifest))
+    data["defaults"]["keep_raw"] = "false"
+    loaded = from_json(json.dumps(data))
+    assert loaded.collection == "family" and loaded.trays == manifest.trays
+    assert loaded.defaults.auto_export is False and loaded.defaults.keep_raw is True
+    assert loaded.first_tray_released is False

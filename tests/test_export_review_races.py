@@ -101,15 +101,15 @@ def test_rescan_refuses_removed_raw_before_atomic_mutation(
     store, _ = delivery
     runner = BatchRunner(store, FakeScanner(store.sweep_dir(1, 1)))
     monkeypatch.setattr(runner, "_submit", lambda *_args, **_kwargs: None)
-    original = store.update_tray_if
+    original = store.update
 
-    def remove_before_update(number, condition, **changes):
-        monkeypatch.setattr(store, "update_tray_if", original)
-        store.update_tray(number, raw_removed=True)
-        return original(number, condition, **changes)
+    def remove_before_update(change):
+        monkeypatch.setattr(store, "update", original)
+        store.update_tray(1, raw_removed=True)
+        return original(change)
 
     if commit_during_request:
-        monkeypatch.setattr(store, "update_tray_if", remove_before_update)
+        monkeypatch.setattr(store, "update", remove_before_update)
     else:
         store.update_tray(1, raw_removed=True)
     try:

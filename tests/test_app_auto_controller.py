@@ -5,7 +5,13 @@ import threading
 
 import pytest
 
-from controller_helpers import make_controller, open_new, wait_until
+from controller_helpers import (
+    make_controller,
+    open_new,
+    scan_when_ready,
+    wait_all_in_review,
+    wait_until,
+)
 from opticfilm_linux.app import controller as controller_module
 from opticfilm_linux.batch.events import TrayStageChanged
 from opticfilm_linux.batch.model import TrayRecord, TrayStage
@@ -38,7 +44,8 @@ def auto_controller(sweep600_dir, tmp_path, monkeypatch):
 
     monkeypatch.setattr(controller_module, "AutoPipeline", Pipeline, raising=False)
     c = make_controller(sweep600_dir)
-    open_new(c, tmp_path / "batch")
+    c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+    wait_until(c, lambda: c.state().batch_name == "Test")
     c._session.store.update(
         lambda m: dataclasses.replace(m, trays=(TrayRecord(1, TrayStage.REVIEW, "positive"),))
     )
@@ -246,11 +253,11 @@ def test_manual_first_hold_release_resumes_backlog(sweep600_dir, tmp_path, monke
     monkeypatch.setattr(controller_module, "run_free_space", confirmed_cleanup)
     monkeypatch.setattr(controller_module, "AutoPipeline", Pipeline)
     try:
-        open_new(c, tmp_path / "batch")
+        c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+        wait_until(c, lambda: c.state().batch_name == "Test")
         c._session.store.update(
             lambda m: dataclasses.replace(
                 m,
-                defaults=dataclasses.replace(m.defaults, auto_export=True),
                 trays=(
                     TrayRecord(1, TrayStage.EXPORTED, auto="held"),
                     TrayRecord(2, TrayStage.EXPORTED, auto="held"),
@@ -266,4 +273,104 @@ def test_manual_first_hold_release_resumes_backlog(sweep600_dir, tmp_path, monke
         )
         wait_until(c, lambda: calls == [2], timeout=0.5)
     finally:
+        c.shutdown()
+
+
+def test_open_resumes_automatic_pipeline_without_controller_lock(
+    sweep600_dir, tmp_path, monkeypatch
+):
+    c = make_controller(sweep600_dir)
+    resumed = threading.Event()
+
+    class Pipeline:
+        def __init__(self, store, cancel=None, on_update=None):
+            self.on_update = on_update
+
+        def resume(self):
+            assert c._lock.acquire(timeout=2), "resume ran under controller lock"
+            c._lock.release()
+            self.on_update()  # rebuilding state must also be safe during resume
+            resumed.set()
+            return ()
+
+    monkeypatch.setattr(controller_module, "AutoPipeline", Pipeline)
+    try:
+        open_new(c, tmp_path / "batch")
+        assert resumed.wait(2)
+        c._command.submit(lambda: None).result(2)
+        assert c._lifecycle_pending == 0
+    finally:
+        c.shutdown()
+
+
+def test_preview_file_access_does_not_hold_controller_lock(sweep600_dir, tmp_path, monkeypatch):
+    c = make_controller(sweep600_dir)
+    try:
+        open_new(c, tmp_path / "batch")
+        original = c._preview_tokens
+        checked = threading.Event()
+
+        def preview_tokens(session, manifest, selected):
+            assert c._lock.acquire(timeout=2), "preview file access ran under state lock"
+            c._lock.release()
+            checked.set()
+            return original(session, manifest, selected)
+
+        monkeypatch.setattr(c, "_preview_tokens", preview_tokens)
+        c._rebuild()
+        assert checked.is_set()
+    finally:
+        c.shutdown()
+
+
+def test_manual_review_does_not_queue_automatic_work_or_block_rescan(sweep600_dir, tmp_path):
+    c = make_controller(sweep600_dir)
+    started, release = threading.Event(), threading.Event()
+
+    def blocked_job():
+        started.set()
+        assert release.wait(30)
+
+    try:
+        open_new(c, tmp_path / "batch")
+        assert not c._session.store.snapshot().defaults.auto_export
+        c._run(blocked_job, "stand-in jobs worker", pool=c._jobs)
+        assert started.wait(2)
+        scan_when_ready(c)
+        wait_all_in_review(c, 1)
+        assert 1 not in c._auto_active
+        assert c._long_jobs == 0
+        assert len(c._job_futures) == 1  # only the explicitly blocked stand-in
+        c.rescan(1)
+        second = tmp_path / "batch" / "trays" / "0001" / "sweep-2"
+        wait_until(c, second.is_dir)
+        wait_all_in_review(c, 1)
+        assert (second.parent / "sweep-1").is_dir()
+    finally:
+        release.set()
+        c.shutdown()
+
+
+def test_auto_scheduling_never_reads_manifest_on_ui_thread(sweep600_dir, tmp_path, monkeypatch):
+    c = make_controller(sweep600_dir)
+    queued = []
+    try:
+        c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+        wait_until(c, lambda: c.state().batch_name == "Test")
+        c._command.submit(lambda: None).result(2)
+        c._refresher.submit(lambda: None).result(2)
+
+        def forbidden_snapshot():
+            raise AssertionError("automatic scheduling read the manifest on the UI thread")
+
+        monkeypatch.setattr(c._session.store, "snapshot", forbidden_snapshot)
+        monkeypatch.setattr(c, "_queue_auto", lambda session, number: queued.append(number))
+        c._submit_auto_due()  # idle timer ticks must remain free of store access
+        with c._lock:
+            c._auto_due.add(1)
+        c._submit_auto_due()  # review events use the cached batch option too
+        assert queued == [1]
+        assert c._auto_active == {1}
+    finally:
+        monkeypatch.undo()
         c.shutdown()

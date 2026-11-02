@@ -25,6 +25,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.model import Box, Slide
 
 
 def pipeline(store, **kwargs):
@@ -52,12 +53,17 @@ def store(tmp_path, monkeypatch):
         folder.mkdir(parents=True)
         (folder / "raw").write_bytes(b"valuable raw")
     monkeypatch.setattr(exports, "load_sweep", lambda _: type("Sweep", (), {"dpi": 7200})())
-    monkeypatch.setattr(exports, "split_slides", lambda _: [1, 2, 3])
-    monkeypatch.setattr(
-        exports,
-        "enhance_slide",
-        lambda slide, *_: np.full((30 + slide, 40 + slide, 3), 30000, dtype=np.uint16),
-    )
+    slides = [
+        Slide(
+            i - 1,
+            np.full((30 + i, 40 + i, 3), 30000, dtype=np.uint16),
+            None,
+            Box(0, 0, 40 + i, 30 + i),
+        )
+        for i in (1, 2, 3)
+    ]
+    monkeypatch.setattr(exports, "split_slides", lambda _: slides)
+    monkeypatch.setattr(exports, "enhance_slide", lambda slide, *_: slide.rgb)
     yield opened
     opened.close()
 
@@ -184,7 +190,7 @@ def test_auto_never_free_one_failed_slide_but_exports_others(store, monkeypatch)
     real = exports.enhance_slide
 
     def fail(slide, *args):
-        if slide == 2:
+        if slide.index == 1:
             raise ValueError("slide broken")
         return real(slide, *args)
 
@@ -317,7 +323,7 @@ def test_export_geometry_records_rotated_array_not_fixed_dimensions(store, monke
     monkeypatch.setattr(
         exports,
         "enhance_slide",
-        lambda slide, *_: np.full((50 + slide, 20 + slide, 3), 32000, dtype=np.uint16),
+        lambda slide, *_: np.full((51 + slide.index, 21 + slide.index, 3), 32000, dtype=np.uint16),
     )
     auto = pipeline(store)
     auto.arm(1)
