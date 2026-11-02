@@ -8,7 +8,9 @@ import pytest
 from opticfilm_linux.app import auto as automatic
 from opticfilm_linux.batch import export as exports
 from opticfilm_linux.batch import review
+from opticfilm_linux.batch.empty import empty_frame_fingerprints
 from opticfilm_linux.batch.model import Flag, SlideStatus
+from opticfilm_linux.provenance import raw_region_sha256
 from test_app_auto import pipeline
 
 pytest_plugins = ("test_app_auto",)
@@ -21,7 +23,11 @@ def test_detector_blank_requires_owner_confirmation_before_raw_cleanup(store, li
     auto.run(1)
     auto.confirm_free_held(1)
     tray = auto._tray(2)
-    blank = dataclasses.replace(tray.slides[0], status=SlideStatus.BLANK)
+    blank = dataclasses.replace(
+        tray.slides[0],
+        status=SlideStatus.BLANK,
+        blank_fingerprint=raw_region_sha256(exports.split_slides(None)[0]),
+    )
     store.update_tray(2, slides=(blank, *tray.slides[1:]), auto_flagged=(1,) if live_flags else ())
     auto.arm(2)
     auto.run(2)
@@ -32,7 +38,13 @@ def test_detector_blank_requires_owner_confirmation_before_raw_cleanup(store, li
     assert not held.slides[0].exported
     assert all(s.exported for s in held.slides[1:])
     assert 2 not in auto.resume()
-    review.confirm_empty_frames(store, 2)
+    review.confirm_empty_frames(
+        store,
+        2,
+        (1,),
+        expected_fingerprints=empty_frame_fingerprints(auto._tray(2)),
+        expected_sweep_version=auto._tray(2).sweep_version,
+    )
     assert 2 in auto.resume()
     auto.run(2)
     assert auto._tray(2).raw_removed
@@ -197,13 +209,27 @@ def test_confirmed_empty_first_tray_waits_for_later_jpeg_approval_then_cleans_up
     auto = pipeline(store)
     first = auto._tray(1)
     store.update_tray(
-        1, slides=tuple(dataclasses.replace(s, status=SlideStatus.BLANK) for s in first.slides)
+        1,
+        slides=tuple(
+            dataclasses.replace(
+                s,
+                status=SlideStatus.BLANK,
+                blank_fingerprint=raw_region_sha256(exports.split_slides(None)[s.position - 1]),
+            )
+            for s in first.slides
+        ),
     )
     for number in (1, 2):
         auto.arm(number)
         auto.run(number)
     assert _auto_fields(store.snapshot(), False)["held_tray"] is None
-    review.confirm_empty_frames(store, 1)
+    review.confirm_empty_frames(
+        store,
+        1,
+        (1, 2, 3),
+        expected_fingerprints=empty_frame_fingerprints(auto._tray(1)),
+        expected_sweep_version=auto._tray(1).sweep_version,
+    )
     assert _auto_fields(store.snapshot(), False)["held_tray"] == 2
     assert auto.resume() == ()
     assert all(not t.raw_removed for t in store.snapshot().trays)
@@ -218,7 +244,7 @@ def test_confirmed_empty_first_tray_waits_for_later_jpeg_approval_then_cleans_up
     assert not store.sweep_dir(1, 1).exists()
 
 
-def test_committed_cleanup_recovers_without_export_receipts_or_jpegs(store, monkeypatch):
+def test_committed_cleanup_with_remaining_raw_refuses_lost_export_evidence(store, monkeypatch):
     auto = pipeline(store)
     auto.arm(1)
     auto.run(1)
@@ -234,5 +260,31 @@ def test_committed_cleanup_recovers_without_export_receipts_or_jpegs(store, monk
     monkeypatch.setattr(automatic, "verify_tray_export", unexpected_verification)
     assert 1 in auto.resume()
     auto.run(1)
-    assert auto._tray(1).auto == "freed"
-    assert not store.sweep_dir(1, 1).exists()
+    assert auto._tray(1).auto == "failed"
+    assert store.sweep_dir(1, 1).exists()
+    assert "raw still present" in auto._tray(1).auto_error
+
+
+def test_confirmed_empty_warning_is_cleared_while_raw_stays_held(store):
+    auto = pipeline(store)
+    tray = auto._tray(1)
+    blank = dataclasses.replace(
+        tray.slides[0],
+        status=SlideStatus.BLANK,
+        blank_fingerprint=raw_region_sha256(exports.split_slides(None)[0]),
+    )
+    store.update_tray(1, slides=(blank, *tray.slides[1:]))
+    auto.arm(1)
+    auto.run(1)
+    assert "look empty" in auto._tray(1).auto_error
+    review.confirm_empty_frames(
+        store,
+        1,
+        (1,),
+        expected_fingerprints=empty_frame_fingerprints(auto._tray(1)),
+        expected_sweep_version=tray.sweep_version,
+    )
+    auto._verify_and_finish(1)
+    assert auto._tray(1).auto == "held"
+    assert auto._tray(1).auto_error == ""
+    assert not auto._tray(1).raw_removed

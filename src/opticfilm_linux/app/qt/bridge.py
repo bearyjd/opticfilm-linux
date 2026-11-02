@@ -247,6 +247,23 @@ class Bridge(QObject):
     autoStatus = _p(str, changed, lambda s, _: s.auto_status)  # noqa: N815
     emptyConfirmationTray = _p(int, changed, lambda s, _: s.empty_confirmation_tray or 0)
     emptyConfirmationCount = _p(int, changed, lambda s, _: s.empty_confirmation_count)
+    emptyConfirmationSweepVersion = _p(
+        int, changed, lambda s, _: s.empty_confirmation_sweep_version
+    )
+    emptyConfirmationPreviews = _p(
+        "QVariantList",
+        changed,
+        lambda s, _: [
+            {
+                "position": p,
+                "fingerprint": fingerprint,
+                "url": f"image://preview/{s.empty_confirmation_tray}/{p}/before/{token}"
+                if token
+                else "",
+            }
+            for p, fingerprint, token in s.empty_confirmation_previews
+        ],
+    )
     heldTray = _p(int, changed, lambda s, _: s.held_tray or 0)  # noqa: N815
     collection = _p(str, changed, lambda s, _: s.collection)
     box = _p(int, changed, lambda s, _: s.box)
@@ -629,9 +646,16 @@ class Bridge(QObject):
     def confirmFreeSpace(self) -> None:  # noqa: N802
         self._controller.confirm_free_space()
 
-    @Slot(int)
-    def confirmEmptyFrames(self, number: int) -> None:  # noqa: N802
-        self._controller.confirm_empty_frames(number)
+    @Slot(int, int, "QVariantList")
+    def confirmEmptyFrames(self, number: int, sweep_version: int, previews: list) -> None:  # noqa: N802
+        positions = tuple(int(item["position"]) for item in previews)
+        fingerprints = {int(item["position"]): str(item["fingerprint"]) for item in previews}
+        self._controller.confirm_empty_frames(
+            number,
+            positions,
+            expected_fingerprints=fingerprints,
+            expected_sweep_version=sweep_version,
+        )
 
     @Slot(int)
     def confirmFreeHeld(self, number: int) -> None:  # noqa: N802

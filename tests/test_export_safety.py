@@ -10,7 +10,13 @@ from PIL import Image
 
 from opticfilm_linux.batch import export
 from opticfilm_linux.batch.manifest import from_json, to_json
-from opticfilm_linux.batch.model import SlideRecord, SlideStatus, TrayRecord, TrayStage
+from opticfilm_linux.batch.model import (
+    EmptyConfirmation,
+    SlideRecord,
+    SlideStatus,
+    TrayRecord,
+    TrayStage,
+)
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.model import Box, Slide
 
@@ -53,6 +59,18 @@ def _delivered(delivery):
 def _assert_raw_kept(store):
     assert store.sweep_dir(1, 1).is_dir()
     assert not store.snapshot().trays[0].raw_removed
+
+
+def _confirmed_blank(tray, slide, **changes):
+    fingerprint = slide.exports[-1].raw_sha256
+    return dataclasses.replace(
+        slide,
+        status=SlideStatus.BLANK,
+        owner_decided=True,
+        blank_fingerprint=fingerprint,
+        empty_confirmed=EmptyConfirmation(tray.sweep_version, fingerprint),
+        **changes,
+    )
 
 
 def test_cleanup_respects_keep_raw_after_manual_export(delivery):

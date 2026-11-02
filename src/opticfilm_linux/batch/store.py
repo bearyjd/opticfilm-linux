@@ -114,7 +114,7 @@ class BatchStore:
         if self.readonly:
             raise BatchError("this batch is open read-only")
         with self._lock:
-            new = change(self._manifest)
+            new = _invalidate_changed_sweeps(self._manifest, change(self._manifest))
             if new != self._manifest:
                 self._write(new)
                 self._manifest = new
@@ -198,6 +198,24 @@ class BatchStore:
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+
+
+def _invalidate_changed_sweeps(before: BatchManifest, after: BatchManifest) -> BatchManifest:
+    """A new raw payload cannot inherit or install an empty-frame confirmation."""
+    versions = {tray.number: tray.sweep_version for tray in before.trays}
+    trays = tuple(
+        dataclasses.replace(
+            tray,
+            slides=tuple(
+                dataclasses.replace(slide, empty_confirmed=None, blank_fingerprint="")
+                for slide in tray.slides
+            ),
+        )
+        if tray.number in versions and tray.sweep_version != versions[tray.number]
+        else tray
+        for tray in after.trays
+    )
+    return dataclasses.replace(after, trays=trays)
 
 
 def _read_manifest(directory: Path) -> BatchManifest:

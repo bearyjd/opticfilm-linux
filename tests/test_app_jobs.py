@@ -182,7 +182,8 @@ def test_failed_multi_tray_cleanup_identifies_committed_remaining_tray(
             jobs.run_free_space(store, threading.Event(), views.append, (1, 2))
         message = views[-1].message.lower()
         assert "cleanup incomplete" in message
-        assert "remaining scans cannot be used" in message
+        expected = "remaining scans cannot be used" if partial else "verification"
+        assert expected in message
         assert "tray 1" in message and "tray 2" in message
         assert views[-1].freed == (5 if partial else 0)
 
@@ -627,3 +628,19 @@ def test_cleanup_failure_reporting_does_not_invent_manifest_save_failure(had_raw
     message = _tray_failure(before, {}, removed=had_raw, folders=False)
     assert "could not save" not in message
     assert ("cleanup completion saved" if had_raw else "no raw files were present") in message
+
+
+def test_free_space_explains_legacy_unconfirmed_empty_frames(tmp_path):
+    from opticfilm_linux.app.jobs import free_space_candidates
+
+    with BatchStore.create(tmp_path / "b", "B") as store:
+        tray = TrayRecord(
+            1,
+            TrayStage.EXPORTED,
+            slides=(SlideRecord(1, status=SlideStatus.BLANK, owner_decided=True),),
+        )
+        store.update(lambda m: replace(m, trays=(tray,)))
+        view = free_space_candidates(store)
+        assert view.trays == ()
+        assert "trays 1" in view.message
+        assert "confirm every empty frame" in view.message

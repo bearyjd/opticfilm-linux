@@ -125,7 +125,7 @@ def test_cleanup_never_picks_up_new_sweep_at_commit(delivery, monkeypatch, timin
     assert not store.snapshot().trays[0].raw_removed
 
 
-def test_partial_current_sweep_removal_finishes_using_committed_verification(delivery, monkeypatch):
+def test_partial_current_sweep_removal_requires_recovery(delivery, monkeypatch):
     store, _ = _delivered(delivery)
     original = export.shutil.rmtree
 
@@ -139,8 +139,9 @@ def test_partial_current_sweep_removal_finishes_using_committed_verification(del
     assert store.snapshot().trays[0].raw_removed
     monkeypatch.setattr(export.shutil, "rmtree", original)
     monkeypatch.setattr(export, "load_sweep", lambda p: (p / "scan").read_bytes())
-    export.cleanup_raw(store, 1)
-    assert not store.sweep_dir(1, 1).exists()
+    with pytest.raises(export.CleanupRefused, match="raw verification failed"):
+        export.cleanup_raw(store, 1)
+    assert store.sweep_dir(1, 1).exists()
 
 
 def test_new_sweep_on_interrupted_cleanup_is_refused(delivery, monkeypatch):

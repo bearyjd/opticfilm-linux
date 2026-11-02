@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from opticfilm_linux.app.raw import raw_failure, raw_inventory
+from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.export import (
     CleanupPolicyRefused,
     CleanupRetryRequired,
@@ -178,9 +179,7 @@ class AutoPipeline:
                 failed.append(slide.position)
                 errors.append(f"Slide {slide.position}: {exc}")
         if failed:
-            outcome = raw_failure(
-                self.store, (number,), before, raw_inventory(self.store, (number,))
-            )
+            outcome = self._failure_outcome(number, before)
             self._update(
                 number,
                 auto="failed",
@@ -207,13 +206,21 @@ class AutoPipeline:
                 if s.status is SlideStatus.ACCEPTED and not s.exported
             )
         )
-        outcome = raw_failure(self.store, (number,), before, raw_inventory(self.store, (number,)))
+        outcome = self._failure_outcome(number, before)
         self._update(number, auto="failed", auto_error=f"{outcome}. {exc}", auto_failed=positions)
+
+    def _failure_outcome(self, number, before) -> str:
+        try:
+            after = raw_inventory(self.store, (number,))
+            return raw_failure(self.store, (number,), before, after)
+        except Exception as evidence_error:
+            return f"raw cleanup outcome unknown (could not inspect raw files: {evidence_error})"
 
     def _unreviewed_flags(self, tray) -> bool:
         return any(
-            (s.status is SlideStatus.BLANK or s.position in tray.auto_flagged or s.flags)
-            and not s.owner_decided
+            not is_empty_confirmed(tray, s)
+            if s.status is SlideStatus.BLANK
+            else (s.position in tray.auto_flagged or s.flags) and not s.owner_decided
             for s in tray.slides
         )
 
@@ -254,8 +261,9 @@ class AutoPipeline:
         return True
 
     def _hold_empty_frames(self, number: int) -> bool:
+        tray = self._tray(number)
         empty = sum(
-            s.status is SlideStatus.BLANK and not s.owner_decided for s in self._tray(number).slides
+            s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s) for s in tray.slides
         )
         if empty:
             self._update(
@@ -279,7 +287,7 @@ class AutoPipeline:
             self._update(number, auto="held", auto_error="Waiting for updated previews")
             return
         verify_tray_export(self.store, number)
-        self._update(number, auto="verified")
+        self._update(number, auto="verified", auto_error="", auto_failed=())
         manifest = self.store.snapshot()
         tray = self._tray(number)
         permitted = (
@@ -307,7 +315,7 @@ class AutoPipeline:
     def _release_candidate(self, manifest):
         first = min(manifest.trays, key=lambda t: t.number)
         confirmed_empty = bool(first.slides) and all(
-            s.status is SlideStatus.BLANK and s.owner_decided for s in first.slides
+            s.status is SlideStatus.BLANK and is_empty_confirmed(first, s) for s in first.slides
         )
         if not first.raw_removed and not confirmed_empty:
             return first.number

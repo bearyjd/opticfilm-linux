@@ -80,12 +80,15 @@ def test_dark_slide_is_flagged_and_needs_a_look(tmp_path):
     assert _tray(store).slides[0].status is SlideStatus.ACCEPTED
 
 
-def test_blank_window_becomes_blank_record_without_previews(tmp_path):
+def test_blank_window_has_raw_inspection_previews(tmp_path):
     store = _store(tmp_path, make_sweep(dpi=600, filled=(True, False, True, True)))
     enhance_tray(store, 1)
     slides = _tray(store).slides
     assert [s.status for s in slides][1] is SlideStatus.BLANK
-    assert not store.preview_path(1, 2, "after").exists()
+    assert store.preview_path(1, 2, "before").is_file()
+    assert store.preview_path(1, 2, "after").is_file()
+    assert len(slides[1].blank_fingerprint) == 64
+    assert slides[1].empty_confirmed is None
     assert store.preview_path(1, 3, "after").is_file()
 
 

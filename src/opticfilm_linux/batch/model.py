@@ -90,6 +90,20 @@ class ExportRecord:
 
 
 @dataclass(frozen=True)
+class EmptyConfirmation:
+    sweep_version: int
+    fingerprint: str
+
+    def __post_init__(self) -> None:
+        if type(self.sweep_version) is not int or self.sweep_version < 1:
+            raise ValueError("empty confirmation needs a positive sweep version")
+        if not isinstance(self.fingerprint, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", self.fingerprint
+        ):
+            raise ValueError("empty confirmation needs a SHA-256 fingerprint")
+
+
+@dataclass(frozen=True)
 class SlideRecord:
     position: int  # 1-based holder position
     status: SlideStatus = SlideStatus.PENDING
@@ -97,6 +111,8 @@ class SlideRecord:
     settings: SlideSettings = field(default_factory=SlideSettings)
     owner_decided: bool = False
     auto_accepted: bool = False
+    blank_fingerprint: str = ""
+    empty_confirmed: EmptyConfirmation | None = None
     exported: bool = False
     preview_stale: bool = False  # settings changed but the preview was not redone yet
     export_path: str = ""

@@ -27,6 +27,7 @@ from opticfilm_linux.batch.store import BatchError, BatchStore, is_interrupted
 from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.split import SlideSplitError, is_blank, split_slides
+from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import SweepFormatError, load_sweep
 
 BEFORE_GAMMA = 2.2  # raw scans are linear; this makes the "before" preview look natural
@@ -81,6 +82,7 @@ def _merge_slide(
     blank: bool,
     defaults: BatchDefaults,
     publish: Callable[[], None] = lambda: None,
+    fingerprint: str = "",
 ) -> None:
     """Keep owner choices and publish current previews atomically under the store lock."""
 
@@ -96,20 +98,9 @@ def _merge_slide(
         if current is not None and current.settings != snapshot.settings:
             return manifest
         base = current or snapshot
-        if blank and base.owner_decided and base.status is not SlideStatus.BLANK:
-            return manifest  # a late automatic blank result cannot undo owner rescue
-        if blank:
-            record = dataclasses.replace(
-                base, status=SlideStatus.BLANK, flags=(), preview_stale=False
-            )
-        else:
-            auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
-            record = dataclasses.replace(
-                base,
-                status=base.status if base.owner_decided else auto,
-                flags=flags,
-                preview_stale=False,
-            )
+        if blank and _protect_content(base):
+            return manifest
+        record = _classified_record(base, flags, blank, fingerprint)
         others = tuple(s for s in now.slides if s.position != snapshot.position)
         slides = tuple(sorted(others + (record,), key=lambda s: s.position))
         trays = tuple(
@@ -120,6 +111,31 @@ def _merge_slide(
         return dataclasses.replace(manifest, trays=trays)
 
     store.update(change)
+
+
+def _protect_content(slide: SlideRecord) -> bool:
+    return (
+        slide.auto_accepted
+        or slide.exported
+        or (slide.owner_decided and slide.status is not SlideStatus.BLANK)
+    )
+
+
+def _classified_record(
+    base: SlideRecord, flags: tuple[Flag, ...], blank: bool, fingerprint: str
+) -> SlideRecord:
+    auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
+    owner_content = base.owner_decided and base.status is not SlideStatus.BLANK
+    return dataclasses.replace(
+        base,
+        status=SlideStatus.BLANK if blank else base.status if owner_content else auto,
+        flags=() if blank else flags,
+        preview_stale=False,
+        blank_fingerprint=fingerprint if blank else "",
+        empty_confirmed=None,
+        owner_decided=owner_content,
+        auto_accepted=base.auto_accepted and not blank,
+    )
 
 
 def _pending(path: Path) -> Path:
@@ -136,15 +152,13 @@ def _process_slide(
 ) -> None:
     defaults = store.snapshot().defaults
     position = slide.index + 1
-    if (
-        defaults.skip_blank
-        and not (snapshot.owner_decided and snapshot.status is not SlideStatus.BLANK)
-        and is_blank(slide)
-    ):
-        _merge_slide(store, number, tray, snapshot, (), blank=True, defaults=defaults)
-        return
-    enhanced = enhance_slide(
-        slide, options_for(defaults, tray.mode, snapshot.settings, snapshot.position), sweep.dpi
+    blank = defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide)
+    enhanced = (
+        slide.rgb
+        if blank
+        else enhance_slide(
+            slide, options_for(defaults, tray.mode, snapshot.settings, snapshot.position), sweep.dpi
+        )
     )
     before = store.preview_path(number, position, "before")
     after = store.preview_path(number, position, "after")
@@ -155,9 +169,19 @@ def _process_slide(
 
     try:
         write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
-        write_preview(make_preview(enhanced), _pending(after))
-        flags = compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
-        _merge_slide(store, number, tray, snapshot, flags, False, defaults, publish)
+        write_preview(make_preview(enhanced, gamma=BEFORE_GAMMA if blank else 1.0), _pending(after))
+        flags = () if blank else compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
+        _merge_slide(
+            store,
+            number,
+            tray,
+            snapshot,
+            flags,
+            blank,
+            defaults,
+            publish,
+            raw_region_sha256(slide) if blank else "",
+        )
     finally:  # a result that was dropped leaves nothing behind
         _pending(before).unlink(missing_ok=True)
         _pending(after).unlink(missing_ok=True)

@@ -1003,7 +1003,8 @@ def test_empty_frames_confirmation_names_target_when_another_tray_is_selected(lo
     store.update_tray(
         tray.number,
         slides=tuple(
-            replace(s, status=SlideStatus.BLANK, owner_decided=False) for s in tray.slides
+            replace(s, status=SlideStatus.BLANK, owner_decided=False, blank_fingerprint="b" * 64)
+            for s in tray.slides
         ),
     )
     selected = replace(
@@ -1025,8 +1026,12 @@ def test_empty_frames_confirmation_names_target_when_another_tray_is_selected(lo
     assert "frame(s) look empty" in _prop(root, "autoPipelineStatus", "text")
     assert "in tray 1" in _prop(root, "confirmEmptyFrames", "text")
     _click(root, "confirmEmptyFrames")
+    _wait(bridge, lambda: _prop(root, "confirmReviewedEmptyFrames", "enabled"))
+    assert bridge.emptyConfirmationCount == len(tray.slides)
+    _click(root, "confirmReviewedEmptyFrames")
     _wait(bridge, lambda: bridge.emptyConfirmationCount == 0)
     assert all(
-        s.status is SlideStatus.BLANK and s.owner_decided for s in store.snapshot().trays[0].slides
+        s.status is SlideStatus.BLANK and s.empty_confirmed is not None
+        for s in store.snapshot().trays[0].slides
     )
     assert store.snapshot().trays[1] == selected

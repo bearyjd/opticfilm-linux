@@ -7,10 +7,13 @@ produce a duplicate file on the next export, never a missing one.
 Cleanup defends against application bugs, crashes, power loss, concurrent application actions,
 malformed or stale manifests, and owner mistakes such as moved exports or symlinked raw folders.
 Before committing removal, every raw split position must be represented exactly once, blank
-positions require an owner decision, and nonblank positions must match their current raw hash
-and verified delivery receipt. The durable raw_removed marker commits this evidence: subsequent
-invocations finish interrupted deletion using safe paths and recorded sweep membership (or
-version bounds for legacy markers), since partial sweeps and exports may no longer be readable.
+positions require an explicit empty confirmation bound to the current sweep and raw hash,
+and nonblank positions must match their current raw hash
+and verified delivery receipt. The durable raw_removed marker records an attempted deletion:
+whenever any sweep folder remains, subsequent invocations verify the delivery and current raw
+again before deleting anything. Recorded sweep membership is not proof of valid remaining raw.
+Partially deleted current sweeps therefore require recovery instead of automatic deletion.
+Only a tray with no remaining sweep folders can trust its removal marker without rehashing.
 A live store remembers a failed postcommit verification whose rollback also failed, and must
 retry that rollback before treating the tray as eligible for cleanup again.
 It does not defend against hostile local processes racing checks within microseconds, or an
@@ -19,7 +22,6 @@ owner deliberately hand-forging export receipts in the manifest.
 
 import dataclasses
 import hashlib
-import json
 import os
 import shutil
 import threading
@@ -31,8 +33,21 @@ from typing import Literal
 
 from PIL import Image
 
+from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.enhance import RawRemoved, options_for
-from opticfilm_linux.batch.layout import section_directory, slide_number
+from opticfilm_linux.batch.export_contract import (
+    _export_receipt,
+    _metadata_spec,
+    _pending_slides,
+    _release_candidate,
+    _release_defaults,
+    _render_defaults,
+    _render_signature,
+    _slide_spec,
+    _stale,
+    _still_freeable,
+)
+from opticfilm_linux.batch.layout import section_directory
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
@@ -49,7 +64,7 @@ from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.output import Format, JpegSize, OutputSpec, jpeg_geometry, write_slide
 from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
-from opticfilm_linux.provenance import jpeg_metadata, raw_region_sha256
+from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
 
 _CLEANUP_LOCK = threading.Lock()
@@ -92,11 +107,6 @@ def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
     return next(t for t in manifest.trays if t.number == number)
 
 
-def _render_defaults(defaults: BatchDefaults) -> BatchDefaults:
-    """Remembered destinations and delivery sizes do not invalidate an active render."""
-    return dataclasses.replace(defaults, export_dir="", export_format="jpeg", jpeg_size="full")
-
-
 def _mark_exported(
     store: BatchStore,
     number: int,
@@ -108,12 +118,7 @@ def _mark_exported(
     *,
     record: ExportRecord | None = None,
 ) -> Literal["marked", "stale_slide", "stale_tray"]:
-    """Mark one slide exported, only if the file written still matches it.
-
-    A re-scan (new sweep version), a mode change, a new batch orientation, or an edit made while
-    the slide was rendering means the file on disk is obsolete: nothing is marked, so the next
-    export redoes the slide.
-    """
+    """Attach a receipt only while the slide is accepted and its render inputs still match."""
     outcome: Literal["marked", "stale_slide", "stale_tray"] = "stale_tray"
 
     def change(manifest: BatchManifest) -> BatchManifest:
@@ -128,11 +133,16 @@ def _mark_exported(
                 outcome = "stale_slide"
                 slides = []
                 for s in tray.slides:
-                    if s.position == position and s.settings == settings:
+                    if (
+                        s.position == position
+                        and s.settings == settings
+                        and s.status is SlideStatus.ACCEPTED
+                    ):
                         outcome = "marked"
                         s = dataclasses.replace(
                             s,
                             exported=True,
+                            empty_confirmed=None,
                             export_path=record.export_path if record else "",
                             export_size=(record.width, record.height) if record else (),
                             export_sha256=record.sha256 if record else "",
@@ -179,7 +189,9 @@ def clear_exported(store: BatchStore, keys: frozenset[SlideKey] | None = None) -
                 )
             if chosen:
                 slides = tuple(
-                    dataclasses.replace(s, exported=False) if s.position in chosen else s
+                    dataclasses.replace(s, exported=False, empty_confirmed=None)
+                    if s.position in chosen
+                    else s
                     for s in tray.slides
                 )
                 tray = dataclasses.replace(tray, slides=slides, stage=TrayStage.REVIEW)
@@ -187,18 +199,6 @@ def clear_exported(store: BatchStore, keys: frozenset[SlideKey] | None = None) -
         return dataclasses.replace(manifest, trays=tuple(trays))
 
     store.update(change)
-
-
-def _pending_slides(tray: TrayRecord, keys: frozenset[SlideKey] | None = None) -> list[SlideRecord]:
-    if tray.raw_removed:
-        return []
-    return [
-        s
-        for s in tray.slides
-        if s.status is SlideStatus.ACCEPTED
-        and not s.exported
-        and (keys is None or (tray.number, s.position) in keys)
-    ]
 
 
 def _checked_export_parent(directory: Path, root: Path, store: BatchStore) -> None:
@@ -211,39 +211,6 @@ def _checked_export_parent(directory: Path, root: Path, store: BatchStore) -> No
         raise BatchError("export section must remain inside the export folder")
     if resolved.is_relative_to(store.directory.resolve()):
         raise BatchError("export to a folder outside the batch folder")
-
-
-def _slide_spec(
-    manifest: BatchManifest, tray: TrayRecord, record: SlideRecord, spec: OutputSpec
-) -> OutputSpec:
-    position = slide_number(tray.location, record.position) if tray.location else None
-    if position is not None and position > manifest.section_size:
-        raise BatchError(
-            f"Tray {tray.number} slot {record.position} exceeds the section size "
-            f"{manifest.section_size}; mark that empty position blank before export."
-        )
-    return dataclasses.replace(spec, position=position)
-
-
-def _metadata_spec(
-    manifest: BatchManifest, tray: TrayRecord, record: SlideRecord, slide, options, spec: OutputSpec
-) -> OutputSpec:
-    delivered_dpi = spec.scan_dpi
-    if spec.fmt == "jpeg":
-        _, _, delivered_dpi = jpeg_geometry(1, 1, spec.scan_dpi, spec.jpeg_size)
-        spec = dataclasses.replace(
-            spec,
-            metadata=jpeg_metadata(
-                manifest,
-                tray,
-                record,
-                slide,
-                options,
-                spec.scan_dpi,
-                delivered_dpi,
-            ),
-        )
-    return spec
 
 
 def _write_export(
@@ -403,33 +370,6 @@ def _durable_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _export_receipt(slide: SlideRecord) -> tuple[Path, tuple[int, ...], str, int | None]:
-    if not slide.exports:
-        raise ValueError(
-            "legacy export has no durable receipt; re-export as JPEG before freeing raw"
-        )
-    record = slide.exports[-1]
-    if (
-        not record.export_path
-        or not Path(record.export_path).is_absolute()
-        or record.width <= 0
-        or record.height <= 0
-        or record.size_bytes <= 0
-        or not record.sha256
-    ):
-        raise ValueError(
-            "missing export record: incomplete receipt; re-export as JPEG before freeing raw"
-        )
-    size = (record.width, record.height)
-    if (slide.export_path, slide.export_size, slide.export_sha256) != (
-        record.export_path,
-        size,
-        record.sha256,
-    ):
-        raise ValueError("export record differs from current delivery")
-    return Path(record.export_path), size, record.sha256, record.size_bytes
-
-
 def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
     if tray.stage is not TrayStage.EXPORTED or not tray.slides:
         raise BatchError(f"tray {tray.number} is not fully exported")
@@ -469,10 +409,6 @@ def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
 def verify_tray_export(store: BatchStore, number: int) -> None:
     """Decode JPEGs and verify write-time geometry, streamed digest and durability."""
     _verify_export(_tray(store.snapshot(), number), jpeg_only=True)
-
-
-def _stale(tray: TrayRecord) -> bool:
-    return any(s.preview_stale for s in tray.slides)
 
 
 def _folder_size(path: Path) -> int:
@@ -535,9 +471,12 @@ def _verify_raw(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) 
         ):
             raise ValueError("manifest positions must cover every raw position exactly once")
         for slide in tray.slides:
+            current_digest = raw_region_sha256(slides[slide.position - 1])
             if slide.status is SlideStatus.BLANK:
+                if not is_empty_confirmed(tray, slide) or slide.blank_fingerprint != current_digest:
+                    raise ValueError("empty confirmation does not match the current raw scan")
                 continue
-            if slide.exports[-1].raw_sha256 != raw_region_sha256(slides[slide.position - 1]):
+            if slide.exports[-1].raw_sha256 != current_digest:
                 raise ValueError("export receipt does not match the current raw scan")
     except (OSError, ValueError, IndexError) as exc:
         raise CleanupRefused(
@@ -549,8 +488,8 @@ def _checked_snapshot(store: BatchStore, tray: TrayRecord, folders: tuple[Path, 
     if tuple(_checked_sweep_folders(store, tray.number)) != folders:
         raise CleanupRefused("raw sweep folders changed meanwhile; raw scans must be kept")
     _checked_sweep_versions(tray, folders)
-    if tray.raw_removed:
-        return  # a prior invocation committed verification before deletion began
+    if tray.raw_removed and not folders:
+        return  # completed removal has no remaining raw to endanger
     _verify_export(tray, jpeg_only=False)
     _safe_receipt_paths(store, tray)
     _verify_raw(store, tray, folders)
@@ -611,21 +550,6 @@ def _delete(
         ) from exc
 
 
-def _release_defaults(defaults: BatchDefaults) -> BatchDefaults:
-    return dataclasses.replace(defaults, keep_raw=False, auto_export=False)
-
-
-def _render_signature(defaults: BatchDefaults, root: Path, fmt: Format, jpeg_size: JpegSize) -> str:
-    settings = dataclasses.replace(
-        _release_defaults(defaults),
-        export_dir=str(root.absolute()),
-        export_format=fmt,
-        jpeg_size=jpeg_size,
-    )
-    canonical = json.dumps(dataclasses.asdict(settings), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
 def _check_render_receipts(manifest: BatchManifest, tray: TrayRecord) -> None:
     defaults = manifest.defaults
     for slide in tray.slides:
@@ -662,14 +586,6 @@ def _verify_release_evidence(manifest: BatchManifest, tray: TrayRecord) -> None:
     _check_render_receipts(manifest, tray)
 
 
-def _release_candidate(manifest: BatchManifest, number: int) -> bool:
-    first = min(manifest.trays, key=lambda tray: tray.number)
-    confirmed_empty = bool(first.slides) and all(
-        slide.status is SlideStatus.BLANK and slide.owner_decided for slide in first.slides
-    )
-    return number == first.number or first.raw_removed or confirmed_empty
-
-
 def release_first_tray(store: BatchStore, number: int) -> None:
     """Approve current JPEG settings using the first tray, or one surviving its removal."""
     with _CLEANUP_LOCK:
@@ -696,7 +612,9 @@ def _compare_cleanup_evidence(manifest: BatchManifest, evidence: BatchManifest) 
 
 
 def _check_blank_decisions(tray: TrayRecord) -> None:
-    count = sum(s.status is SlideStatus.BLANK and not s.owner_decided for s in tray.slides)
+    count = sum(
+        s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s) for s in tray.slides
+    )
     if count:
         raise CleanupPolicyRefused(
             f"{count} frame(s) look empty - confirm they are empty to free raw"
@@ -735,6 +653,15 @@ def _cleanup_policy(manifest: BatchManifest, number: int, *, release_first: bool
         _check_render_receipts(manifest, tray)
 
 
+def _recheck_released_raw(store: BatchStore, manifest: BatchManifest, number: int) -> None:
+    """A failed release rollback must not authorize another tray after reopening the batch."""
+    if not manifest.first_tray_released:
+        return
+    for tray in manifest.trays:
+        if tray.number != number and _half_cleaned(store, tray):
+            _checked_snapshot(store, tray, tuple(_checked_sweep_folders(store, tray.number)))
+
+
 def check_cleanup_allowed(
     store: BatchStore, number: int, *, release_first: bool = False
 ) -> TrayRecord:
@@ -743,6 +670,7 @@ def check_cleanup_allowed(
     tray = next((t for t in manifest.trays if t.number == number), None)
     if tray is None:
         raise BatchError(f"no tray {number} in this batch")
+    _recheck_released_raw(store, manifest, number)
     _cleanup_policy(manifest, number, release_first=release_first)
     if tray.raw_removed:
         folders = tuple(_checked_sweep_folders(store, number))
@@ -820,17 +748,6 @@ def _commit_cleanup(
 
     store.update(commit)
     return evidence
-
-
-def _still_freeable(tray: TrayRecord) -> bool:
-    real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
-    return (
-        tray.stage is TrayStage.EXPORTED
-        and not tray.raw_removed
-        and not _stale(tray)
-        and all(s.owner_decided for s in tray.slides if s.status is SlideStatus.BLANK)
-        and all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
-    )
 
 
 def freeable_trays(store: BatchStore) -> tuple[FreeableTray, ...]:

@@ -712,3 +712,42 @@ def test_raw_inventory_glob_does_not_hold_controller_lock(sweep600_dir, tmp_path
         assert checked.is_set()
     finally:
         c.shutdown()
+
+
+def test_accept_all_snapshots_blocked_trays_without_controller_lock(auto_controller, monkeypatch):
+    c, calls, started, release = auto_controller
+    store = c._session.store
+    original = store.snapshot
+    checked = []
+
+    def snapshot():
+        assert c._lock.acquire(blocking=False), "Accept all inspected store under state lock"
+        c._lock.release()
+        checked.append(True)
+        return original()
+
+    monkeypatch.setattr(c._session.runner, "accept_all", lambda: None)
+    monkeypatch.setattr(store, "snapshot", snapshot)
+    monkeypatch.setattr(c, "_run_writer", lambda job, message: job(c._session.runner))
+    monkeypatch.setattr(c, "_submit_auto_due", lambda: None)
+    c.accept_all()
+    assert checked
+
+
+def test_empty_confirmation_keeps_the_rendered_candidate_snapshot(auto_controller, monkeypatch):
+    from opticfilm_linux.batch import review
+
+    c, calls, started, release = auto_controller
+    queued, confirmed = [], []
+    monkeypatch.setattr(c, "_run_writer", lambda job, message: queued.append(job))
+    monkeypatch.setattr(c, "_submit_auto_due", lambda: None)
+    monkeypatch.setattr(review, "confirm_empty_frames", lambda *a, **kw: confirmed.append((a, kw)))
+    positions, fingerprints = [1], {1: "a" * 64}
+    c.confirm_empty_frames(
+        1, positions, expected_fingerprints=fingerprints, expected_sweep_version=4
+    )
+    positions.append(2)
+    fingerprints[1] = "b" * 64
+    queued[0](c._session.runner)
+    assert confirmed[0][0][2] == (1,)
+    assert confirmed[0][1] == {"expected_fingerprints": {1: "a" * 64}, "expected_sweep_version": 4}

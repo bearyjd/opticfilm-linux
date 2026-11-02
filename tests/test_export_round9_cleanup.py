@@ -6,7 +6,7 @@ import pytest
 
 from opticfilm_linux.batch import export
 from opticfilm_linux.batch.model import Flag, SlideStatus, TrayStage
-from test_export_safety import _assert_raw_kept, _delivered
+from test_export_safety import _assert_raw_kept, _confirmed_blank, _delivered
 from test_export_safety import delivery as delivery
 
 
@@ -23,13 +23,13 @@ def test_blank_without_owner_decision_blocks_cleanup_and_freeable_list(delivery,
     assert str(refused.value) == "1 frame(s) look empty - confirm they are empty to free raw"
     assert export.freeable_trays(store) == ()
     _assert_raw_kept(store)
-    store.update_tray(1, slides=(dataclasses.replace(blank, owner_decided=True),))
+    store.update_tray(1, slides=(_confirmed_blank(store.snapshot().trays[0], blank),))
     assert [tray.number for tray in export.freeable_trays(store)] == [1]
     assert export.cleanup_raw(store, 1) > 0
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_interrupted_partial_deletion_finishes_without_receipt_or_raw_io(
+def test_interrupted_partial_deletion_requires_receipt_reverification(
     delivery, monkeypatch, legacy
 ):
     store, path = _delivered(delivery)
@@ -38,10 +38,10 @@ def test_interrupted_partial_deletion_finishes_without_receipt_or_raw_io(
     tray = store.snapshot().trays[0]
     slide = dataclasses.replace(tray.slides[0], exports=(), preview_stale=True)
     store.update_tray(1, raw_removed=True, cleanup_sweeps=() if legacy else (1,), slides=(slide,))
-    monkeypatch.setattr(export, "_verify_export", lambda *a, **k: pytest.fail("receipt IO"))
     monkeypatch.setattr(export, "load_sweep", lambda *a: pytest.fail("raw IO"))
-    assert export.cleanup_raw(store, 1) == 0
-    assert not store.sweep_dir(1, 1).exists()
+    with pytest.raises(export.ExportVerificationFailed):
+        export.cleanup_raw(store, 1)
+    assert store.sweep_dir(1, 1).exists()
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "future", "unverified"])
@@ -182,6 +182,8 @@ def test_empty_first_requires_confirmation_and_later_jpeg_approval(delivery, con
     blank = dataclasses.replace(
         first.slides[0], status=SlideStatus.BLANK, owner_decided=confirmed, exports=()
     )
+    if confirmed:
+        blank = _confirmed_blank(first, first.slides[0], exports=())
     second = dataclasses.replace(
         first,
         number=2,

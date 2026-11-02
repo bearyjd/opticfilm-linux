@@ -54,6 +54,9 @@ Kirigami.Page {
     ExportDialog {
         id: exportDialog
     }
+    EmptyFramesDialog {
+        id: emptyFramesDialog
+    }
     FreeSpaceDialog {
         id: freeSpaceDialog
     }
@@ -152,8 +155,13 @@ Kirigami.Page {
             QQC2.Button {
                 objectName: "confirmEmptyFrames"
                 visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
-                text: qsTr("Confirm %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
-                onClicked: bridge.confirmEmptyFrames(bridge.emptyConfirmationTray)
+                text: qsTr("Review %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
+                onClicked: {
+                    emptyFramesDialog.tray = bridge.emptyConfirmationTray;
+                    emptyFramesDialog.sweepVersion = bridge.emptyConfirmationSweepVersion;
+                    emptyFramesDialog.previews = bridge.emptyConfirmationPreviews.slice();
+                    emptyFramesDialog.open();
+                }
             }
             QQC2.Button {
                 objectName: "freeHeldRaw"

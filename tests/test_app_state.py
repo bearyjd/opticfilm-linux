@@ -314,7 +314,16 @@ def test_manual_interrupted_cleanup_shows_raw_removal_pending(auto):
 def test_confirmed_blank_flags_do_not_hide_first_tray_release():
     manifest = _manifest()
     accepted = SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True)
-    blank = SlideRecord(2, status=SlideStatus.BLANK, flags=(Flag.DUST,), owner_decided=True)
+    from opticfilm_linux.batch.model import EmptyConfirmation
+
+    blank = SlideRecord(
+        2,
+        status=SlideStatus.BLANK,
+        flags=(Flag.DUST,),
+        owner_decided=True,
+        blank_fingerprint="b" * 64,
+        empty_confirmed=EmptyConfirmation(manifest.trays[0].sweep_version, "b" * 64),
+    )
     first = replace(
         manifest.trays[0],
         stage=TrayStage.EXPORTED,
@@ -362,3 +371,43 @@ def test_freed_first_tray_allows_surviving_held_settings_approval():
         manifest, trays=(first, second), defaults=replace(manifest.defaults, auto_export=True)
     )
     assert _build(manifest).held_tray == 2
+
+
+def test_empty_confirmation_includes_every_blank_with_rendered_fingerprints():
+    from opticfilm_linux.batch.model import EmptyConfirmation
+
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.REVIEW,
+        sweep_version=3,
+        slides=(
+            SlideRecord(
+                1,
+                status=SlideStatus.BLANK,
+                blank_fingerprint="a" * 64,
+                empty_confirmed=EmptyConfirmation(3, "a" * 64),
+            ),
+            SlideRecord(2, status=SlideStatus.BLANK, blank_fingerprint="b" * 64),
+        ),
+    )
+    state = _build(replace(manifest, trays=(first,)))
+    assert state.empty_confirmation_sweep_version == 3
+    assert state.empty_confirmation_count == 2
+    assert [(p, digest) for p, digest, _ in state.empty_confirmation_previews] == [
+        (1, "a" * 64),
+        (2, "b" * 64),
+    ]
+
+
+def test_legacy_owner_blank_still_needs_explicit_confirmation():
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.EXPORTED,
+        auto="held",
+        slides=(SlideRecord(1, status=SlideStatus.BLANK, owner_decided=True),),
+    )
+    state = _build(replace(manifest, trays=(first,)))
+    assert state.empty_confirmation_tray == 1
+    assert state.held_tray is None

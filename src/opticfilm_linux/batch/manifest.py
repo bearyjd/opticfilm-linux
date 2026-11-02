@@ -8,6 +8,7 @@ from opticfilm_linux.batch.model import (
     AutoState,
     BatchDefaults,
     BatchManifest,
+    EmptyConfirmation,
     ExportRecord,
     Flag,
     SlideRecord,
@@ -69,6 +70,10 @@ def _omit_tray_defaults(data: dict[str, Any]) -> None:
             if tray[key] == default:
                 tray.pop(key)
         for slide in tray["slides"]:
+            if not slide["blank_fingerprint"]:
+                slide.pop("blank_fingerprint")
+            if slide["empty_confirmed"] is None:
+                slide.pop("empty_confirmed")
             if not slide["auto_accepted"]:
                 slide.pop("auto_accepted")
             if not slide["export_path"]:
@@ -136,6 +141,7 @@ def _slide_delivery(data: dict[str, Any]) -> tuple[ExportRecord, ...]:
 
 def _slide(data: dict[str, Any]) -> SlideRecord:
     _validate_booleans(data, SlideRecord)
+    _receipt_text(data, "blank_fingerprint", digest=True)
     exports = _slide_delivery(data)
     return SlideRecord(
         position=data["position"],
@@ -144,6 +150,8 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         settings=_settings(data["settings"]),
         owner_decided=data["owner_decided"],
         auto_accepted=data.get("auto_accepted", False),
+        blank_fingerprint=data.get("blank_fingerprint", ""),
+        empty_confirmed=_empty_confirmation(data.get("empty_confirmed")),
         exported=data["exported"],
         preview_stale=data.get("preview_stale", False),
         export_path=data.get("export_path", ""),
@@ -151,6 +159,14 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         export_sha256=data.get("export_sha256", ""),
         exports=exports,
     )
+
+
+def _empty_confirmation(data: Any) -> EmptyConfirmation | None:
+    if data is None:
+        return None
+    if not isinstance(data, dict) or set(data) != {"sweep_version", "fingerprint"}:
+        raise ManifestFormatError("empty_confirmed needs a sweep version and fingerprint")
+    return EmptyConfirmation(**data)
 
 
 def _evidence(data: dict[str, Any] | None) -> ScanEvidence | None:

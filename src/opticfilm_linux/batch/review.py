@@ -8,9 +8,11 @@ import dataclasses
 from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 
+from opticfilm_linux.batch.empty import empty_frame_fingerprints
 from opticfilm_linux.batch.enhance import RawRemoved
 from opticfilm_linux.batch.model import (
     BatchManifest,
+    EmptyConfirmation,
     Mode,
     SlideKey,
     SlideRecord,
@@ -44,7 +46,7 @@ def _replace_slide(
     manifest: BatchManifest, tray: TrayRecord, slide: SlideRecord, **changes
 ) -> BatchManifest:
     _require_raw(tray)
-    new_slide = dataclasses.replace(slide, **changes)
+    new_slide = dataclasses.replace(slide, empty_confirmed=None, **changes)
     slides = tuple(new_slide if s.position == slide.position else s for s in tray.slides)
     trays = tuple(
         dataclasses.replace(t, slides=slides) if t.number == tray.number else t
@@ -88,16 +90,41 @@ def set_slide_status(store: BatchStore, number: int, position: int, status: Slid
     store.update(change)
 
 
-def confirm_empty_frames(store: BatchStore, number: int) -> None:
+def confirm_empty_frames(
+    store: BatchStore,
+    number: int,
+    expected_positions: Iterable[int],
+    *,
+    expected_fingerprints: Mapping[int, str],
+    expected_sweep_version: int,
+) -> None:
     """Record the owner's explicit inspection of this tray's empty frames."""
+
+    positions = tuple(expected_positions)
+    fingerprints = dict(expected_fingerprints)
 
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, _ = _find(manifest, number)
         _require_raw(tray)
         if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED):
             raise BatchError(f"tray {number} is not ready for empty-frame confirmation")
+        current = empty_frame_fingerprints(tray)
+        if (
+            not current
+            or expected_sweep_version != tray.sweep_version
+            or len(set(positions)) != len(positions)
+            or set(positions) != set(current)
+            or fingerprints != current
+            or not all(current.values())
+        ):
+            raise BatchError("Empty frames changed; inspect the current frames before confirming")
         slides = tuple(
-            dataclasses.replace(s, owner_decided=True, auto_accepted=False)
+            dataclasses.replace(
+                s,
+                empty_confirmed=EmptyConfirmation(tray.sweep_version, current[s.position]),
+                owner_decided=False,
+                auto_accepted=False,
+            )
             if s.status is SlideStatus.BLANK
             else s
             for s in tray.slides
@@ -142,7 +169,11 @@ def accept_all(store: BatchStore) -> None:
         if slide.status is SlideStatus.BLANK:
             return slide
         return dataclasses.replace(
-            slide, status=SlideStatus.ACCEPTED, owner_decided=True, auto_accepted=False
+            slide,
+            status=SlideStatus.ACCEPTED,
+            owner_decided=True,
+            auto_accepted=False,
+            empty_confirmed=None,
         )
 
     def change(manifest: BatchManifest) -> BatchManifest:
@@ -173,7 +204,11 @@ def accept_tray(store: BatchStore, number: int, *, automatic: bool = False) -> N
             if s.owner_decided
             or (automatic and s.status in (SlideStatus.BLANK, SlideStatus.NEEDS_LOOK))
             else dataclasses.replace(
-                s, status=SlideStatus.ACCEPTED, owner_decided=not automatic, auto_accepted=automatic
+                s,
+                status=SlideStatus.ACCEPTED,
+                owner_decided=not automatic,
+                auto_accepted=automatic,
+                empty_confirmed=None,
             )
             for s in tray.slides
         )
@@ -199,7 +234,9 @@ def set_tray_mode(store: BatchStore, number: int, mode: Mode) -> None:
                 return t
             # files exported in the old mode are obsolete
             slides = (
-                tuple(dataclasses.replace(s, exported=False) for s in t.slides)
+                tuple(
+                    dataclasses.replace(s, exported=False, empty_confirmed=None) for s in t.slides
+                )
                 if changed
                 else t.slides
             )
@@ -216,9 +253,9 @@ BUSY_STAGES = (TrayStage.SCANNING, TrayStage.ENHANCING)
 def _reoriented(tray: TrayRecord) -> TrayRecord:
     """Every non-blank slide needs a new preview and a new export; owner choices are kept."""
     slides = tuple(
-        s
+        dataclasses.replace(s, empty_confirmed=None)
         if s.status is SlideStatus.BLANK
-        else dataclasses.replace(s, preview_stale=True, exported=False)
+        else dataclasses.replace(s, preview_stale=True, exported=False, empty_confirmed=None)
         for s in tray.slides
     )
     # an exported tray now has slides to export again, so it is back in review
@@ -295,6 +332,8 @@ def _bulk_slide(slide: SlideRecord, values: BeforeEdit) -> SlideRecord:
         settings=settings,
         status=status,
         owner_decided=owner_decided,
+        auto_accepted=False,
+        empty_confirmed=None,
         exported=slide.exported and not changed,
         preview_stale=slide.preview_stale or changed,
     )

@@ -335,14 +335,25 @@ class Controller(FirstLoadCommands, HolderCommands):
 
         self._run_writer(job, f"Could not change slide {position} of tray {number}")
 
-    def confirm_empty_frames(self, number: int) -> None:
+    def confirm_empty_frames(
+        self, number: int, expected_positions, *, expected_fingerprints, expected_sweep_version: int
+    ) -> None:
+        expected_positions = tuple(expected_positions)
+        expected_fingerprints = dict(expected_fingerprints)
+
         def job(runner: BatchRunner) -> None:
             from opticfilm_linux.batch.review import confirm_empty_frames
 
             session = self._session
             if session is None:
                 return
-            confirm_empty_frames(session.store, number)
+            confirm_empty_frames(
+                session.store,
+                number,
+                expected_positions,
+                expected_fingerprints=expected_fingerprints,
+                expected_sweep_version=expected_sweep_version,
+            )
             with self._lock:
                 self._auto_due.add(number)
             self._submit_auto_due()
@@ -412,10 +423,11 @@ class Controller(FirstLoadCommands, HolderCommands):
             runner.accept_all()
             session = self._session
             if session is not None:
+                blocked = tuple(
+                    t.number for t in session.store.snapshot().trays if t.auto == "blocked"
+                )
                 with self._lock:
-                    self._auto_due.update(
-                        t.number for t in session.store.snapshot().trays if t.auto == "blocked"
-                    )
+                    self._auto_due.update(blocked)
                 self._submit_auto_due()
 
         self._run_writer(job, "Could not accept all slides")
@@ -1067,16 +1079,22 @@ class Controller(FirstLoadCommands, HolderCommands):
     def _preview_tokens(session, manifest, selected) -> dict[tuple[int, int], int]:
         if session is None or manifest is None:
             return {}
-        tray = next((t for t in manifest.trays if t.number == selected), None)
-        if tray is None:
-            return {}
+        from opticfilm_linux.batch.empty import is_empty_confirmed
+
         tokens = {}
-        for slide in tray.slides:
-            path = session.store.preview_path(tray.number, slide.position, "after")
-            try:
-                tokens[(tray.number, slide.position)] = path.stat().st_mtime_ns
-            except OSError:
+        for tray in manifest.trays:
+            confirmation = not tray.raw_removed and any(
+                s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s)
+                for s in tray.slides
+            )
+            if tray.number != selected and not confirmation:
                 continue
+            for slide in tray.slides:
+                path = session.store.preview_path(tray.number, slide.position, "after")
+                try:
+                    tokens[(tray.number, slide.position)] = path.stat().st_mtime_ns
+                except OSError:
+                    continue
         return tokens
 
 

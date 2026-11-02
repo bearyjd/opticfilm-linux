@@ -7,6 +7,7 @@ from pathlib import Path
 
 from opticfilm_linux.app.raw import bytes_removed, raw_failure, raw_inventory
 from opticfilm_linux.app.state import ExportView, FreeSpaceView
+from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.export import (
     ExportResult,
     FreeableTray,
@@ -131,7 +132,21 @@ def _nothing_to_write(view: ExportView, reexport_blocked: bool) -> str:
 
 def free_space_candidates(store: BatchStore) -> FreeSpaceView:
     found = freeable_trays(store)
-    return _candidates_view(found)
+    view = _candidates_view(found)
+    held = [
+        str(t.number)
+        for t in store.snapshot().trays
+        if not t.raw_removed
+        and any(s.status is SlideStatus.BLANK and not is_empty_confirmed(t, s) for s in t.slides)
+    ]
+    if held and not view.trays:
+        return replace(
+            view,
+            message="Raw scans kept for trays "
+            + ", ".join(held)
+            + ": review and confirm every empty frame before freeing space.",
+        )
+    return view
 
 
 def _candidates_view(found: tuple[FreeableTray, ...]) -> FreeSpaceView:
