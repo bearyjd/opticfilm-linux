@@ -152,7 +152,7 @@ Kirigami.Page {
             QQC2.Button {
                 objectName: "freeHeldRaw"
                 visible: bridge.heldTray > 0 && !bridge.readonly
-                text: qsTr("Free raw data for the first tray")
+                text: qsTr("Approve settings and release raw cleanup")
                 onClicked: bridge.confirmFreeHeld(bridge.heldTray)
             }
         }

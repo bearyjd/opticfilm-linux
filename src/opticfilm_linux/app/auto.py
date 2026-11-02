@@ -10,9 +10,11 @@ from pathlib import Path
 
 from opticfilm_linux.app.raw import raw_failure, raw_inventory
 from opticfilm_linux.batch.export import (
+    CleanupRefused,
     ExportVerificationFailed,
     cleanup_raw,
     export_batch,
+    release_first_tray,
     verify_tray_export,
 )
 from opticfilm_linux.batch.model import SlideStatus, TrayStage
@@ -94,6 +96,8 @@ class AutoPipeline:
             # Cleanup commits the removed flag before unlinking; a crash can leave sweep
             # folders behind. Only this verified cleanup state may finish after recovery.
             return tray.auto == "verified"
+        if tray.auto == "blocked":
+            return all(s.status in (SlideStatus.ACCEPTED, SlideStatus.BLANK) for s in tray.slides)
         if tray.auto in INCOMPLETE:
             return True
         manifest = self.store.snapshot()
@@ -102,7 +106,7 @@ class AutoPipeline:
             and manifest.first_tray_released
             and manifest.defaults.auto_export
             and not manifest.defaults.keep_raw
-            and tray.number != min(t.number for t in manifest.trays)
+            and not self._unreviewed_flags(tray)
         )
 
     def run(self, number: int) -> None:
@@ -111,12 +115,15 @@ class AutoPipeline:
             return
         if self.cancel.is_set():
             return
-        if not self.store.snapshot().defaults.auto_export:
-            self._update(number, auto="off")
+        if not self.store.snapshot().defaults.auto_export and not tray.raw_removed:
+            if tray.auto == "pending":
+                self._update(number, auto="off")
             return
         before = raw_inventory(self.store, (number,))
         try:
-            if tray.auto == "pending" and not self._export_pending(number, before=before):
+            if tray.auto in ("pending", "blocked") and not self._export_pending(
+                number, before=before
+            ):
                 return
             self._verify_and_finish(number)
         except Exception as exc:
@@ -136,10 +143,12 @@ class AutoPipeline:
         )
         # Remember flags before automatic acceptance changes undecided statuses.
         self._update(number, auto_flagged=flagged)
-        accept_tray(self.store, number)
+        accept_tray(self.store, number, automatic=True)
 
     def _export_pending(self, number: int, *, before) -> bool:
         self._accept_pending(number)
+        if self._blocked(number):
+            return False
         defaults = self.store.snapshot().defaults
         if not defaults.export_dir:
             raise BatchError(MISSING_DESTINATION)
@@ -176,24 +185,68 @@ class AutoPipeline:
         return True
 
     def _failed(self, number: int, exc: Exception, *, before) -> None:
+        policy_wait = any(
+            text in str(exc)
+            for text in (
+                "keep raw",
+                "owner review",
+                "explicit owner release",
+                "preview to update",
+                "changed meanwhile",
+                "only exported trays",
+            )
+        )
+        if isinstance(exc, CleanupRefused) and policy_wait and not self._tray(number).raw_removed:
+            self._update(number, auto="held", auto_error=str(exc), auto_failed=())
+            return
         positions = (
             (exc.position,)
             if isinstance(exc, ExportVerificationFailed)
-            else tuple(s.position for s in self._tray(number).slides if not s.exported)
+            else tuple(
+                s.position
+                for s in self._tray(number).slides
+                if s.status is SlideStatus.ACCEPTED and not s.exported
+            )
         )
         outcome = raw_failure(self.store, (number,), before, raw_inventory(self.store, (number,)))
         self._update(number, auto="failed", auto_error=f"{outcome}. {exc}", auto_failed=positions)
 
+    def _unreviewed_flags(self, tray) -> bool:
+        return any(s.position in tray.auto_flagged and not s.owner_decided for s in tray.slides)
+
+    def _blocked(self, number: int) -> bool:
+        held = tuple(
+            s.position
+            for s in self._tray(number).slides
+            if s.status not in (SlideStatus.ACCEPTED, SlideStatus.BLANK)
+        )
+        if not held:
+            return False
+        self._update(
+            number,
+            auto="blocked",
+            auto_failed=(),
+            auto_error="Waiting for owner review of slides " + ", ".join(map(str, held)),
+        )
+        return True
+
     def _verify_and_finish(self, number: int, *, release: bool = False) -> None:
         if self.cancel.is_set():
+            return
+        if self._blocked(number):
+            return
+        if any(s.preview_stale for s in self._tray(number).slides):
+            self._update(number, auto="held", auto_error="Waiting for updated previews")
             return
         verify_tray_export(self.store, number)
         self._update(number, auto="verified")
         manifest = self.store.snapshot()
         first = min(t.number for t in manifest.trays)
-        permitted = (
+        tray = self._tray(number)
+        permitted = tray.raw_removed or (
             manifest.defaults.auto_export
             and not manifest.defaults.keep_raw
+            and not self._unreviewed_flags(tray)
             and (manifest.first_tray_released or (release and number == first))
         )
         if not permitted:
@@ -208,10 +261,13 @@ class AutoPipeline:
 
     def confirm_free_held(self, number: int) -> None:
         manifest = self.store.snapshot()
-        if number != min(t.number for t in manifest.trays) or self._tray(number).auto != "held":
+        if number != min(t.number for t in manifest.trays) or self._tray(number).stage not in READY:
             return
         before = raw_inventory(self.store, (number,))
         try:
+            release_first_tray(self.store, number)
+            if self._blocked(number):
+                return
             self._verify_and_finish(number, release=True)
         except Exception as exc:
             self._failed(number, exc, before=before)

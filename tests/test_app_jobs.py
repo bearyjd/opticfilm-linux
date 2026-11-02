@@ -213,7 +213,7 @@ def _exported_count(c):
 
 
 def _export_all(c, out):
-    c.export(out, "tiff16")
+    c.export(out, "jpeg")
     wait_until(c, lambda: c.state().export is not None and c.state().export.finished)
     c.dismiss_export()
     wait_until(c, lambda: c.state().export is None)
@@ -587,3 +587,29 @@ def test_a_cancelled_queued_job_cannot_deadlock_close_and_shutdown(
     release.set()
     closer.join(GATE_TIMEOUT)
     assert not closer.is_alive()
+
+
+def test_cleanup_inventory_failure_preserves_original_exception(tmp_path, monkeypatch):
+    from opticfilm_linux.app import jobs
+    from opticfilm_linux.batch.export import FreeableTray
+
+    with BatchStore.create(tmp_path / "b", "B") as store:
+        monkeypatch.setattr(jobs, "freeable_trays", lambda _: (FreeableTray(1, 12),))
+        calls = []
+
+        def inventory(*args):
+            calls.append(True)
+            if len(calls) > 1:
+                raise OSError("inventory inaccessible")
+            return {}
+
+        def cleanup(*args, **kwargs):
+            raise RuntimeError("original cleanup failure")
+
+        monkeypatch.setattr(jobs, "raw_inventory", inventory)
+        monkeypatch.setattr(jobs, "free_space", cleanup)
+        views = []
+        with pytest.raises(RuntimeError, match="original cleanup failure"):
+            jobs.run_free_space(store, threading.Event(), views.append, (1,))
+        assert "outcome unknown" in views[-1].message
+        assert "original cleanup failure" in views[-1].message

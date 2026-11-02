@@ -126,7 +126,7 @@ def test_verification_fully_decodes_even_when_digest_matches(delivery):  # noqa:
         export.verify_tray_export(store, 1)
 
 
-def test_cleanup_rechecks_keep_raw_after_committing(delivery, monkeypatch):  # noqa: F811
+def test_cleanup_finishes_committed_removal_if_keep_raw_changes(delivery, monkeypatch):  # noqa: F811
     store, directory = delivery
     export.export_batch(store, directory, "jpeg")
     original = store.update
@@ -139,9 +139,8 @@ def test_cleanup_rechecks_keep_raw_after_committing(delivery, monkeypatch):  # n
         return result
 
     monkeypatch.setattr(store, "update", keep_raw_after_commit)
-    with pytest.raises(export.CleanupRefused, match="keep raw"):
-        export.cleanup_raw(store, 1)
-    assert store.sweep_dir(1, 1).is_dir()
+    export.cleanup_raw(store, 1)
+    assert not store.sweep_dir(1, 1).exists()
     assert store.snapshot().trays[0].raw_removed
 
 

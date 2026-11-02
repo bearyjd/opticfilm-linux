@@ -1,5 +1,6 @@
 """Write finished slides to disk with sequence numbers and an embedded sRGB profile."""
 
+import errno
 import hashlib
 import os
 import re
@@ -47,6 +48,7 @@ class OutputSpec:
     scan_dpi: int | None = field(default=None, kw_only=True)
     jpeg_size: JpegSize = field(default="full", kw_only=True)
     metadata: JpegMetadata | None = field(default=None, kw_only=True)
+    export_root: Path | None = field(default=None, kw_only=True)
 
     position: int | None = field(default=None, kw_only=True)
     sequence_stride: int = field(default=1, kw_only=True)
@@ -97,6 +99,7 @@ def _directory_fd(directory: Path, *, create: bool):
                     raise
                 try:
                     os.mkdir(component, dir_fd=descriptor)
+                    os.fsync(descriptor)
                 except FileExistsError:
                     pass
                 child = os.open(component, flags, dir_fd=descriptor)
@@ -183,11 +186,25 @@ class _XmpWriter:
         self.handle.flush()
 
 
-def _sync_directories(directory: Path) -> None:
-    # Every ancestor may be newly created, or left unsynced by an earlier failed export.
-    for parent in (directory.absolute(), *directory.absolute().parents):
+def _sync_directory(descriptor: int) -> None:
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
+
+
+def _sync_directories(directory: Path, root: Path | None = None) -> None:
+    root = (root or directory).absolute()
+    parent = directory.absolute()
+    if not parent.is_relative_to(root):
+        raise ValueError("Export directory must be inside the export root")
+    while True:
         with _directory_fd(parent, create=False) as descriptor:
-            os.fsync(descriptor)
+            _sync_directory(descriptor)
+        if parent == root:
+            return
+        parent = parent.parent
 
 
 def _written_digest(handle: BinaryIO) -> str:
@@ -226,7 +243,7 @@ def _write_claimed_slide(
         if not _same_file(parent, path.name, opened):
             raise ValueError("Export file changed while writing; retry the export.")
         if on_written is not None:
-            _sync_directories(spec.directory)
+            _sync_directories(spec.directory, spec.export_root)
             _check_directory_identity(spec.directory, parent)
             if not _same_file(parent, path.name, opened):
                 raise ValueError("Export file changed while writing; retry the export.")

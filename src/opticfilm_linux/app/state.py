@@ -1,7 +1,7 @@
 """Immutable snapshots of everything the window shows, built from the manifest."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.batch.model import (
@@ -143,7 +143,11 @@ def _tray_row(
     return TrayRow(
         number=tray.number,
         stage=tray.stage,
-        stage_text=stage_text(tray.stage),
+        stage_text=(
+            "Raw removal pending"
+            if tray.raw_removed and tray.auto == "verified"
+            else stage_text(tray.stage)
+        ),
         progress=progress.get(tray.number),
         elapsed_s=elapsed,
         error=tray.error,
@@ -305,6 +309,11 @@ def build_state(
     )
 
 
+def _release_needed(manifest: BatchManifest) -> bool:
+    defaults = replace(manifest.defaults, auto_export=False, keep_raw=False)
+    return not manifest.first_tray_released or manifest.released_render != defaults
+
+
 def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
     if manifest is None:
         return {}
@@ -317,8 +326,10 @@ def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
     held = (
         first.number
         if first is not None
-        and first.auto == "held"
-        and not first.raw_removed
+        and first.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)
+        and first.auto not in ("pending", "exported", "verified")
+        and _release_needed(manifest)
+        and manifest.defaults.auto_export
         and not manifest.defaults.keep_raw
         and not readonly
         else None

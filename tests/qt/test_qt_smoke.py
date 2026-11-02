@@ -707,6 +707,14 @@ def test_automatic_first_tray_can_be_checked_and_freed(loaded, tmp_path):
     assert button.property("visible")
     assert "flagged" in bridge.autoStatus.lower()
     assert len(list((tmp_path / "photos").glob("*.jpg"))) == 4
+    for position in range(1, 5):
+        bridge.setAccepted(1, position, True)
+    _wait(
+        bridge,
+        lambda: all(
+            s.owner_decided for s in bridge._controller._session.store.snapshot().trays[0].slides
+        ),
+    )
     QMetaObject.invokeMethod(button, "click")
     raw_role = next(
         role for role, name in bridge.trays.roleNames().items() if bytes(name) == b"rawRemoved"

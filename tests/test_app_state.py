@@ -249,3 +249,41 @@ def test_keep_raw_and_readonly_hide_first_tray_release():
     assert _build(manifest).held_tray is None
     manifest = replace(manifest, defaults=replace(manifest.defaults, keep_raw=False))
     assert _build(manifest, readonly=True).held_tray is None
+
+
+@pytest.mark.parametrize("auto", ["off", "failed", "freed", "blocked"])
+def test_first_settings_release_available_without_freeable_first_tray(auto):
+    manifest = _manifest()
+    first = replace(manifest.trays[0], auto=auto, raw_removed=auto == "freed")
+    manifest = replace(
+        manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    assert _build(manifest).held_tray == first.number
+    assert (
+        _build(
+            replace(
+                manifest,
+                first_tray_released=True,
+                released_render=replace(manifest.defaults, auto_export=False, keep_raw=False),
+            )
+        ).held_tray
+        is None
+    )
+
+
+def test_changed_render_settings_offer_new_owner_release():
+    manifest = _manifest()
+    approved = replace(manifest.defaults, auto_export=False, keep_raw=False)
+    manifest = replace(
+        manifest,
+        defaults=replace(manifest.defaults, auto_export=True, jpeg_size="3600"),
+        first_tray_released=True,
+        released_render=approved,
+    )
+    assert _build(manifest).held_tray == manifest.trays[0].number
+
+
+def test_committed_cleanup_waiting_for_completion_is_visible():
+    manifest = _manifest()
+    tray = replace(manifest.trays[0], raw_removed=True, auto="verified", cleanup_sweeps=(1,))
+    assert _build(replace(manifest, trays=(tray,))).trays[0].stage_text == "Raw removal pending"

@@ -162,7 +162,7 @@ def test_auto_never_free_verification_failure(store, monkeypatch, damage):
         store.update_tray(1, slides=(dataclasses.replace(slide, exported=False), *tray.slides[1:]))
     auto.confirm_free_held(1)
     assert not store.snapshot().trays[0].raw_removed
-    assert not store.snapshot().first_tray_released
+    assert store.snapshot().first_tray_released
     assert store.snapshot().trays[0].auto == "failed"
     assert store.snapshot().trays[0].auto_failed == (1,)
 
@@ -316,7 +316,7 @@ def test_auto_never_free_when_owner_edits_during_verification(store):
     auto.run(2)
     assert changed
     assert not store.snapshot().trays[1].raw_removed
-    assert store.snapshot().trays[1].auto == "failed"
+    assert store.snapshot().trays[1].auto == "held"
 
 
 def test_export_geometry_records_rotated_array_not_fixed_dimensions(store, monkeypatch):
@@ -673,6 +673,7 @@ def test_auto_cleanup_failure_uses_current_flag_and_folders(store, monkeypatch, 
     else:
         assert "manifest marks the raw scans as freed but sweep folders remain" in error
     if state == "committed":
+        assert "removal pending; raw still present" in error
         assert "remaining scans cannot be used" in error
 
 
@@ -729,3 +730,161 @@ def test_auto_preserves_owner_needs_look_before_queued_or_resumed_run(store, reo
     finally:
         if reopened:
             store.close()
+
+
+def test_automatic_acceptance_is_not_an_owner_decision(store):
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    slides = store.snapshot().trays[0].slides
+    assert all(s.auto_accepted and not s.owner_decided for s in slides)
+    review.set_slide_status(store, 1, 1, SlideStatus.ACCEPTED)
+    slide = store.snapshot().trays[0].slides[0]
+    assert slide.owner_decided and not slide.auto_accepted
+
+
+def test_auto_flags_hold_cleanup_until_owner_review(store):
+    tray = store.snapshot().trays[1]
+    store.update_tray(
+        2, slides=(dataclasses.replace(tray.slides[0], flags=(Flag.DUST,)), *tray.slides[1:])
+    )
+    exports.release_first_tray(store, 1)
+    auto = pipeline(store)
+    auto.arm(2)
+    auto.run(2)
+    assert auto._tray(2).auto == "held"
+    assert not auto._tray(2).raw_removed
+    assert 2 not in auto.resume()
+    review.set_slide_status(store, 2, 1, SlideStatus.ACCEPTED)
+    assert 2 in auto.resume()
+    auto.run(2)
+    assert auto._tray(2).auto == "freed"
+
+
+@pytest.mark.parametrize("keep_raw", [False, True])
+@pytest.mark.parametrize("folders", [False, True])
+def test_auto_disabled_recovers_committed_cleanup(store, keep_raw, folders):
+    import shutil
+
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    store.update_tray(1, auto="verified", raw_removed=True)
+    if not folders:
+        shutil.rmtree(store.sweep_dir(1, 1))
+    store.update(
+        lambda m: dataclasses.replace(
+            m, defaults=dataclasses.replace(m.defaults, auto_export=False, keep_raw=keep_raw)
+        )
+    )
+    assert 1 in auto.resume()
+    auto.run(1)
+    assert auto._tray(1).auto == "freed"
+    assert not store.sweep_dir(1, 1).exists()
+
+
+def test_first_release_does_not_require_freeable_first_tray(store):
+    auto = pipeline(store)
+    auto.arm(1)
+    review.set_slide_status(store, 1, 1, SlideStatus.NEEDS_LOOK)
+    auto.run(1)
+    assert auto._tray(1).auto == "blocked"
+    auto.arm(2)
+    auto.run(2)
+    auto.confirm_free_held(1)
+    assert store.snapshot().first_tray_released
+    assert not auto._tray(1).raw_removed
+    assert 2 in auto.resume()
+    auto.run(2)
+    assert auto._tray(2).raw_removed
+
+
+def test_owner_held_auto_slide_is_blocked_without_export_failure(store):
+    auto = pipeline(store)
+    auto.arm(2)
+    review.set_slide_status(store, 2, 2, SlideStatus.NEEDS_LOOK)
+    auto.run(2)
+    tray = auto._tray(2)
+    assert tray.auto == "blocked" and tray.auto_failed == ()
+    assert "owner review" in tray.auto_error
+    assert not any(s.exported for s in tray.slides)
+
+
+def test_keep_raw_held_tray_resumes_after_setting_change(store):
+    store.update(
+        lambda m: dataclasses.replace(
+            m, first_tray_released=True, defaults=dataclasses.replace(m.defaults, keep_raw=True)
+        )
+    )
+    exports.release_first_tray(store, 1)
+    auto = pipeline(store)
+    auto.arm(2)
+    auto.run(2)
+    assert auto._tray(2).auto == "held"
+    store.update(
+        lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, keep_raw=False))
+    )
+    assert 2 in auto.resume()
+    auto.run(2)
+    assert auto._tray(2).raw_removed
+
+
+def test_owner_acceptance_resumes_blocked_auto_export(store):
+    auto = pipeline(store)
+    auto.arm(2)
+    review.set_slide_status(store, 2, 2, SlideStatus.NEEDS_LOOK)
+    auto.run(2)
+    review.set_slide_status(store, 2, 2, SlideStatus.ACCEPTED)
+    assert 2 in auto.resume()
+    auto.run(2)
+    assert auto._tray(2).auto == "held"
+    assert all(s.exported for s in auto._tray(2).slides)
+
+
+@pytest.mark.parametrize("phase", ["exported", "verified"])
+def test_disabled_auto_preserves_incomplete_export_phase(store, phase):
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    store.update_tray(1, auto=phase)
+    store.update(
+        lambda m: dataclasses.replace(
+            m, defaults=dataclasses.replace(m.defaults, auto_export=False)
+        )
+    )
+    auto.run(1)
+    assert auto._tray(1).auto == phase
+    assert not auto._tray(1).raw_removed
+
+
+def test_owner_blank_is_skipped_without_blocking_other_exports(store):
+    tray = store.snapshot().trays[1]
+    store.update_tray(
+        2,
+        slides=(
+            dataclasses.replace(tray.slides[0], status=SlideStatus.BLANK, owner_decided=True),
+            *tray.slides[1:],
+        ),
+    )
+    auto = pipeline(store)
+    auto.arm(2)
+    auto.run(2)
+    tray = auto._tray(2)
+    assert tray.auto == "held"
+    assert not tray.slides[0].exported
+    assert all(s.exported for s in tray.slides[1:])
+
+
+def test_verified_tray_waits_for_preview_updates(store):
+    auto = pipeline(store)
+    auto.arm(2)
+    auto.run(2)
+    tray = auto._tray(2)
+    store.update_tray(
+        2,
+        auto="verified",
+        slides=(dataclasses.replace(tray.slides[0], preview_stale=True), *tray.slides[1:]),
+    )
+    auto.run(2)
+    assert auto._tray(2).auto == "held"
+    assert auto._tray(2).auto_failed == ()

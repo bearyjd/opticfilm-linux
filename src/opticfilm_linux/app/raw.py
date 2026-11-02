@@ -49,7 +49,8 @@ def _tray_failure(before: RawInventory, after: RawInventory, removed: bool, fold
         return outcome
     if removed:
         outcome = (
-            "raw cleanup incomplete; manifest marks the raw scans as freed but sweep folders remain"
+            "raw cleanup incomplete; removal pending; raw still present; "
+            "manifest marks the raw scans as freed but sweep folders remain"
         )
         if after:
             if before != after:

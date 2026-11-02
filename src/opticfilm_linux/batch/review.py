@@ -74,7 +74,9 @@ def set_slide_status(store: BatchStore, number: int, position: int, status: Slid
         tray, slide = _find(manifest, number, position)
         if slide.status is SlideStatus.BLANK:
             raise BatchError(f"slide {position} of tray {number} is blank")
-        return _replace_slide(manifest, tray, slide, status=status, owner_decided=True)
+        return _replace_slide(
+            manifest, tray, slide, status=status, owner_decided=True, auto_accepted=False
+        )
 
     store.update(change)
 
@@ -94,6 +96,7 @@ def apply_slide_settings(
             slide,
             settings=settings,
             owner_decided=True,
+            auto_accepted=False,
             # new settings make the exported file and the preview obsolete
             exported=slide.exported and not changed,
             preview_stale=slide.preview_stale or changed,
@@ -106,7 +109,9 @@ def accept_all(store: BatchStore) -> None:
     def accepted(slide: SlideRecord) -> SlideRecord:
         if slide.status is SlideStatus.BLANK:
             return slide
-        return dataclasses.replace(slide, status=SlideStatus.ACCEPTED, owner_decided=True)
+        return dataclasses.replace(
+            slide, status=SlideStatus.ACCEPTED, owner_decided=True, auto_accepted=False
+        )
 
     def change(manifest: BatchManifest) -> BatchManifest:
         for tray in manifest.trays:
@@ -123,7 +128,7 @@ def accept_all(store: BatchStore) -> None:
     store.update(change)
 
 
-def accept_tray(store: BatchStore, number: int) -> None:
+def accept_tray(store: BatchStore, number: int, *, automatic: bool = False) -> None:
     """Accept every position for automatic export, preserving flags and owner choices."""
 
     def change(manifest: BatchManifest) -> BatchManifest:
@@ -134,7 +139,9 @@ def accept_tray(store: BatchStore, number: int) -> None:
         slides = tuple(
             s
             if s.owner_decided
-            else dataclasses.replace(s, status=SlideStatus.ACCEPTED, owner_decided=True)
+            else dataclasses.replace(
+                s, status=SlideStatus.ACCEPTED, owner_decided=not automatic, auto_accepted=automatic
+            )
             for s in tray.slides
         )
         return dataclasses.replace(

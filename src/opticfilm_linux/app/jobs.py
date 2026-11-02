@@ -163,16 +163,29 @@ def run_free_space(
             store, on_progress=progress, cancel=cancel, only=numbers, release_first=release_first
         )
     except BaseException as exc:
+        _publish_cleanup_failure(store, numbers, before, base, publish, exc)
+        raise
+    publish(FreeSpaceView(base.trays, base.total_bytes, running=False, total=total, freed=freed))
+
+
+def _publish_cleanup_failure(store, numbers, before, base, publish, exc) -> None:
+    """Reporting failure must preserve the cleanup exception and its traceback."""
+    try:
         after = raw_inventory(store, numbers)
         outcome = raw_failure(store, numbers, before, after)
+        freed = bytes_removed(before, after)
+    except Exception as evidence_error:
+        outcome = f"raw cleanup outcome unknown (could not inspect raw files: {evidence_error})"
+        freed = None
+    try:
         publish(
             FreeSpaceView(
                 base.trays,
                 base.total_bytes,
                 running=False,
-                freed=bytes_removed(before, after),
+                freed=freed,
                 message=f"Cleanup failed; {outcome}. {exc}",
             )
         )
-        raise
-    publish(FreeSpaceView(base.trays, base.total_bytes, running=False, total=total, freed=freed))
+    except Exception:
+        pass  # preserve the original cleanup failure if publishing also fails

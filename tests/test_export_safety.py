@@ -138,17 +138,18 @@ def test_cleanup_rechecks_jpeg_after_committing(delivery, monkeypatch, replaceme
 
     def change_after_commit(change):
         manifest = original(change)
-        if replacement == "missing":
-            path.unlink()
-        else:
-            Image.new("RGB", (40, 32), "red").save(path, "JPEG")
+        if manifest.trays[0].raw_removed:
+            if replacement == "missing":
+                path.unlink()
+            else:
+                Image.new("RGB", (40, 32), "red").save(path, "JPEG")
         return manifest
 
     monkeypatch.setattr(store, "update", change_after_commit)
     with pytest.raises(export.ExportVerificationFailed):
         export.cleanup_raw(store, 1)
     assert store.sweep_dir(1, 1).is_dir()
-    assert store.snapshot().trays[0].raw_removed  # committed before the final refusal
+    assert not store.snapshot().trays[0].raw_removed  # no deletion began
 
 
 @pytest.mark.parametrize("ancestor", ["tray", "trays"])
@@ -166,8 +167,9 @@ def test_cleanup_rechecks_ancestor_symlink_after_committing(delivery, monkeypatc
 
     def swap_after_commit(change):
         manifest = original(change)
-        target.rename(preserved)
-        target.symlink_to(outside, target_is_directory=True)
+        if manifest.trays[0].raw_removed:
+            target.rename(preserved)
+            target.symlink_to(outside, target_is_directory=True)
         return manifest
 
     monkeypatch.setattr(store, "update", swap_after_commit)
@@ -175,7 +177,7 @@ def test_cleanup_rechecks_ancestor_symlink_after_committing(delivery, monkeypatc
         export.cleanup_raw(store, 1)
     assert (preserved / relative_raw / "scan").read_bytes() == b"precious raw scan"
     assert sentinel.read_bytes() == b"outside scans must survive"
-    assert store.snapshot().trays[0].raw_removed
+    assert not store.snapshot().trays[0].raw_removed
 
 
 def test_verify_rejects_unrelated_same_size_valid_jpeg(delivery):

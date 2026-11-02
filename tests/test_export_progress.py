@@ -98,7 +98,7 @@ def test_export_to_unwritable_directory_raises_and_marks_nothing(store, tmp_path
 def test_freeable_trays_lists_only_fully_exported(store, tmp_path):
     accept_all(store)
     assert freeable_trays(store) == ()
-    export_batch(store, tmp_path / "out")
+    export_batch(store, tmp_path / "out", "jpeg")
     found = freeable_trays(store)
     assert [f.number for f in found] == [1, 2] and all(f.bytes > 0 for f in found)
     cleanup_raw(store, 1)
@@ -107,7 +107,7 @@ def test_freeable_trays_lists_only_fully_exported(store, tmp_path):
 
 def test_free_space_returns_bytes_freed_and_reports_progress(store, tmp_path):
     accept_all(store)
-    export_batch(store, tmp_path / "out")
+    export_batch(store, tmp_path / "out", "jpeg")
     expected = sum(f.bytes for f in freeable_trays(store))
     calls: list[tuple[int, int]] = []
     freed = free_space(store, on_progress=lambda d, t: calls.append((d, t)))
@@ -117,7 +117,7 @@ def test_free_space_returns_bytes_freed_and_reports_progress(store, tmp_path):
 
 def test_free_space_cancel_stops_between_trays(store, tmp_path):
     accept_all(store)
-    export_batch(store, tmp_path / "out")
+    export_batch(store, tmp_path / "out", "jpeg")
     cancel = threading.Event()
     free_space(store, on_progress=lambda *_: cancel.set(), cancel=cancel)
     assert [t.raw_removed for t in store.snapshot().trays] == [True, False]
@@ -126,7 +126,7 @@ def test_free_space_cancel_stops_between_trays(store, tmp_path):
 
 def test_free_space_only_removes_the_listed_trays(store, tmp_path):
     accept_all(store)
-    export_batch(store, tmp_path / "out")
+    export_batch(store, tmp_path / "out", "jpeg")
     freed = free_space(store, only=(1,))
     assert [t.raw_removed for t in store.snapshot().trays] == [True, False]
     assert freed > 0

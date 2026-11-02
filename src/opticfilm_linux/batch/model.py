@@ -86,6 +86,7 @@ class ExportRecord:
     export_path: str = ""
     size_bytes: int = 0
     sha256: str = ""
+    render_signature: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ class SlideRecord:
     flags: tuple[Flag, ...] = ()
     settings: SlideSettings = field(default_factory=SlideSettings)
     owner_decided: bool = False
+    auto_accepted: bool = False
     exported: bool = False
     preview_stale: bool = False  # settings changed but the preview was not redone yet
     export_path: str = ""
@@ -146,6 +148,11 @@ class TrayLocation:
             raise ValueError("capacity must be 4 or 6")
 
 
+AutoState = Literal[
+    "", "pending", "exported", "verified", "freed", "held", "failed", "off", "blocked"
+]
+
+
 @dataclass(frozen=True)
 class TrayRecord:
     number: int
@@ -155,7 +162,8 @@ class TrayRecord:
     slides: tuple[SlideRecord, ...] = ()
     error: str | None = None
     raw_removed: bool = False
-    auto: Literal["", "pending", "exported", "verified", "freed", "held", "failed", "off"] = ""
+    cleanup_sweeps: tuple[int, ...] = ()
+    auto: AutoState = ""
     auto_error: str = ""
     auto_failed: tuple[int, ...] = ()
     auto_flagged: tuple[int, ...] = ()
@@ -234,6 +242,7 @@ class BatchManifest:
     trays: tuple[TrayRecord, ...] = ()
     version: int = 1
     first_tray_released: bool = False
+    released_render: BatchDefaults | None = None
     collection: str = ""
     box: int = 1
     section: str = "a"

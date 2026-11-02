@@ -536,3 +536,41 @@ def _confirmed_first_cleanup(store, cancel, publish, numbers, *, release_first=F
         )
     )
     publish(FreeSpaceView(((1, 10),), 10, freed=10))
+
+
+def test_disabled_auto_still_dispatches_committed_cleanup(sweep600_dir, tmp_path, monkeypatch):
+    called = threading.Event()
+
+    class Pipeline:
+        def __init__(self, store, **kwargs):
+            self.store = store
+
+        def resume(self):
+            return (1, 2)
+
+        def arm(self, number):
+            return False
+
+        def run(self, number):
+            assert number == 1
+            called.set()
+
+    monkeypatch.setattr(controller_module, "AutoPipeline", Pipeline)
+    c = make_controller(sweep600_dir)
+    try:
+        open_new(c, tmp_path / "batch")
+        store = c._session.store
+        store.update(
+            lambda m: dataclasses.replace(
+                m,
+                trays=(
+                    TrayRecord(1, TrayStage.EXPORTED, auto="verified", raw_removed=True),
+                    TrayRecord(2, TrayStage.REVIEW, auto="pending"),
+                ),
+            )
+        )
+        c._auto_due.update((1, 2))
+        c._submit_auto_due()
+        assert called.wait(3)
+    finally:
+        c.shutdown()
