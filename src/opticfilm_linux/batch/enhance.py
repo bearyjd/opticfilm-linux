@@ -82,19 +82,14 @@ def _merge_slide(
     defaults: BatchDefaults,
     publish: Callable[[], None] = lambda: None,
 ) -> None:
-    """Write fresh flags (and an automatic status) into the slide's *current* record.
-
-    Results computed from an out-of-date snapshot are dropped: the sweep was replaced by a
-    re-scan, the tray mode or the batch defaults (orientation) changed, or the owner changed
-    this slide's settings meanwhile (a newer job is queued for those). The owner's status,
-    settings and export mark are never overwritten, because only flags and an automatic status
-    are written, onto the live record. ``publish`` (moving the new previews into place) runs
-    under the store's lock and only when the result is kept, so a preview of an old
-    orientation or old settings is never shown.
+    """Keep owner choices; drop stale results and results arriving after raw cleanup.
+    ``publish`` moves previews into place under the store lock only when the result is kept.
     """
 
     def change(manifest: BatchManifest) -> BatchManifest:
         now = _tray(manifest, number)
+        if now.raw_removed:
+            return manifest
         if now.sweep_version != tray.sweep_version or now.mode != tray.mode:
             return manifest
         if manifest.defaults != defaults:
@@ -179,6 +174,7 @@ def enhance_tray(
         number,
         lambda t: (
             t.stage is not TrayStage.SCANNING
+            and not t.raw_removed
             and not is_interrupted(t)
             and t.sweep_version == version
         ),
@@ -187,6 +183,8 @@ def enhance_tray(
     )
     if not started:
         now = _tray(store.snapshot(), number)
+        if now.raw_removed:
+            raise RawRemoved(f"the raw scans of tray {number} were removed")
         if now.stage is TrayStage.SCANNING:
             raise BatchError(f"tray {number} is still scanning")
         if is_interrupted(now):  # a partial payload is never treated as a finished tray
@@ -194,7 +192,7 @@ def enhance_tray(
         return  # the tray was re-scanned meanwhile; a newer job will handle it
 
     def current(t: TrayRecord) -> bool:
-        return t.sweep_version == version and t.stage is TrayStage.ENHANCING
+        return not t.raw_removed and t.sweep_version == version and t.stage is TrayStage.ENHANCING
 
     try:
         sweep = load_sweep(store.sweep_dir(number, version))

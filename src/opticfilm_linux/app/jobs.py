@@ -153,7 +153,6 @@ def run_free_space(
     base = _candidates_view(tuple(f for f in freeable_trays(store) if f.number in numbers))
     total = len(base.trays)
     before = raw_inventory(store, numbers)
-    already_removed = any(t.raw_removed for t in store.snapshot().trays if t.number in numbers)
 
     def progress(done: int, _total: int) -> None:
         publish(FreeSpaceView(base.trays, base.total_bytes, running=True, done=done, total=total))
@@ -165,9 +164,7 @@ def run_free_space(
         )
     except BaseException as exc:
         after = raw_inventory(store, numbers)
-        outcome = raw_failure(before, after, already_removed=already_removed)
-        if len(set(numbers)) > 1 and before != after and after:
-            outcome = "some raw data removed; remaining raw files are still on disk"
+        outcome = raw_failure(store, numbers, before, after)
         publish(
             FreeSpaceView(
                 base.trays,

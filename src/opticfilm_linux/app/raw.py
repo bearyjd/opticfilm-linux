@@ -19,16 +19,48 @@ def raw_inventory(store: BatchStore, numbers: Collection[int]) -> RawInventory:
     return files
 
 
-def raw_failure(before: RawInventory, after: RawInventory, *, already_removed: bool = False) -> str:
-    if not after and (before or already_removed):
-        return "raw data removed; could not save cleanup completion"
-    if before == after:
-        if already_removed:
-            return "raw cleanup incomplete; remaining scans cannot be used"
-        return "raw data kept"
-    if after:
+def raw_failure(
+    store: BatchStore, numbers: Collection[int], before: RawInventory, after: RawInventory
+) -> str:
+    trays = {t.number: t for t in store.snapshot().trays}
+    outcomes = []
+    for number in sorted(set(numbers)):
+        directory = store.tray_dir(number)
+        prior = {p: size for p, size in before.items() if p.is_relative_to(directory)}
+        current = {p: size for p, size in after.items() if p.is_relative_to(directory)}
+        removed = number in trays and trays[number].raw_removed
+        folders = any(directory.glob("sweep-*"))
+        outcomes.append((number, _tray_failure(prior, current, removed, folders)))
+    if len(outcomes) == 1:
+        return outcomes[0][1]
+    summary = "; ".join(f"Tray {number}: {outcome}" for number, outcome in outcomes)
+    if before != after and after:
+        return "some raw data removed; remaining raw files are still on disk. " + summary
+    return summary
+
+
+def _tray_failure(before: RawInventory, after: RawInventory, removed: bool, folders: bool) -> str:
+    if not folders:
+        outcome = "raw data removed; could not save cleanup completion"
+        if not removed:
+            outcome += (
+                "; manifest still marks the raw scans as available but sweep folders are absent"
+            )
+        return outcome
+    if removed:
+        outcome = (
+            "raw cleanup incomplete; manifest marks the raw scans as freed but sweep folders remain"
+        )
+        if after:
+            if before != after:
+                outcome += "; raw data partly removed"
+            outcome += "; remaining scans cannot be used"
+        return outcome
+    if not after:
+        return "raw cleanup incomplete; sweep folders remain without raw files"
+    if before != after:
         return "raw data partly removed; remaining scans cannot be used"
-    return "raw data removed; could not save cleanup completion"
+    return "raw data kept"
 
 
 def bytes_removed(before: RawInventory, after: RawInventory) -> int:

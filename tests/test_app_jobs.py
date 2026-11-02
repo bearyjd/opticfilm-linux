@@ -105,6 +105,86 @@ def test_failed_multi_tray_cleanup_does_not_call_intact_remaining_tray_unusable(
         assert (store.sweep_dir(2, 1) / "raw").read_bytes() == b"1234567"
 
 
+@pytest.mark.parametrize("state", ["committed", "empty", "gone", "absent"])
+def test_failed_manual_cleanup_uses_current_flag_and_folders(tmp_path, monkeypatch, state):
+    from opticfilm_linux.app import jobs
+    from opticfilm_linux.batch.export import FreeableTray
+
+    with BatchStore.create(tmp_path / "b", "B") as store:
+        store.update(lambda m: replace(m, trays=(TrayRecord(1, TrayStage.EXPORTED),)))
+        folder = store.sweep_dir(1, 1)
+        folder.mkdir(parents=True)
+        raw = folder / "raw"
+        raw.write_bytes(b"12345")
+        if state == "absent":
+            raw.unlink()
+            folder.rmdir()
+        monkeypatch.setattr(jobs, "freeable_trays", lambda _: (FreeableTray(1, 5),))
+
+        def fail(*args, **kwargs):
+            if state in ("committed", "empty"):
+                store.update_tray(1, raw_removed=True)
+            if state in ("empty", "gone"):
+                raw.unlink()
+            if state == "gone":
+                folder.rmdir()
+            raise OSError("cleanup interrupted")
+
+        monkeypatch.setattr(jobs, "free_space", fail)
+        views = []
+        with pytest.raises(OSError, match="cleanup interrupted"):
+            jobs.run_free_space(store, threading.Event(), views.append, (1,))
+        message = views[-1].message.lower()
+        assert "raw data kept" not in message
+        expected = "raw data removed" if state in ("gone", "absent") else "cleanup incomplete"
+        assert expected in message
+        if state in ("gone", "absent"):
+            assert (
+                "manifest still marks the raw scans as available but sweep folders are absent"
+                in message
+            )
+        else:
+            assert "manifest marks the raw scans as freed but sweep folders remain" in message
+        assert views[-1].freed == (5 if state in ("empty", "gone") else 0)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_failed_multi_tray_cleanup_identifies_committed_remaining_tray(
+    tmp_path, monkeypatch, partial
+):
+    from opticfilm_linux.app import jobs
+    from opticfilm_linux.batch.export import FreeableTray
+
+    with BatchStore.create(tmp_path / "b", "B") as store:
+        store.update(
+            lambda m: replace(m, trays=tuple(TrayRecord(n, TrayStage.EXPORTED) for n in (1, 2)))
+        )
+        for number in (1, 2):
+            folder = store.sweep_dir(number, 1)
+            folder.mkdir(parents=True)
+            (folder / "raw").write_bytes(b"12345")
+            (folder / "second").write_bytes(b"12345")
+        monkeypatch.setattr(
+            jobs, "freeable_trays", lambda _: (FreeableTray(1, 10), FreeableTray(2, 10))
+        )
+
+        def fail(*args, **kwargs):
+            store.update_tray(1, raw_removed=True)
+            if partial:
+                (store.sweep_dir(1, 1) / "raw").unlink()
+            raise OSError("deletion failed")
+
+        monkeypatch.setattr(jobs, "free_space", fail)
+        views = []
+        with pytest.raises(OSError, match="deletion failed"):
+            jobs.run_free_space(store, threading.Event(), views.append, (1, 2))
+        message = views[-1].message.lower()
+        assert "cleanup incomplete" in message
+        assert "remaining scans cannot be used" in message
+        assert "tray 1" in message and "tray 2" in message
+        assert views[-1].freed == (5 if partial else 0)
+
+
 @pytest.fixture
 def two_trays(sweep600_dir, tmp_path):
     """A controller with two scanned, reviewed and accepted trays (8 slides)."""

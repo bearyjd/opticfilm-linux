@@ -22,7 +22,7 @@ from typing import Literal
 
 from PIL import Image
 
-from opticfilm_linux.batch.enhance import options_for
+from opticfilm_linux.batch.enhance import RawRemoved, options_for
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
@@ -94,6 +94,8 @@ def _mark_exported(
 
     def change(manifest: BatchManifest) -> BatchManifest:
         nonlocal outcome
+        if _tray(manifest, number).raw_removed:
+            raise RawRemoved(f"the raw scans of tray {number} were removed")
         if _render_defaults(manifest.defaults) != _render_defaults(defaults):
             return manifest
         trays = []
@@ -122,6 +124,8 @@ def _mark_exported(
 
 def _finish_tray_if_done(store: BatchStore, number: int) -> None:
     def done(tray: TrayRecord) -> bool:  # judged on the live tray, under the store's lock
+        if tray.raw_removed:
+            return False
         real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
         everything = all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
         return tray.stage is TrayStage.REVIEW and bool(tray.slides) and everything

@@ -88,11 +88,11 @@ class AutoPipeline:
             return
         before = raw_inventory(self.store, (number,))
         try:
-            if tray.auto == "pending" and not self._export_pending(number):
+            if tray.auto == "pending" and not self._export_pending(number, before=before):
                 return
             self._verify_and_finish(number)
         except Exception as exc:
-            self._failed(number, exc, before=before, already_removed=tray.raw_removed)
+            self._failed(number, exc, before=before)
 
     def _accept_pending(self, number: int) -> None:
         tray = self._tray(number)
@@ -110,7 +110,7 @@ class AutoPipeline:
         self._update(number, auto_flagged=flagged)
         accept_tray(self.store, number)
 
-    def _export_pending(self, number: int) -> bool:
+    def _export_pending(self, number: int, *, before) -> bool:
         self._accept_pending(number)
         defaults = self.store.snapshot().defaults
         if not defaults.export_dir:
@@ -134,25 +134,26 @@ class AutoPipeline:
                 failed.append(slide.position)
                 errors.append(f"Slide {slide.position}: {exc}")
         if failed:
+            outcome = raw_failure(
+                self.store, (number,), before, raw_inventory(self.store, (number,))
+            )
             self._update(
                 number,
                 auto="failed",
                 auto_failed=tuple(failed),
-                auto_error="raw data kept. " + "; ".join(errors),
+                auto_error=outcome + ". " + "; ".join(errors),
             )
             return False
         self._update(number, auto="exported")
         return True
 
-    def _failed(self, number: int, exc: Exception, *, before, already_removed: bool) -> None:
+    def _failed(self, number: int, exc: Exception, *, before) -> None:
         positions = (
             (exc.position,)
             if isinstance(exc, ExportVerificationFailed)
             else tuple(s.position for s in self._tray(number).slides if not s.exported)
         )
-        outcome = raw_failure(
-            before, raw_inventory(self.store, (number,)), already_removed=already_removed
-        )
+        outcome = raw_failure(self.store, (number,), before, raw_inventory(self.store, (number,)))
         self._update(number, auto="failed", auto_error=f"{outcome}. {exc}", auto_failed=positions)
 
     def _verify_and_finish(self, number: int, *, release: bool = False) -> None:
@@ -182,8 +183,7 @@ class AutoPipeline:
         if number != min(t.number for t in manifest.trays) or self._tray(number).auto != "held":
             return
         before = raw_inventory(self.store, (number,))
-        already_removed = self._tray(number).raw_removed
         try:
             self._verify_and_finish(number, release=True)
         except Exception as exc:
-            self._failed(number, exc, before=before, already_removed=already_removed)
+            self._failed(number, exc, before=before)

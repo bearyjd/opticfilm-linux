@@ -82,16 +82,22 @@ class BatchRunner:
     def rescan_tray(self, number: int) -> int:
         """Scan a tray again, keeping the old sweep. The tray must be in review or failed."""
         tray = self._tray(number)
+        review._require_raw(tray)
         if tray.stage not in RESCANNABLE:
             raise BatchError(
                 f"tray {number} is {tray.stage}; it can only be re-scanned from review"
             )
         self._require_ready()
+
+        def can_start(current: TrayRecord) -> bool:
+            review._require_raw(current)
+            return current.stage in RESCANNABLE and current.sweep_version == tray.sweep_version
+
         with self._scan_guard:
             self._require_no_scan_pending()
             started = self._store.update_tray_if(
                 number,
-                lambda t: t.stage in RESCANNABLE and t.sweep_version == tray.sweep_version,
+                can_start,
                 stage=TrayStage.SCANNING,
                 sweep_version=tray.sweep_version + 1,
                 slides=(),

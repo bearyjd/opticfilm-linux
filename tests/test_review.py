@@ -156,14 +156,16 @@ def test_unknown_tray_or_slide_raises_nosuchslide(store):
         set_tray_mode(store, 9, "negative")
 
 
-def test_removed_raw_blocks_edits_but_not_accepting(store):
+def test_removed_raw_blocks_edits_and_accepting(store):
     store.update_tray(1, raw_removed=True)
     with pytest.raises(RawRemoved):
         apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
     with pytest.raises(RawRemoved):
         set_tray_mode(store, 1, "negative")
-    set_slide_status(store, 1, 1, SlideStatus.ACCEPTED)
-    accept_all(store)
+    with pytest.raises(RawRemoved):
+        set_slide_status(store, 1, 1, SlideStatus.ACCEPTED)
+    with pytest.raises(RawRemoved):
+        accept_all(store)
 
 
 def test_edit_slide_re_enhances_in_the_background(store, sweep_dir):

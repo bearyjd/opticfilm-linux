@@ -40,6 +40,7 @@ def _find(manifest: BatchManifest, number: int, position: int | None = None):
 def _replace_slide(
     manifest: BatchManifest, tray: TrayRecord, slide: SlideRecord, **changes
 ) -> BatchManifest:
+    _require_raw(tray)
     new_slide = dataclasses.replace(slide, **changes)
     slides = tuple(new_slide if s.position == slide.position else s for s in tray.slides)
     trays = tuple(
@@ -52,9 +53,13 @@ def _replace_slide(
 EDITABLE_STAGES = (TrayStage.REVIEW, TrayStage.ENHANCING)
 
 
-def _require_editable(tray: TrayRecord) -> None:
+def _require_raw(tray: TrayRecord) -> None:
     if tray.raw_removed:
         raise RawRemoved(f"the raw scans of tray {tray.number} were removed")
+
+
+def _require_editable(tray: TrayRecord) -> None:
+    _require_raw(tray)
     if tray.stage not in EDITABLE_STAGES:
         raise BatchError(
             f"tray {tray.number} is {tray.stage}; slides can only be edited while it is in review"
@@ -104,6 +109,9 @@ def accept_all(store: BatchStore) -> None:
         return dataclasses.replace(slide, status=SlideStatus.ACCEPTED, owner_decided=True)
 
     def change(manifest: BatchManifest) -> BatchManifest:
+        for tray in manifest.trays:
+            if tray.stage is TrayStage.REVIEW:
+                _require_raw(tray)
         trays = tuple(
             dataclasses.replace(t, slides=tuple(accepted(s) for s in t.slides))
             if t.stage is TrayStage.REVIEW
@@ -120,7 +128,8 @@ def accept_tray(store: BatchStore, number: int) -> None:
 
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, _ = _find(manifest, number)
-        if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED) or tray.raw_removed:
+        _require_raw(tray)
+        if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED):
             raise BatchError(f"tray {number} is not ready for automatic acceptance")
         slides = tuple(
             s

@@ -627,6 +627,82 @@ def test_auto_recovered_cleanup_failure_never_claims_raw_kept(store, monkeypatch
     assert ("cleanup incomplete" if remaining else "raw data removed") in error
 
 
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("state", ["committed", "empty", "gone", "absent"])
+def test_auto_cleanup_failure_uses_current_flag_and_folders(store, monkeypatch, held, state):
+    import shutil
+
+    from opticfilm_linux.app import auto as auto_module
+
+    auto = pipeline(store)
+    number = 1 if held else 2
+    if held:
+        auto.arm(number)
+        auto.run(number)
+    else:
+        store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+        auto.arm(number)
+    if state == "absent":
+        shutil.rmtree(store.sweep_dir(number, 1))
+
+    def fail_cleanup(*args, **kwargs):
+        folder = store.sweep_dir(number, 1)
+        if state == "gone":
+            shutil.rmtree(folder)
+        elif state != "absent":
+            store.update_tray(number, raw_removed=True)
+            if state == "empty":
+                (folder / "raw").unlink()
+        raise OSError("cleanup interrupted")
+
+    monkeypatch.setattr(auto_module, "cleanup_raw", fail_cleanup)
+    auto.confirm_free_held(number) if held else auto.run(number)
+    error = auto._tray(number).auto_error.lower()
+    assert "raw data kept" not in error
+    assert ("raw data removed" if state in ("gone", "absent") else "cleanup incomplete") in error
+    if state in ("gone", "absent"):
+        assert (
+            "manifest still marks the raw scans as available but sweep folders are absent" in error
+        )
+    else:
+        assert "manifest marks the raw scans as freed but sweep folders remain" in error
+    if state == "committed":
+        assert "remaining scans cannot be used" in error
+
+
+@pytest.mark.parametrize("state", ["committed", "gone", "freed"])
+def test_auto_slide_export_failure_reports_current_raw_state(store, monkeypatch, state):
+    import shutil
+
+    from opticfilm_linux.app import auto as auto_module
+
+    def fail_export(*args, **kwargs):
+        if state != "gone":
+            store.update_tray(2, raw_removed=True)
+        folder = store.sweep_dir(2, 1)
+        if state != "committed" and folder.exists():
+            shutil.rmtree(folder)
+        raise OSError("export interrupted")
+
+    monkeypatch.setattr(auto_module, "export_batch", fail_export)
+    auto = pipeline(store)
+    auto.arm(2)
+    auto.run(2)
+    tray = auto._tray(2)
+    assert tray.auto == "failed" and tray.auto_failed == (1, 2, 3)
+    assert "raw data kept" not in tray.auto_error
+    assert "export interrupted" in tray.auto_error
+    if state == "committed":
+        assert "manifest marks the raw scans as freed but sweep folders remain" in tray.auto_error
+    elif state == "gone":
+        assert (
+            "manifest still marks the raw scans as available but sweep folders are absent"
+            in tray.auto_error
+        )
+    else:
+        assert "raw data removed" in tray.auto_error
+
+
 @pytest.mark.parametrize("reopened", [False, True])
 def test_auto_preserves_owner_needs_look_before_queued_or_resumed_run(store, reopened):
     auto = pipeline(store)
