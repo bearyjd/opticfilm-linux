@@ -19,7 +19,7 @@ jobs:
   # runs in a Fedora container. It is not part of the required checks.
   qt:
     runs-on: ubuntu-latest
-    container: fedora:43
+    container: fedora:46
     steps:
       - run: dnf install -y git python3 python3-pyside6 kf6-kirigami qt6-qtdeclarative uv
       - uses: actions/checkout@v7
