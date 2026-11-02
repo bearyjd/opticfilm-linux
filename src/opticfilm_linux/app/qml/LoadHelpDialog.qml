@@ -34,7 +34,7 @@ Kirigami.Dialog {
             QQC2.Label {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                text: qsTr("After the scanner is switched on, the first holder is loaded from a terminal. Do these steps in order:")
+                text: qsTr("You can use Load in the app for the first holder after power-on. To load in a terminal instead, do these steps in order:")
             }
             QQC2.Label {
                 Layout.fillWidth: true
