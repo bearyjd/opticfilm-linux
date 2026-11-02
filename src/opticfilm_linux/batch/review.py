@@ -5,11 +5,14 @@ are refreshed but the owner's status and settings are never overwritten.
 """
 
 import dataclasses
+from collections.abc import Callable, Iterable, Mapping
+from types import MappingProxyType
 
 from opticfilm_linux.batch.enhance import RawRemoved
 from opticfilm_linux.batch.model import (
     BatchManifest,
     Mode,
+    SlideKey,
     SlideRecord,
     SlideSettings,
     SlideStatus,
@@ -182,3 +185,131 @@ def set_batch_orientation(store: BatchStore, rotation: int, mirror: bool) -> tup
 
     store.update(change)
     return skipped
+
+
+BeforeEdit = tuple[SlideSettings, SlideStatus, bool]
+
+
+@dataclasses.dataclass(frozen=True)
+class BulkEditResult:
+    """Skipped keys and immutable inverse snapshots of successfully edited slides."""
+
+    skipped: Mapping[SlideKey, str]
+    before: Mapping[SlideKey, BeforeEdit]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "skipped", MappingProxyType(dict(self.skipped)))
+        object.__setattr__(self, "before", MappingProxyType(dict(self.before)))
+
+
+def _bulk_skip(tray: TrayRecord, slide: SlideRecord) -> str | None:
+    if tray.raw_removed:
+        return "raw_removed"
+    if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED):
+        return "not_editable"
+    if slide.status is SlideStatus.BLANK:
+        return "blank"
+    return None
+
+
+def _bulk_slide(slide: SlideRecord, values: BeforeEdit) -> SlideRecord:
+    settings, status, owner_decided = values
+    changed = settings != slide.settings
+    return dataclasses.replace(
+        slide,
+        settings=settings,
+        status=status,
+        owner_decided=owner_decided,
+        exported=slide.exported and not changed,
+        preview_stale=slide.preview_stale or changed,
+    )
+
+
+def _edit_many(
+    store: BatchStore,
+    keys: Iterable[SlideKey],
+    edit: Callable[[SlideKey, SlideRecord], BeforeEdit],
+) -> BulkEditResult:
+    selected = set(keys)
+    skipped = dict.fromkeys(selected, "missing")
+    before: dict[SlideKey, BeforeEdit] = {}
+
+    def change(manifest: BatchManifest) -> BatchManifest:
+        trays = []
+        for tray in manifest.trays:
+            slides = []
+            settings_changed = False
+            for slide in tray.slides:
+                key = (tray.number, slide.position)
+                if key in selected:
+                    reason = _bulk_skip(tray, slide)
+                    if reason:
+                        skipped[key] = reason
+                    else:
+                        del skipped[key]
+                        before[key] = (slide.settings, slide.status, slide.owner_decided)
+                        updated = _bulk_slide(slide, edit(key, slide))
+                        settings_changed |= updated.settings != slide.settings
+                        slide = updated
+                slides.append(slide)
+            stage = TrayStage.REVIEW if settings_changed else tray.stage
+            trays.append(dataclasses.replace(tray, slides=tuple(slides), stage=stage))
+        return dataclasses.replace(manifest, trays=tuple(trays))
+
+    store.update(change)
+    return BulkEditResult(skipped, before)
+
+
+def set_status_many(
+    store: BatchStore,
+    keys: Iterable[SlideKey],
+    status: SlideStatus,
+) -> BulkEditResult:
+    """Set an owner decision in one update, skipping unsafe trays and blank slides."""
+    if status not in (*SETTABLE_STATUSES, SlideStatus.PENDING):
+        raise BatchError(f"a slide cannot be set to {status}")
+    return _edit_many(store, keys, lambda key, slide: (slide.settings, status, True))
+
+
+def apply_settings_many(
+    store: BatchStore,
+    keys: Iterable[SlideKey] | Mapping[SlideKey, SlideSettings],
+    changes: SlideSettings | Mapping[str, object] | Mapping[SlideKey, SlideSettings] | None = None,
+) -> BulkEditResult:
+    """Apply common partial/full settings or a per-key settings map atomically.
+
+    The two-argument form accepts a map from slide keys to full settings. Partial
+    settings preserve every field omitted from the mapping on each selected slide.
+    """
+    if changes is None:
+        if not isinstance(keys, Mapping):
+            raise TypeError("provide settings changes or a per-key settings map")
+        changes = dict(keys)
+    elif isinstance(changes, Mapping):
+        changes = dict(changes)
+
+    def edit(key: SlideKey, slide: SlideRecord) -> BeforeEdit:
+        if isinstance(changes, SlideSettings):
+            settings = changes
+        elif key in changes:
+            settings = changes[key]
+            if not isinstance(settings, SlideSettings):
+                raise TypeError("per-key settings must be SlideSettings")
+        else:
+            settings = dataclasses.replace(slide.settings, **changes)
+        return settings, slide.status, True
+
+    return _edit_many(store, keys, edit)
+
+
+def restore_many(
+    store: BatchStore,
+    before: Mapping[SlideKey, BeforeEdit],
+) -> BulkEditResult:
+    """Restore settings, status and owner decisions through the same atomic edit path.
+
+    Changed settings invalidate previews and exports again: undo cannot restore an
+    output file that may already have been rendered using the intervening settings.
+    """
+    saved = dict(before)
+    return _edit_many(store, saved, lambda key, slide: saved[key])
