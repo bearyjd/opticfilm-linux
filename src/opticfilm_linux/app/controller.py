@@ -39,6 +39,7 @@ from opticfilm_linux.batch.layout import advance_section
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     BatchDefaults,
+    Mode,
     SlideSettings,
     SlideStatus,
     SlotOrientation,
@@ -256,6 +257,15 @@ class Controller(FirstLoadCommands, HolderCommands):
 
         self._reserved_scan(job, f"Could not re-scan tray {number}")
 
+    def set_tray_mode(self, number: int, mode: Mode) -> None:
+        def job(runner: BatchRunner) -> None:
+            with self._lock:
+                if number in self._auto_active:
+                    raise BatchError("Wait for this tray’s automatic export to finish")
+            runner.set_tray_mode(number, mode)
+
+        self._run_writer(job, f"Could not change mode of tray {number}")
+
     def _section_refusal(self, reserved: bool = False) -> str | None:
         """Called under the controller lock before reserving the transition."""
         if self._lifecycle_pending or self._closing.is_set():
@@ -366,6 +376,14 @@ class Controller(FirstLoadCommands, HolderCommands):
         """Turn and flip every slide of the batch; trays that cannot follow are named."""
 
         def job(runner: BatchRunner) -> None:
+            manifest = self._open_store().snapshot()
+            defaults = manifest.defaults
+            if (
+                manifest.first_tray_released
+                and self._automatic_batch(manifest)
+                and (rotation, mirror) != (defaults.rotation, defaults.mirror)
+            ):
+                raise BatchError("Batch orientation cannot change after releasing the first tray")
             skipped = runner.set_batch_orientation(rotation, mirror)
             if skipped:
                 self._set(_banner=Banner(_skipped_text(skipped)))
@@ -376,7 +394,17 @@ class Controller(FirstLoadCommands, HolderCommands):
         self.edit_slide(number, position, SlideSettings())
 
     def accept_all(self) -> None:
-        self._run_writer(lambda runner: runner.accept_all(), "Could not accept all slides")
+        def job(runner: BatchRunner) -> None:
+            runner.accept_all()
+            session = self._session
+            if session is not None:
+                with self._lock:
+                    self._auto_due.update(
+                        t.number for t in session.store.snapshot().trays if t.auto == "blocked"
+                    )
+                self._submit_auto_due()
+
+        self._run_writer(job, "Could not accept all slides")
 
     def _edit(
         self, runner: BatchRunner, number: int, position: int, settings: SlideSettings
@@ -419,20 +447,29 @@ class Controller(FirstLoadCommands, HolderCommands):
 
         self._run_writer(job, "Could not save export settings")
 
+    @staticmethod
+    def _automatic_batch(manifest) -> bool:
+        return manifest.defaults.auto_export or any(
+            tray.auto not in ("", "off") for tray in manifest.trays
+        )
+
     def _save_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
         store = self._open_store()
         _check_export_directory(store.directory, directory)
-        store.update(
-            lambda manifest: dataclasses.replace(
-                manifest,
-                defaults=dataclasses.replace(
-                    manifest.defaults,
-                    export_dir=str(directory),
-                    export_format=fmt,
-                    jpeg_size=jpeg_size,
-                ),
+
+        def change(manifest):
+            defaults = dataclasses.replace(
+                manifest.defaults, export_dir=str(directory), export_format=fmt, jpeg_size=jpeg_size
             )
-        )
+            if (
+                manifest.first_tray_released
+                and self._automatic_batch(manifest)
+                and defaults != manifest.defaults
+            ):
+                raise BatchError("Export settings cannot change after releasing the first tray")
+            return dataclasses.replace(manifest, defaults=defaults)
+
+        store.update(change)
 
     def export(self, directory: Path, fmt: Format, jpeg_size: JpegSize = "full") -> None:
         def job(_runner: BatchRunner) -> None:
@@ -879,6 +916,7 @@ class Controller(FirstLoadCommands, HolderCommands):
         with self._lock:
             if self._session is not session or self._cancel_auto.is_set():
                 return
+            self._auto_due.update(due & self._auto_active)
             due -= self._auto_active
             self._auto_active.update(due)
         for number in sorted(due):
@@ -910,6 +948,7 @@ class Controller(FirstLoadCommands, HolderCommands):
                 with self._lock:
                     if self._session is session:
                         self._auto_active.discard(number)
+                self._submit_auto_due()
 
         self._after_pending_commands(job, "Could not complete automatic export")
 
@@ -981,8 +1020,19 @@ class Controller(FirstLoadCommands, HolderCommands):
                         or (session and session.runner and session.runner.work_pending())
                     ),
                     holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
+                    raw_pending=self._raw_pending(session, manifest),
                 )
             )
+
+    @staticmethod
+    def _raw_pending(session, manifest) -> frozenset[int]:
+        if session is None or manifest is None:
+            return frozenset()
+        return frozenset(
+            t.number
+            for t in manifest.trays
+            if t.raw_removed and any(session.store.tray_dir(t.number).glob("sweep-*"))
+        )
 
     def _update_holder_status(self, session, status: ScannerStatus, sequence: int) -> None:
         """Apply the scanner status while the controller lock is held."""

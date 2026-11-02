@@ -211,6 +211,11 @@ def set_batch_orientation(store: BatchStore, rotation: int, mirror: bool) -> tup
         defaults = dataclasses.replace(manifest.defaults, rotation=rotation, mirror=mirror)
         if defaults == manifest.defaults:
             return manifest
+        automatic = manifest.defaults.auto_export or any(
+            t.auto not in ("", "off") for t in manifest.trays
+        )
+        if manifest.first_tray_released and automatic:
+            raise BatchError("Batch orientation cannot change after releasing the first tray")
         busy = [t.number for t in manifest.trays if t.stage in BUSY_STAGES]
         if busy:
             raise BatchError(

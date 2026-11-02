@@ -95,8 +95,48 @@ def _settings(data: dict[str, Any]) -> SlideSettings:
     return SlideSettings(**data)
 
 
+def _receipt_text(data: dict[str, Any], key: str, *, digest: bool = False) -> None:
+    value = data.get(key, "")
+    if not isinstance(value, str):
+        raise ManifestFormatError(f"{key} must be a string")
+    if digest and value and (len(value) != 64 or set(value) - set("0123456789abcdefABCDEF")):
+        raise ManifestFormatError(f"{key} must be empty or a SHA-256 hexadecimal digest")
+
+
+def _export_record(data: Any) -> ExportRecord:
+    if not isinstance(data, dict):
+        raise ManifestFormatError("exports must contain JSON objects")
+    for key in ("path", "scan_token", "export_path"):
+        _receipt_text(data, key)
+    for key in ("raw_sha256", "sha256", "render_signature"):
+        _receipt_text(data, key, digest=True)
+    for key in ("width", "height", "scan_dpi", "delivered_dpi", "size_bytes"):
+        minimum = 0 if key == "size_bytes" else 1
+        value = data.get(key, 0)
+        if type(value) is not int or value < minimum:
+            raise ManifestFormatError(f"{key} must be an integer >= {minimum}")
+    return ExportRecord(**data)
+
+
+def _slide_delivery(data: dict[str, Any]) -> tuple[ExportRecord, ...]:
+    _receipt_text(data, "export_path")
+    _receipt_text(data, "export_sha256", digest=True)
+    size = data.get("export_size", [])
+    if (
+        not isinstance(size, list)
+        or (size and len(size) != 2)
+        or any(type(value) is not int or value <= 0 for value in size)
+    ):
+        raise ManifestFormatError("export_size must be empty or two positive integers")
+    exports = data.get("exports", [])
+    if not isinstance(exports, list):
+        raise ManifestFormatError("exports must be a list")
+    return tuple(_export_record(record) for record in exports)
+
+
 def _slide(data: dict[str, Any]) -> SlideRecord:
     _validate_booleans(data, SlideRecord)
+    exports = _slide_delivery(data)
     return SlideRecord(
         position=data["position"],
         status=SlideStatus(data["status"]),
@@ -109,7 +149,7 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         export_path=data.get("export_path", ""),
         export_size=tuple(data.get("export_size", ())),
         export_sha256=data.get("export_sha256", ""),
-        exports=tuple(ExportRecord(**record) for record in data.get("exports", [])),
+        exports=exports,
     )
 
 

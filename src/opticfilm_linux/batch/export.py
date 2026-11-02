@@ -6,6 +6,8 @@ produce a duplicate file on the next export, never a missing one.
 
 Cleanup defends against application bugs, crashes, power loss, concurrent application actions,
 malformed or stale manifests, and owner mistakes such as moved exports or symlinked raw folders.
+Every raw split position must be represented exactly once, including positions marked blank;
+each nonblank position must also match its current raw hash and verified delivery receipt.
 It does not defend against hostile local processes racing checks within microseconds, or an
 owner deliberately hand-forging export receipts in the manifest.
 """
@@ -49,6 +51,10 @@ _CLEANUP_LOCK = threading.Lock()
 
 class CleanupRefused(BatchError):
     """Raw scans were not removed: the tray is not exported, or a path looked unsafe."""
+
+
+class CleanupPolicyRefused(CleanupRefused):
+    """Cleanup must wait for owner policy, review, or an unfinished application action."""
 
 
 @dataclass(frozen=True)
@@ -513,6 +519,13 @@ def _verify_raw(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) 
         raise CleanupRefused("current raw sweep is missing; removal pending, raw still present")
     try:
         slides = split_slides(load_sweep(current))
+        positions = [slide.position for slide in tray.slides]
+        if (
+            any(type(position) is not int for position in positions)
+            or len(positions) != len(slides)
+            or set(positions) != set(range(1, len(slides) + 1))
+        ):
+            raise ValueError("manifest positions must cover every raw position exactly once")
         for slide in tray.slides:
             if slide.status is SlideStatus.BLANK:
                 continue
@@ -627,7 +640,7 @@ def _verify_release_evidence(manifest: BatchManifest, tray: TrayRecord) -> None:
     if tray.raw_removed:
         raise CleanupRefused("a freed first tray cannot release new settings")
     if _unreviewed_flags(tray):
-        raise CleanupRefused("flagged slides require owner review before releasing settings")
+        raise CleanupPolicyRefused("flagged slides require owner review before releasing settings")
     _verify_export(tray, jpeg_only=True)
     if not any(s.status is SlideStatus.ACCEPTED for s in tray.slides):
         raise CleanupRefused("first tray has no verified JPEGs to approve settings")
@@ -653,7 +666,9 @@ def release_first_tray(store: BatchStore, number: int) -> None:
 
 def _unreviewed_flags(tray: TrayRecord) -> bool:
     return any(
-        not slide.owner_decided and (slide.position in tray.auto_flagged or slide.flags)
+        slide.status is not SlideStatus.BLANK
+        and not slide.owner_decided
+        and (slide.position in tray.auto_flagged or slide.flags)
         for slide in tray.slides
     )
 
@@ -662,10 +677,10 @@ def _cleanup_policy(manifest: BatchManifest, number: int, *, release_first: bool
     if _tray(manifest, number).raw_removed:
         return  # finish an already committed removal even if automatic mode was disabled
     if manifest.defaults.keep_raw:
-        raise CleanupRefused("keep raw is enabled; raw scans must be kept")
+        raise CleanupPolicyRefused("keep raw is enabled; raw scans must be kept")
     tray = _tray(manifest, number)
     if _unreviewed_flags(tray):
-        raise CleanupRefused("flagged slides require owner review before freeing raw")
+        raise CleanupPolicyRefused("flagged slides require owner review before freeing raw")
     automatic = manifest.defaults.auto_export or any(
         t.auto not in ("", "off") for t in manifest.trays
     )
@@ -674,7 +689,7 @@ def _cleanup_policy(manifest: BatchManifest, number: int, *, release_first: bool
     )
     first = min(t.number for t in manifest.trays)
     if automatic and not released and not (release_first and number == first):
-        raise CleanupRefused(
+        raise CleanupPolicyRefused(
             "the first held tray requires explicit owner release for these settings"
         )
     if automatic:
@@ -691,11 +706,13 @@ def check_cleanup_allowed(
         raise BatchError(f"no tray {number} in this batch")
     _cleanup_policy(manifest, number, release_first=release_first)
     if tray.stage is not TrayStage.EXPORTED:
-        raise CleanupRefused(
+        raise CleanupPolicyRefused(
             f"tray {number} is {tray.stage}; only exported trays can be cleaned up"
         )
     if _stale(tray):
-        raise CleanupRefused(f"tray {number} still has a preview to update; try again shortly")
+        raise CleanupPolicyRefused(
+            f"tray {number} still has a preview to update; try again shortly"
+        )
     folders = tuple(_checked_sweep_folders(store, number))
     _checked_snapshot(store, tray, folders)
     return tray

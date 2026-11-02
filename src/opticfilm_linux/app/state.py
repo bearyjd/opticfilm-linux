@@ -145,6 +145,7 @@ def _tray_row(
     progress: Mapping[int, float],
     scan_started: Mapping[int, float],
     now: float,
+    raw_pending: frozenset[int] = frozenset(),
 ) -> TrayRow:
     started = scan_started.get(tray.number)
     elapsed = now - started if tray.stage is TrayStage.SCANNING and started is not None else None
@@ -153,7 +154,7 @@ def _tray_row(
         stage=tray.stage,
         stage_text=(
             "Raw removal pending"
-            if tray.raw_removed and tray.auto == "verified"
+            if tray.raw_removed and tray.number in raw_pending
             else stage_text(tray.stage)
         ),
         progress=progress.get(tray.number),
@@ -289,8 +290,8 @@ def build_state(
     batch_session: int = 0,
     runner_busy: bool = False,
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
+    raw_pending: frozenset[int] = frozenset(),
 ) -> AppState:
-    next_strip = next_strip_enabled() if next_strip is None else next_strip
     busy = holder_busy or scan_pending or readonly or jobs_running
     return AppState(
         **_batch_fields(manifest, selected, preview_tokens, updating),
@@ -302,13 +303,13 @@ def build_state(
             readonly,
             holder_control,
             holder_busy,
-            next_strip,
+            next_strip_enabled() if next_strip is None else next_strip,
             jobs_running,
             holder_latch,
         ),
         batch_session=batch_session,
         readonly=readonly,
-        trays=tuple(_tray_row(t, progress, scan_started, now) for t in manifest.trays)
+        trays=tuple(_tray_row(t, progress, scan_started, now, raw_pending) for t in manifest.trays)
         if manifest is not None
         else (),
         banner=banner,
@@ -321,6 +322,15 @@ def build_state(
 def _release_needed(manifest: BatchManifest) -> bool:
     defaults = replace(manifest.defaults, auto_export=False, keep_raw=False)
     return not manifest.first_tray_released or manifest.released_render != defaults
+
+
+def _release_flags(tray: TrayRecord) -> bool:
+    return any(
+        s.status is not SlideStatus.BLANK
+        and (s.flags or s.position in tray.auto_flagged)
+        and not s.owner_decided
+        for s in tray.slides
+    )
 
 
 def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
@@ -344,10 +354,7 @@ def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
             s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
             for s in first.slides
         )
-        and not any(
-            (s.flags or s.position in first.auto_flagged) and not s.owner_decided
-            for s in first.slides
-        )
+        and not _release_flags(first)
         and _release_needed(manifest)
         and manifest.defaults.auto_export
         and not manifest.defaults.keep_raw

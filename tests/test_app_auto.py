@@ -181,7 +181,7 @@ def test_auto_detector_classifications_preserved_and_listed(store):
     auto.arm(1)
     auto.run(1)
     tray = store.snapshot().trays[0]
-    assert tray.auto_flagged == (1, 2, 3)
+    assert tray.auto_flagged == (2, 3)
     assert tray.slides[0].status is SlideStatus.BLANK
     assert tray.slides[1].status is SlideStatus.NEEDS_LOOK
     assert not any(s.exported for s in tray.slides)
@@ -955,6 +955,8 @@ def test_owner_rejection_resumes_blocked_auto_export(store):
     auto.run(2)
     tray = auto._tray(2)
     assert tray.auto == "blocked"
+    assert tray.auto_failed == ()
+    assert not tray.raw_removed and store.sweep_dir(2, 1).exists()
     assert not tray.slides[1].exported
     assert "Owner excluded slides 2" in tray.auto_error
     assert "Waiting for owner" not in tray.auto_error
@@ -979,3 +981,81 @@ def test_release_button_only_for_verified_held_first_tray(store, phase):
 
     store.update_tray(1, auto=phase)
     assert _auto_fields(store.snapshot(), False)["held_tray"] is None
+
+
+@pytest.mark.parametrize("phase", ["pending", "held"])
+@pytest.mark.parametrize("live_flags", [False, True])
+def test_blank_slots_ignore_live_and_remembered_flags(store, phase, live_flags):
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    auto.arm(2)
+    if phase == "held":
+        auto.run(2)
+    auto.confirm_free_held(1)
+    tray = auto._tray(2)
+    blank = dataclasses.replace(
+        tray.slides[0], status=SlideStatus.BLANK, flags=(Flag.DUST,) if live_flags else ()
+    )
+    store.update_tray(2, auto_flagged=(1,), slides=(blank, *tray.slides[1:]))
+    assert 2 in auto.resume()
+    auto.run(2)
+    tray = auto._tray(2)
+    assert tray.auto == "freed" and tray.raw_removed
+    assert not store.sweep_dir(2, 1).exists()
+    if phase == "pending":
+        assert tray.auto_flagged == ()
+        assert not tray.slides[0].exported
+
+
+@pytest.mark.parametrize("damage", ["raw_mismatch", "unsafe_path"])
+def test_refused_first_cleanup_never_releases_later_trays(store, monkeypatch, damage):
+    auto = pipeline(store)
+    for number in (1, 2):
+        auto.arm(number)
+        auto.run(number)
+    if damage == "raw_mismatch":
+        split = exports.split_slides
+        monkeypatch.setattr(
+            exports,
+            "split_slides",
+            lambda sweep: [dataclasses.replace(s, rgb=np.zeros_like(s.rgb)) for s in split(sweep)],
+        )
+    else:
+        sweep = store.sweep_dir(1, 1)
+        outside = store.directory.parent / "outside-raw"
+        sweep.rename(outside)
+        sweep.symlink_to(outside, target_is_directory=True)
+    auto.confirm_free_held(1)
+    assert auto._tray(1).auto == "failed"
+    assert not store.snapshot().first_tray_released
+    assert store.snapshot().released_render is None
+    assert 2 not in auto.resume()
+    auto.run(2)
+    assert all(not tray.raw_removed for tray in store.snapshot().trays)
+    assert store.sweep_dir(2, 1).exists()
+
+
+@pytest.mark.parametrize("policy", [False, True])
+def test_cleanup_refusal_uses_exception_type_instead_of_message(store, monkeypatch, policy):
+    from opticfilm_linux.app import auto as auto_module
+
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    exception = (
+        exports.CleanupPolicyRefused("Owner action required")
+        if policy
+        else exports.CleanupRefused("unsafe raw folder named keep raw")
+    )
+
+    def refuse(*args, **kwargs):
+        raise exception
+
+    monkeypatch.setattr(auto_module, "cleanup_raw", refuse)
+    auto.confirm_free_held(1)
+    tray = auto._tray(1)
+    assert tray.auto == ("held" if policy else "failed")
+    assert str(exception) in tray.auto_error
+    assert not tray.raw_removed and store.sweep_dir(1, 1).exists()
+    assert not store.snapshot().first_tray_released

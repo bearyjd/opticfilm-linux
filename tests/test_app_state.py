@@ -290,10 +290,39 @@ def test_changed_render_settings_require_verified_first_tray_evidence():
 def test_committed_cleanup_waiting_for_completion_is_visible():
     manifest = _manifest()
     tray = replace(manifest.trays[0], raw_removed=True, auto="verified", cleanup_sweeps=(1,))
-    assert _build(replace(manifest, trays=(tray,))).trays[0].stage_text == "Raw removal pending"
+    assert (
+        _build(replace(manifest, trays=(tray,)), raw_pending=frozenset({1})).trays[0].stage_text
+        == "Raw removal pending"
+    )
 
 
 def test_load_next_is_available_by_default_with_env_unset(monkeypatch):
     monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
     state = _build(scanner=ScannerStatus.NOT_READY, holder_control=True)
     assert state.can_load_next and state.next_strip_enabled
+
+
+@pytest.mark.parametrize("auto", ["", "held", "freed", "failed"])
+def test_manual_interrupted_cleanup_shows_raw_removal_pending(auto):
+    tray = replace(_manifest().trays[0], raw_removed=True, auto=auto)
+    manifest = replace(_manifest(), trays=(tray,))
+    state = _build(manifest, raw_pending=frozenset({tray.number}))
+    assert state.trays[0].stage_text == "Raw removal pending"
+    assert _build(manifest).trays[0].stage_text != "Raw removal pending"
+
+
+def test_blank_flags_do_not_hide_first_tray_release():
+    manifest = _manifest()
+    accepted = SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True)
+    blank = SlideRecord(2, status=SlideStatus.BLANK, flags=(Flag.DUST,))
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.EXPORTED,
+        auto="held",
+        auto_flagged=(2,),
+        slides=(accepted, blank),
+    )
+    manifest = replace(
+        manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    assert _build(manifest).held_tray == 1

@@ -10,11 +10,10 @@ from pathlib import Path
 
 from opticfilm_linux.app.raw import raw_failure, raw_inventory
 from opticfilm_linux.batch.export import (
-    CleanupRefused,
+    CleanupPolicyRefused,
     ExportVerificationFailed,
     cleanup_raw,
     export_batch,
-    release_first_tray,
     verify_tray_export,
 )
 from opticfilm_linux.batch.model import SlideStatus, TrayStage
@@ -133,11 +132,15 @@ class AutoPipeline:
         tray = self._tray(number)
         flagged = tuple(
             sorted(
-                set(tray.auto_flagged)
-                | {
+                {
                     s.position
                     for s in tray.slides
-                    if s.flags or s.status in (SlideStatus.BLANK, SlideStatus.NEEDS_LOOK)
+                    if s.status is not SlideStatus.BLANK
+                    and (
+                        s.position in tray.auto_flagged
+                        or s.flags
+                        or s.status is SlideStatus.NEEDS_LOOK
+                    )
                 }
             )
         )
@@ -185,18 +188,7 @@ class AutoPipeline:
         return True
 
     def _failed(self, number: int, exc: Exception, *, before) -> None:
-        policy_wait = any(
-            text in str(exc)
-            for text in (
-                "keep raw",
-                "owner review",
-                "explicit owner release",
-                "preview to update",
-                "changed meanwhile",
-                "only exported trays",
-            )
-        )
-        if isinstance(exc, CleanupRefused) and policy_wait and not self._tray(number).raw_removed:
+        if isinstance(exc, CleanupPolicyRefused) and not self._tray(number).raw_removed:
             self._update(number, auto="held", auto_error=str(exc), auto_failed=())
             return
         positions = (
@@ -213,7 +205,9 @@ class AutoPipeline:
 
     def _unreviewed_flags(self, tray) -> bool:
         return any(
-            (s.position in tray.auto_flagged or s.flags) and not s.owner_decided
+            s.status is not SlideStatus.BLANK
+            and (s.position in tray.auto_flagged or s.flags)
+            and not s.owner_decided
             for s in tray.slides
         )
 
@@ -293,8 +287,6 @@ class AutoPipeline:
         try:
             if self._blocked(number) or self._unreviewed_flags(self._tray(number)):
                 return
-            verify_tray_export(self.store, number)
-            release_first_tray(self.store, number)
             self._verify_and_finish(number, release=True)
         except Exception as exc:
             self._failed(number, exc, before=before)

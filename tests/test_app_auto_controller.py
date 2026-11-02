@@ -196,10 +196,9 @@ def test_releasing_first_tray_schedules_verified_held_backlog(sweep600_dir, tmp_
         cleaned.append((number, threading.current_thread().name))
         store.update_tray(number, raw_removed=True)
         if release_first:
-            store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+            _record_test_release(store, number)
 
     monkeypatch.setattr(auto, "verify_tray_export", verify)
-    monkeypatch.setattr(auto, "release_first_tray", _record_test_release)
     monkeypatch.setattr(auto, "cleanup_raw", cleanup)
     c = make_controller(sweep600_dir)
     try:
@@ -608,3 +607,88 @@ def test_owner_decision_requeues_automatic_tray(auto_controller):
     assert started.wait(2), "owner decision did not queue the blocked automatic tray"
     assert calls[0][0] == 1
     release.set()
+
+
+def test_review_update_during_auto_job_is_retried(auto_controller):
+    c, calls, started, release = auto_controller
+    c._auto_due.add(1)
+    c._submit_auto_due()
+    assert started.wait(2)
+    c._auto_due.add(1)
+    c._submit_auto_due()
+    assert 1 in c._auto_due
+    release.set()
+    wait_until(c, lambda: len(calls) == 2)
+
+
+def test_accept_all_schedules_blocked_trays(auto_controller, monkeypatch):
+    c, calls, started, release = auto_controller
+    c._session.store.update_tray(1, auto="blocked")
+    monkeypatch.setattr(c._session.runner, "accept_all", lambda: None)
+    c.accept_all()
+    assert started.wait(2)
+    assert calls[0][0] == 1
+    release.set()
+
+
+def test_mode_change_refuses_active_automatic_export(auto_controller):
+    c, calls, started, release = auto_controller
+    c._auto_due.add(1)
+    c._submit_auto_due()
+    assert started.wait(2)
+    c.set_tray_mode(1, "negative")
+    wait_until(c, lambda: c.state().banner is not None)
+    assert "automatic" in c.state().banner.message.lower()
+    assert c._session.store.snapshot().trays[0].mode == "positive"
+    release.set()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_released_settings_changes_are_refused_but_unchanged_allowed(auto_controller, enabled):
+    c, calls, started, release = auto_controller
+    store = c._session.store
+    store.update_tray(1, auto="held")
+    store.update(
+        lambda m: dataclasses.replace(
+            m,
+            first_tray_released=True,
+            defaults=dataclasses.replace(m.defaults, auto_export=enabled),
+        )
+    )
+    defaults = store.snapshot().defaults
+    c._save_export_settings(
+        controller_module.Path(defaults.export_dir), defaults.export_format, defaults.jpeg_size
+    )
+    c.set_export_settings(controller_module.Path(defaults.export_dir), "jpeg", "3600")
+    wait_until(c, lambda: c.state().banner is not None)
+    assert "cannot change" in c.state().banner.message
+    assert store.snapshot().defaults == defaults
+
+
+def test_released_batch_orientation_changes_are_refused(auto_controller):
+    c, calls, started, release = auto_controller
+    store = c._session.store
+    store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+    c.set_batch_orientation(90, False)
+    wait_until(c, lambda: c.state().banner is not None)
+    assert "cannot change" in c.state().banner.message
+    assert store.snapshot().defaults.rotation == 0
+
+
+def test_orientation_release_between_snapshot_and_store_commit_is_refused(
+    auto_controller, monkeypatch
+):
+    c, calls, started, release = auto_controller
+    store = c._session.store
+    runner = c._session.runner
+    original = runner.set_batch_orientation
+
+    def release_before_commit(rotation, mirror):
+        store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+        return original(rotation, mirror)
+
+    monkeypatch.setattr(runner, "set_batch_orientation", release_before_commit)
+    c.set_batch_orientation(90, False)
+    wait_until(c, lambda: c.state().banner is not None)
+    assert "cannot change" in c.state().banner.message
+    assert store.snapshot().defaults.rotation == 0
