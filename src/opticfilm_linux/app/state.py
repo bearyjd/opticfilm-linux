@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.batch.model import (
@@ -71,6 +72,9 @@ class FreeSpaceView:
     freed: int | None = None
 
 
+LoadPhase = Literal["idle", "jogging", "await_reinsert", "loading", "done", "failed"]
+
+
 @dataclass(frozen=True)
 class AppState:
     batch_name: str | None
@@ -87,6 +91,9 @@ class AppState:
     free_space: FreeSpaceView | None
     default_rotation: int = 0  # the batch's orientation, applied to every slide
     default_mirror: bool = False
+    load_phase: LoadPhase = "idle"
+    load_exit_code: int | None = None
+    can_first_load: bool = False
     can_eject: bool = False
     can_load_next: bool = False
     next_strip_enabled: bool = False  # the experimental non-interactive load is switched on

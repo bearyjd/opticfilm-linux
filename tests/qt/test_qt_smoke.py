@@ -691,3 +691,114 @@ def test_section_controls_bind(loaded, tmp_path):
         m = store.snapshot()
         assert (m.collection, m.box, m.section, m.section_size) == ("family", 3, "01", 10)
     assert not warnings
+
+
+def test_first_load_card_reseats_then_reports_exit_code(qapp, sweep600_dir, tmp_path):
+    from test_first_load import InteractiveScanner
+
+    scanner = InteractiveScanner(sweep600_dir)
+    c = Controller(lambda _dpi: scanner)
+    bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
+    provider = PreviewProvider(lambda n, p, k: c.preview_path(n, p, k))
+    engine, warnings = create_engine(bridge, provider)
+    try:
+        root = engine.rootObjects()[0]
+        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "First", "", "", 600)
+        _wait(bridge, lambda: bridge.canFirstLoad)
+        _click(root, "firstLoadButton")
+        _wait(bridge, lambda: bridge.loadPhase == "await_reinsert")
+        assert _prop(root, "firstLoadText", "text") == (
+            "Pull the holder fully OUT, then push it back in to the stop. Press Done."
+        )
+        assert not _prop(root, "ejectButton", "enabled")
+        _click(root, "firstLoadDoneButton")
+        bridge.firstLoadDone()
+        _wait(bridge, lambda: bridge.loadPhase == "done" and not bridge.holderBusy)
+        assert bridge.loadExitCode == "0" and scanner.calls == ["load", "done"]
+        assert _prop(root, "firstLoadExitCode", "text") == "Driver exit code: 0"
+        assert warnings == []
+    finally:
+        bridge.shutdown()
+        engine.deleteLater()
+
+
+def test_first_load_card_cancel_warns_then_stops(qapp, sweep600_dir, tmp_path):
+    from test_first_load import InteractiveScanner
+
+    scanner = InteractiveScanner(sweep600_dir)
+    c = Controller(lambda _dpi: scanner)
+    bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
+    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
+    try:
+        root = engine.rootObjects()[0]
+        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Cancel", "", "", 600)
+        _wait(bridge, lambda: bridge.canFirstLoad)
+        _click(root, "firstLoadButton")
+        _wait(bridge, lambda: bridge.loadPhase == "await_reinsert")
+        _click(root, "firstLoadCancelButton")
+        dialog = root.findChild(QObject, "firstLoadCancelDialog")
+        _wait(bridge, lambda: dialog.property("visible"))
+        assert "power cycle" in dialog.property("subtitle")
+        QMetaObject.invokeMethod(dialog, "accepted")
+        _wait(bridge, lambda: bridge.loadPhase == "failed" and not bridge.holderBusy)
+        assert scanner.calls == ["load", "cancel"] and bridge.loadExitCode == "130"
+        assert warnings == []
+    finally:
+        bridge.shutdown()
+        engine.deleteLater()
+
+
+def _held_first_load_scanner(sweep, phase):
+    from opticfilm_linux.scanner.base import ScanError
+    from test_first_load import InteractiveScanner
+
+    class HeldScanner(InteractiveScanner):
+        def load_interactive(self, on_prompt, done, cancel):
+            self.calls.append("load")
+            if phase != "jogging":
+                on_prompt()
+            if cancel.wait(TIMEOUT):
+                self.calls.append("cancel")
+            raise ScanError("cancelled, exit code 130")
+
+    return HeldScanner(sweep)
+
+
+@pytest.mark.parametrize("phase", ["jogging", "await_reinsert", "loading"])
+def test_first_load_quit_warns_and_can_be_rejected(qapp, sweep600_dir, tmp_path, phase):
+    scanner = _held_first_load_scanner(sweep600_dir, phase)
+    c = Controller(lambda _dpi: scanner)
+    bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
+    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
+    stopped = False
+    try:
+        root = engine.rootObjects()[0]
+        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Quit", "", "", 600)
+        _wait(bridge, lambda: bridge.canFirstLoad)
+        _click(root, "firstLoadButton")
+        target = "await_reinsert" if phase == "loading" else phase
+        _wait(bridge, lambda: bridge.loadPhase == target and scanner.calls == ["load"])
+        if phase == "loading":
+            bridge.firstLoadDone()
+            _wait(bridge, lambda: bridge.loadPhase == "loading")
+        assert bridge.closeRequested() == "first_load_running"
+        assert QMetaObject.invokeMethod(root, "close")
+        dialog = root.findChild(QObject, "firstLoadQuitDialog")
+        _wait(bridge, lambda: dialog.property("visible"))
+        assert "power cycle" in dialog.property("subtitle")
+        assert QMetaObject.invokeMethod(dialog, "reject")
+        _wait(bridge, lambda: not dialog.property("visible"))
+        assert root.property("visible") and bridge.loadPhase == phase
+        assert scanner.calls == ["load"] and bridge.holderBusy
+        assert QMetaObject.invokeMethod(root, "close")
+        _wait(bridge, lambda: dialog.property("visible"))
+        assert QMetaObject.invokeMethod(dialog, "accept")
+        _wait(bridge, lambda: not root.property("visible"))
+        bridge.shutdown()  # main() connects application quit to this same cleanup.
+        stopped = True
+        assert scanner.calls == ["load", "cancel"]
+        assert warnings == []
+    finally:
+        if not stopped:
+            bridge.shutdown()
+        engine.deleteLater()

@@ -138,6 +138,10 @@ Kirigami.Page {
         anchors.fill: parent
         spacing: 0
 
+        FirstLoadCard {
+            onTerminalHelp: loadHelpDialog.open()
+        }
+
         QQC2.Label {
             objectName: "holderLatchText"
             Layout.fillWidth: true
