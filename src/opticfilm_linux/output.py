@@ -200,6 +200,43 @@ def _written_digest(handle: BinaryIO) -> str:
     return digest.hexdigest()
 
 
+def _write_claimed_slide(
+    rgb: np.ndarray,
+    spec: OutputSpec,
+    parent: int,
+    path: Path,
+    descriptor: int,
+    on_written: Callable[[Path, str], None] | None,
+) -> None:
+    opened = os.fstat(descriptor)
+    try:
+        with os.fdopen(descriptor, "w+b") as handle:
+            # tifffile reads a stream's name for its label; it never reopens it.
+            handle.raw.name = str(path)
+            _encode(
+                rgb,
+                spec.fmt,
+                handle,
+                scan_dpi=spec.scan_dpi,
+                jpeg_size=spec.jpeg_size,
+                metadata=spec.metadata,
+            )
+            digest = _written_digest(handle) if on_written is not None else ""
+        _check_directory_identity(spec.directory, parent)
+        if not _same_file(parent, path.name, opened):
+            raise ValueError("Export file changed while writing; retry the export.")
+        if on_written is not None:
+            _sync_directories(spec.directory)
+            _check_directory_identity(spec.directory, parent)
+            if not _same_file(parent, path.name, opened):
+                raise ValueError("Export file changed while writing; retry the export.")
+            on_written(path, digest)
+    except BaseException:
+        if _same_file(parent, path.name, opened):
+            os.unlink(path.name, dir_fd=parent)
+        raise
+
+
 def write_slide(
     rgb: np.ndarray,
     spec: OutputSpec,
@@ -233,31 +270,5 @@ def write_slide(
             except FileExistsError:
                 sequence += spec.sequence_stride
                 continue
-            opened = os.fstat(descriptor)
-            try:
-                with os.fdopen(descriptor, "w+b") as handle:
-                    # tifffile reads a stream's name for its label; it never reopens it.
-                    handle.raw.name = str(path)
-                    _encode(
-                        rgb,
-                        spec.fmt,
-                        handle,
-                        scan_dpi=spec.scan_dpi,
-                        jpeg_size=spec.jpeg_size,
-                        metadata=spec.metadata,
-                    )
-                    digest = _written_digest(handle) if on_written is not None else ""
-                _check_directory_identity(spec.directory, parent)
-                if not _same_file(parent, name, opened):
-                    raise ValueError("Export file changed while writing; retry the export.")
-                if on_written is not None:
-                    _sync_directories(spec.directory)
-                    _check_directory_identity(spec.directory, parent)
-                    if not _same_file(parent, name, opened):
-                        raise ValueError("Export file changed while writing; retry the export.")
-                    on_written(path, digest)
-            except BaseException:
-                if _same_file(parent, name, opened):
-                    os.unlink(name, dir_fd=parent)
-                raise
+            _write_claimed_slide(rgb, spec, parent, path, descriptor, on_written)
             return path

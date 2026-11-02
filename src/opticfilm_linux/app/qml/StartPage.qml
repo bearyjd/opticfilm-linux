@@ -11,6 +11,8 @@ Kirigami.ScrollablePage {
 
     property url parentFolder: ""
     property url exportFolder: ""
+    readonly property string automaticExportProblem: autoExportSwitch.checked
+        ? bridge.automaticExportProblem(parentFolder.toString(), nameField.text, exportFolder.toString()) : ""
 
     Component.onCompleted: exportFolder = bridge.lastExportFolder
 
@@ -176,7 +178,22 @@ Kirigami.ScrollablePage {
             }
             QQC2.Label {
                 visible: autoExportSwitch.checked
-                text: qsTr("Raw data is kept until you check and free the first tray. Later trays are freed after verification.")
+                text: keepRawBox.checked
+                    ? qsTr("Raw scans are kept after automatic export.")
+                    : qsTr("Raw data is kept until you check and free the first tray. Later trays are freed after verification.")
+                wrapMode: Text.Wrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+            }
+            QQC2.CheckBox {
+                id: keepRawBox
+                objectName: "newBatchKeepRaw"
+                text: qsTr("Keep raw scans after export")
+                checked: false
+            }
+            QQC2.Label {
+                objectName: "automaticExportProblem"
+                visible: page.automaticExportProblem !== ""
+                text: page.automaticExportProblem
                 wrapMode: Text.Wrap
                 Layout.maximumWidth: Kirigami.Units.gridUnit * 28
             }
@@ -241,11 +258,11 @@ Kirigami.ScrollablePage {
                 text: qsTr("Create batch")
                 icon.name: "document-new"
                 highlighted: true
-                enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== ""
+                enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== "" && page.automaticExportProblem === ""
                 onClicked: {
                     // hidden slot rows do not count: the owner said all slots are loaded alike
                     const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
-                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value, autoExportSwitch.checked);
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value, autoExportSwitch.checked, keepRawBox.checked);
                 }
             }
         }

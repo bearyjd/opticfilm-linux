@@ -13,6 +13,7 @@ from controller_helpers import (
     wait_until,
 )
 from opticfilm_linux.app import controller as controller_module
+from opticfilm_linux.app.state import FreeSpaceView
 from opticfilm_linux.batch.events import TrayStageChanged
 from opticfilm_linux.batch.model import TrayRecord, TrayStage
 
@@ -44,7 +45,15 @@ def auto_controller(sweep600_dir, tmp_path, monkeypatch):
 
     monkeypatch.setattr(controller_module, "AutoPipeline", Pipeline, raising=False)
     c = make_controller(sweep600_dir)
-    c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+    c.new_batch(
+        tmp_path / "batch",
+        "Test",
+        "",
+        None,
+        600,
+        auto_export=True,
+        export_dir=str(tmp_path / "album"),
+    )
     wait_until(c, lambda: c.state().batch_name == "Test")
     c._session.store.update(
         lambda m: dataclasses.replace(m, trays=(TrayRecord(1, TrayStage.REVIEW, "positive"),))
@@ -109,7 +118,15 @@ def test_rescan_of_tray_with_automatic_job_is_refused(auto_controller):
 def test_auto_resumes_incomplete_tray_on_reopen(sweep600_dir, tmp_path):
     c = make_controller(sweep600_dir)
     try:
-        c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+        c.new_batch(
+            tmp_path / "batch",
+            "Test",
+            "",
+            None,
+            600,
+            auto_export=True,
+            export_dir=str(tmp_path / "album"),
+        )
         wait_until(c, lambda: c.state().batch_name == "Test")
         c._session.store.update(
             lambda m: dataclasses.replace(
@@ -131,7 +148,16 @@ def test_auto_setting_is_persisted_per_batch_and_defaults_off(sweep600_dir, tmp_
     try:
         open_new(c, tmp_path / "off")
         assert not c._session.store.snapshot().defaults.auto_export
-        c.new_batch(tmp_path / "on", "Test", "", None, 600, auto_export=True, keep_raw=True)
+        c.new_batch(
+            tmp_path / "on",
+            "Test",
+            "",
+            None,
+            600,
+            auto_export=True,
+            keep_raw=True,
+            export_dir=str(tmp_path / "album"),
+        )
         wait_until(
             c, lambda: c._session is not None and c._session.store.directory == tmp_path / "on"
         )
@@ -176,7 +202,15 @@ def test_releasing_first_tray_schedules_verified_held_backlog(sweep600_dir, tmp_
     monkeypatch.setattr(auto, "cleanup_raw", cleanup)
     c = make_controller(sweep600_dir)
     try:
-        c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+        c.new_batch(
+            tmp_path / "batch",
+            "Test",
+            "",
+            None,
+            600,
+            auto_export=True,
+            export_dir=str(tmp_path / "album"),
+        )
         wait_until(c, lambda: c.state().batch_name == "Test")
         c._session.store.update(
             lambda m: dataclasses.replace(
@@ -221,21 +255,8 @@ def test_stale_auto_callback_cannot_clear_reopened_session_reservation(
 
 
 def test_manual_first_hold_release_resumes_backlog(sweep600_dir, tmp_path, monkeypatch):
-    from opticfilm_linux.app.state import FreeSpaceView
-
     c = make_controller(sweep600_dir)
     calls = []
-
-    def confirmed_cleanup(store, cancel, publish, numbers, *, release_first=False):
-        assert release_first
-        store.update(
-            lambda m: dataclasses.replace(
-                m,
-                first_tray_released=True,
-                trays=(dataclasses.replace(m.trays[0], auto="freed", raw_removed=True), m.trays[1]),
-            )
-        )
-        publish(FreeSpaceView(((1, 10),), 10, freed=10))
 
     class Pipeline:
         def __init__(self, store, **kwargs):
@@ -250,10 +271,18 @@ def test_manual_first_hold_release_resumes_backlog(sweep600_dir, tmp_path, monke
         def run(self, number):
             calls.append(number)
 
-    monkeypatch.setattr(controller_module, "run_free_space", confirmed_cleanup)
+    monkeypatch.setattr(controller_module, "run_free_space", _confirmed_first_cleanup)
     monkeypatch.setattr(controller_module, "AutoPipeline", Pipeline)
     try:
-        c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+        c.new_batch(
+            tmp_path / "batch",
+            "Test",
+            "",
+            None,
+            600,
+            auto_export=True,
+            export_dir=str(tmp_path / "album"),
+        )
         wait_until(c, lambda: c.state().batch_name == "Test")
         c._session.store.update(
             lambda m: dataclasses.replace(
@@ -355,7 +384,15 @@ def test_auto_scheduling_never_reads_manifest_on_ui_thread(sweep600_dir, tmp_pat
     c = make_controller(sweep600_dir)
     queued = []
     try:
-        c.new_batch(tmp_path / "batch", "Test", "", None, 600, auto_export=True)
+        c.new_batch(
+            tmp_path / "batch",
+            "Test",
+            "",
+            None,
+            600,
+            auto_export=True,
+            export_dir=str(tmp_path / "album"),
+        )
         wait_until(c, lambda: c.state().batch_name == "Test")
         c._command.submit(lambda: None).result(2)
         c._refresher.submit(lambda: None).result(2)
@@ -374,3 +411,128 @@ def test_auto_scheduling_never_reads_manifest_on_ui_thread(sweep600_dir, tmp_pat
     finally:
         monkeypatch.undo()
         c.shutdown()
+
+
+@pytest.mark.parametrize("destination", ["", "   ", "batch", "file"])
+def test_auto_create_requires_usable_destination(sweep600_dir, tmp_path, destination):
+    c = make_controller(sweep600_dir)
+    folder = tmp_path / "batch"
+    (tmp_path / "file").write_text("occupied")
+    export_dir = str(tmp_path / destination) if destination.strip() else destination
+    try:
+        c.new_batch(folder, "Test", "", None, 600, auto_export=True, export_dir=export_dir)
+        wait_until(c, lambda: c.state().banner is not None, timeout=2)
+        assert c.state().batch_name is None
+        assert not folder.exists()
+        assert "folder" in c.state().banner.message.lower()
+    finally:
+        c.shutdown()
+
+
+@pytest.mark.parametrize("damaged", [False, True])
+def test_setting_destination_retries_only_missing_destination_failure(
+    sweep600_dir, tmp_path, monkeypatch, damaged
+):
+    from opticfilm_linux.app import auto
+
+    c = make_controller(sweep600_dir)
+    verified = []
+
+    def verify(store, number):
+        verified.append(number)
+        if damaged:
+            raise RuntimeError("verification failed")
+
+    monkeypatch.setattr(auto, "verify_tray_export", verify)
+    monkeypatch.setattr(auto, "cleanup_raw", lambda *a, **kw: pytest.fail("raw cleanup attempted"))
+    try:
+        c.new_batch(
+            tmp_path / "batch",
+            "Test",
+            "",
+            None,
+            600,
+            auto_export=True,
+            export_dir=str(tmp_path / "album"),
+        )
+        wait_until(c, lambda: c.state().batch_name == "Test")
+        store = c._session.store
+        _fail_without_destination(store, auto)
+        c.set_export_settings(tmp_path / "album", "jpeg", "full")
+        expected = "failed" if damaged else "held"
+        wait_until(
+            c, lambda: verified == [1] and store.snapshot().trays[0].auto == expected, timeout=2
+        )
+        assert verified == [1]
+        trays = store.snapshot().trays
+        assert all(t.auto == "failed" for t in trays[1:])
+        assert all(not t.raw_removed for t in (trays[0], trays[1]))
+        if damaged:
+            assert "verification failed" in trays[0].auto_error
+        else:
+            assert trays[0].auto_error == "" and trays[0].auto_failed == ()
+    finally:
+        c.shutdown()
+
+
+def _fail_without_destination(store, auto):
+    store.update(
+        lambda m: dataclasses.replace(
+            m,
+            defaults=dataclasses.replace(m.defaults, export_dir=""),
+            trays=(TrayRecord(1, TrayStage.REVIEW, auto="pending"),),
+        )
+    )
+    auto.AutoPipeline(store).run(1)
+    missing = store.snapshot().trays[0]
+    assert missing.auto == "failed" and "Choose an album folder" in missing.auto_error
+    store.update(
+        lambda m: dataclasses.replace(
+            m,
+            trays=(
+                missing,
+                dataclasses.replace(missing, number=2, auto_error="verification failed"),
+                dataclasses.replace(missing, number=3, raw_removed=True),
+                dataclasses.replace(missing, number=4, stage=TrayStage.FAILED),
+            ),
+        )
+    )
+
+
+def test_invalid_destination_settings_leave_missing_destination_failure(sweep600_dir, tmp_path):
+    from opticfilm_linux.app import auto
+
+    c = make_controller(sweep600_dir)
+    try:
+        c.new_batch(
+            tmp_path / "batch",
+            "Test",
+            "",
+            None,
+            600,
+            auto_export=True,
+            export_dir=str(tmp_path / "album"),
+        )
+        wait_until(c, lambda: c.state().batch_name == "Test")
+        store = c._session.store
+        _fail_without_destination(store, auto)
+        before = store.snapshot()
+        invalid = tmp_path / "file"
+        invalid.write_text("occupied")
+        c.set_export_settings(invalid, "jpeg", "full")
+        wait_until(c, lambda: c.state().banner is not None, timeout=2)
+        assert store.snapshot() == before
+    finally:
+        c.shutdown()
+
+
+def _confirmed_first_cleanup(store, cancel, publish, numbers, *, release_first=False):
+    assert release_first
+    store.update(
+        lambda m: dataclasses.replace(
+            m,
+            first_tray_released=True,
+            trays=(dataclasses.replace(m.trays[0], auto="freed", raw_removed=True), m.trays[1]),
+        )
+    )
+    publish(FreeSpaceView(((1, 10),), 10, freed=10))

@@ -201,6 +201,60 @@ def _batch_fields(
     }
 
 
+def _scanner_fields(
+    manifest: BatchManifest | None,
+    scanner: ScannerStatus,
+    scan_pending: bool,
+    readonly: bool,
+    holder_control: bool,
+    holder_busy: bool,
+    next_strip: bool,
+    jobs_running: bool,
+    holder_latch: HolderLatch,
+) -> dict:
+    busy = holder_busy or scan_pending or readonly or jobs_running
+    idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
+    return {
+        "scanner": scanner,
+        "scanner_text": scanner_text(scanner),
+        "can_scan": manifest is not None
+        and scanner is ScannerStatus.READY
+        and holder_latch is not HolderLatch.RELEASED
+        and not scan_pending
+        and not holder_busy
+        and not readonly,
+        "scan_pending": scan_pending,
+        "can_eject": idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY),
+        "can_load_next": idle and next_strip and scanner is ScannerStatus.NOT_READY,
+        "next_strip_enabled": next_strip,
+        "can_confirm_scanner": scanner is ScannerStatus.INTERRUPTED and not busy,
+        "holder_busy": holder_busy,
+        "holder_latch_text": holder_latch_text(holder_latch),
+        "can_confirm_holder_latched": idle
+        and not jobs_running
+        and holder_latch is HolderLatch.RELEASED,
+        "holder_latch_warning": manifest is not None and holder_latch is HolderLatch.UNKNOWN,
+    }
+
+
+def _can_finish_box(
+    manifest: BatchManifest | None,
+    busy: bool,
+    runner_busy: bool,
+    updating: frozenset[tuple[int, int]],
+) -> bool:
+    return (
+        bool(manifest and manifest.collection)
+        and not runner_busy
+        and not busy
+        and not updating
+        and not any(
+            t.stage in (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
+            for t in (manifest.trays if manifest else ())
+        )
+    )
+
+
 def build_state(
     manifest: BatchManifest | None,
     *,
@@ -225,45 +279,29 @@ def build_state(
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
-    idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return AppState(
         **_batch_fields(manifest, selected, preview_tokens, updating),
         **_auto_fields(manifest, readonly),
+        **_scanner_fields(
+            manifest,
+            scanner,
+            scan_pending,
+            readonly,
+            holder_control,
+            holder_busy,
+            next_strip,
+            jobs_running,
+            holder_latch,
+        ),
         batch_session=batch_session,
         readonly=readonly,
-        scanner=scanner,
-        scanner_text=scanner_text(scanner),
-        can_scan=manifest is not None
-        and scanner is ScannerStatus.READY
-        and holder_latch is not HolderLatch.RELEASED
-        and not scan_pending
-        and not holder_busy
-        and not readonly,
-        scan_pending=scan_pending,
         trays=tuple(_tray_row(t, progress, scan_started, now) for t in manifest.trays)
         if manifest is not None
         else (),
         banner=banner,
         export=export,
         free_space=free_space,
-        can_eject=idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY),
-        can_load_next=idle and next_strip and scanner is ScannerStatus.NOT_READY,
-        next_strip_enabled=next_strip,
-        can_confirm_scanner=scanner is ScannerStatus.INTERRUPTED and not busy,
-        holder_busy=holder_busy,
-        can_finish_box=bool(manifest and manifest.collection)
-        and not runner_busy
-        and not busy
-        and not updating
-        and not any(
-            t.stage in (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
-            for t in (manifest.trays if manifest else ())
-        ),
-        holder_latch_text=holder_latch_text(holder_latch),
-        can_confirm_holder_latched=idle
-        and not jobs_running
-        and holder_latch is HolderLatch.RELEASED,
-        holder_latch_warning=manifest is not None and holder_latch is HolderLatch.UNKNOWN,
+        can_finish_box=_can_finish_box(manifest, busy, runner_busy, updating),
     )
 
 

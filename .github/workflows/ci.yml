@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # The PR4 function inventory compares against its historical base.
       - uses: astral-sh/setup-uv@v10.3.2
       - run: uv sync
       - run: uv run ruff check .

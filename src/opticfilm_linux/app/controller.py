@@ -18,7 +18,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
-from opticfilm_linux.app.auto import AutoPipeline
+from opticfilm_linux.app.auto import MISSING_DESTINATION, AutoPipeline
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
 from opticfilm_linux.app.holder import WAIT_BATCH, HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
@@ -202,6 +202,8 @@ class Controller(HolderCommands):
         section_size: int = 140,
     ) -> None:
         def job() -> None:
+            if auto_export and not export_dir.strip():
+                raise BatchError(MISSING_DESTINATION)
             if export_dir:
                 _check_export_directory(directory, Path(export_dir))
             defaults = BatchDefaults(
@@ -391,10 +393,20 @@ class Controller(HolderCommands):
     # -- export and free disk space ------------------------------------------------------
 
     def set_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
-        self._run_writer(
-            lambda _runner: self._save_export_settings(directory, fmt, jpeg_size),
-            "Could not save export settings",
-        )
+        def job(_runner: BatchRunner) -> None:
+            self._save_export_settings(directory, fmt, jpeg_size)
+            self._run_writer(retry, "Could not resume automatic export", pool=self._jobs)
+
+        def retry(_runner: BatchRunner) -> None:
+            # Finish any active automatic job before rearming its failed tray.
+            session = self._session
+            if session is not None and session.auto_export:
+                retry = self._auto_pipeline(session.store).retry_missing_destination()
+                with self._lock:
+                    self._auto_due.update(retry)
+                self._submit_auto_due()
+
+        self._run_writer(job, "Could not save export settings")
 
     def _save_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
         store = self._open_store()

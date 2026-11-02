@@ -591,12 +591,18 @@ def test_start_page_saves_export_folder_and_size(loaded, tmp_path):
     assert not warnings
 
 
-def test_start_page_automatic_export_is_opt_in_and_saved(loaded, tmp_path):
+@pytest.mark.parametrize("keep_raw", [False, True])
+def test_start_page_automatic_export_is_opt_in_and_saved(loaded, tmp_path, keep_raw):
     bridge, engine, warnings = loaded
     root = engine.rootObjects()[0]
     switch = root.findChild(QObject, "newBatchAutoExport")
     assert switch is not None
     assert not switch.property("checked")
+    retain = root.findChild(QObject, "newBatchKeepRaw")
+    assert retain is not None
+    assert retain.property("text") == "Keep raw scans after export"
+    assert not retain.property("checked")
+    retain.setProperty("checked", keep_raw)
     page = root.findChild(QObject, "startPage")
     page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
     page.setProperty("exportFolder", QUrl.fromLocalFile(str(tmp_path / "photos")))
@@ -607,9 +613,77 @@ def test_start_page_automatic_export_is_opt_in_and_saved(loaded, tmp_path):
     QMetaObject.invokeMethod(create, "click")
     _wait(bridge, lambda: bridge.hasBatch)
     assert bridge.batchAutoExport
+    from opticfilm_linux.batch.store import BatchStore
+
+    with BatchStore.open(tmp_path / "Automatic", readonly=True) as store:
+        assert store.snapshot().defaults.keep_raw is keep_raw
     _drain_deferred_deletes()
     assert root.findChild(QObject, "autoPipelineStatus") is not None
     assert root.findChild(QObject, "freeHeldRaw") is not None
+    assert not warnings
+
+
+@pytest.mark.parametrize("destination", ["", "https://example.com/photos", "file", "inside"])
+def test_start_page_requires_valid_automatic_destination(loaded, tmp_path, destination):
+    bridge, engine, warnings = loaded
+    root = engine.rootObjects()[0]
+    page = root.findChild(QObject, "startPage")
+    page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
+    root.findChild(QObject, "newBatchName").setProperty("text", "Automatic")
+    create = root.findChild(QObject, "createBatch")
+    _wait(bridge, lambda: create.property("enabled"))
+    if destination == "file":
+        path = tmp_path / "file"
+        path.write_text("occupied")
+        url = QUrl.fromLocalFile(str(path))
+    elif destination == "inside":
+        url = QUrl.fromLocalFile(str(tmp_path / "Automatic" / "photos"))
+    else:
+        url = QUrl(destination)
+    page.setProperty("exportFolder", url)
+    root.findChild(QObject, "newBatchAutoExport").setProperty("checked", True)
+    _wait(bridge, lambda: not create.property("enabled"))
+    reason = root.findChild(QObject, "automaticExportProblem")
+    assert reason.property("visible")
+    assert reason.property("text")
+    page.setProperty("exportFolder", QUrl.fromLocalFile(str(tmp_path / "photos")))
+    _wait(bridge, lambda: create.property("enabled"))
+    assert not reason.property("visible")
+    assert not warnings
+
+
+@pytest.mark.parametrize("keep_raw", [None, False, True])
+def test_new_batch_qml_retention_slot(loaded, tmp_path, keep_raw):
+    import json
+
+    from opticfilm_linux.batch.store import BatchStore
+
+    bridge, engine, warnings = loaded
+    args = [
+        QUrl.fromLocalFile(str(tmp_path)).toString(),
+        "Retention",
+        "",
+        "",
+        600,
+        0,
+        False,
+        [],
+        [],
+        str(tmp_path / "photos"),
+        "jpeg",
+        "full",
+        "",
+        1,
+        "a",
+        140,
+        True,
+    ]
+    if keep_raw is not None:
+        args.append(keep_raw)
+    _qml_call(engine, "bridge.newBatch(" + ",".join(map(json.dumps, args)) + ")")
+    _wait(bridge, lambda: bridge.hasBatch)
+    with BatchStore.open(tmp_path / "Retention", readonly=True) as store:
+        assert store.snapshot().defaults.keep_raw is bool(keep_raw)
     assert not warnings
 
 

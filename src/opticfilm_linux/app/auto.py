@@ -21,6 +21,7 @@ from opticfilm_linux.batch.store import BatchError, BatchStore
 
 READY = (TrayStage.REVIEW, TrayStage.EXPORTED)
 INCOMPLETE = ("pending", "exported", "verified")
+MISSING_DESTINATION = "Choose an album folder before automatic export"
 
 
 class AutoPipeline:
@@ -58,6 +59,33 @@ class AutoPipeline:
             if not tray.auto and tray.stage in READY:
                 self.arm(tray.number)
         return tuple(t.number for t in self.store.snapshot().trays if self._eligible(t))
+
+    def retry_missing_destination(self) -> tuple[int, ...]:
+        """Retry only recoverable destination failures after settings were validated."""
+        manifest = self.store.snapshot()
+        if (
+            self.store.readonly
+            or not manifest.defaults.auto_export
+            or not manifest.defaults.export_dir
+        ):
+            return ()
+        retried = []
+        for tray in manifest.trays:
+            changed = self.store.update_tray_if(
+                tray.number,
+                lambda t: (
+                    t.auto == "failed"
+                    and t.stage in READY
+                    and not t.raw_removed
+                    and t.auto_error.endswith(f". {MISSING_DESTINATION}")
+                ),
+                auto="pending",
+                auto_error="",
+                auto_failed=(),
+            )
+            if changed:
+                retried.append(tray.number)
+        return tuple(retried)
 
     def _eligible(self, tray) -> bool:
         if tray.stage not in READY:
@@ -114,7 +142,7 @@ class AutoPipeline:
         self._accept_pending(number)
         defaults = self.store.snapshot().defaults
         if not defaults.export_dir:
-            raise BatchError("Choose an album folder before automatic export")
+            raise BatchError(MISSING_DESTINATION)
         failed, errors = [], []
         for slide in self._tray(number).slides:
             if self.cancel.is_set():

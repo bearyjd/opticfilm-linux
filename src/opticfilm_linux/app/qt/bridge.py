@@ -10,7 +10,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
-from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
+from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller, _check_export_directory
 from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_text
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
@@ -31,6 +31,7 @@ from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
 from opticfilm_linux.batch.slots import slot_orientations
+from opticfilm_linux.batch.store import BatchError
 
 TICK_MS = 500
 DEBOUNCE_MS = 300
@@ -321,6 +322,24 @@ class Bridge(QObject):
 
     # -- batch ---------------------------------------------------------------------------
 
+    @Slot(str, str, str, result=str)
+    def automaticExportProblem(self, parent_url: str, name: str, export_url: str) -> str:  # noqa: N802
+        """Explain why setup cannot use this automatic export destination."""
+        if not export_url.strip():
+            return "Choose an export folder for automatic export."
+        destination = QUrl(export_url)
+        if not destination.isLocalFile():
+            return "Choose a local export folder for automatic export."
+        parent = QUrl(parent_url)
+        if not parent.isLocalFile() or not name.strip():
+            return "Choose a batch folder and enter a batch name."
+        try:
+            folder = batch_subfolder(Path(parent.toLocalFile()), name)
+            _check_export_directory(folder, Path(destination.toLocalFile()))
+        except (BatchError, OSError, ValueError) as exc:
+            return str(exc)
+        return ""
+
     @Slot(str, str, str, str, int)
     @Slot(str, str, str, str, int, int)
     @Slot(str, str, str, str, int, int, bool)
@@ -387,6 +406,26 @@ class Bridge(QObject):
         int,
         bool,
     )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+        int,
+        bool,
+        bool,
+    )
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -406,6 +445,7 @@ class Bridge(QObject):
         section: str = "a",
         section_size: int = 140,
         auto_export: bool = False,
+        keep_raw: bool = False,
     ) -> None:
         """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
         rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
@@ -426,6 +466,7 @@ class Bridge(QObject):
             export_format=export_format,  # type: ignore[arg-type]
             jpeg_size=jpeg_size,  # type: ignore[arg-type]
             auto_export=auto_export,
+            keep_raw=keep_raw,
             collection=collection,
             box=box,
             section=section,
