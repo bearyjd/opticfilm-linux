@@ -175,11 +175,35 @@ def test_relative_slide_level_receipt_is_rejected(delivery, monkeypatch):
     _assert_raw_kept(store)
 
 
-def test_tiff_cleanup_explains_how_to_make_raw_freeable(delivery):
+def test_tiff_cleanup_verifies_writer_receipt(delivery):
+    store, directory = delivery
+    (path,) = export.export_batch(store, directory, "tiff16").written
+    export.cleanup_raw(store, 1)
+    assert store.snapshot().trays[0].raw_removed
+    assert not store.sweep_dir(1, 1).exists()
+    assert path.exists()
+
+
+@pytest.mark.parametrize("truncate", [False, True])
+def test_tiff_cleanup_preserves_raw_when_artifact_changed(delivery, truncate):
+    store, directory = delivery
+    (path,) = export.export_batch(store, directory, "tiff16").written
+    artifact = bytearray(path.read_bytes())
+    if truncate:
+        del artifact[-1:]
+    else:
+        artifact[-1] ^= 1
+    path.write_bytes(artifact)
+    with pytest.raises(export.ExportVerificationFailed, match="digest"):
+        export.cleanup_raw(store, 1)
+    _assert_raw_kept(store)
+
+
+def test_jpeg_verification_rejects_tiff_receipt(delivery):
     store, directory = delivery
     export.export_batch(store, directory, "tiff16")
-    with pytest.raises(export.ExportVerificationFailed, match="TIFF.*re-export as JPEG"):
-        export.cleanup_raw(store, 1)
+    with pytest.raises(export.ExportVerificationFailed, match="not a JPEG"):
+        export.verify_tray_export(store, 1)
     _assert_raw_kept(store)
 
 

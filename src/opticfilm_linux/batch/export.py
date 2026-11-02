@@ -357,7 +357,7 @@ def export_batch(
 
 
 class ExportVerificationFailed(BatchError):
-    """A particular slide failed its decoded JPEG verification."""
+    """A particular slide failed its durable export verification."""
 
     def __init__(self, number: int, position: int, reason: Exception):
         self.position = position
@@ -430,10 +430,11 @@ def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
                 raise ValueError("export digest differs from written artifact")
             if byte_length is not None and actual_length != byte_length:
                 raise ValueError("export byte length differs from written artifact")
-            if path.suffix.lower() in (".tif", ".tiff"):
-                raise ValueError(
-                    "16-bit TIFF verification is unavailable; re-export as JPEG to free raw"
-                )
+            if not jpeg_only and path.suffix.lower() in (".tif", ".tiff"):
+                # The receipt hashes the exact bytes encoded through the writer's open
+                # descriptor. Matching it proves the full 16-bit artifact survived intact;
+                # Pillow's TIFF decoder cannot preserve every supported 16-bit RGB mode.
+                continue
             with Image.open(path) as image:
                 if jpeg_only and image.format != "JPEG":
                     raise ValueError("export is not a JPEG")

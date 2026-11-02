@@ -847,12 +847,17 @@ class Controller(HolderCommands):
             due, self._auto_due = self._auto_due, set()
             if session is None or session.runner is None or self._cancel_auto.is_set():
                 return
-            if not session.auto_export:
-                due &= {
-                    t.number
-                    for t in session.store.snapshot().trays
-                    if t.raw_removed and t.auto == "verified"
-                }
+            if not due:
+                return
+        if not session.auto_export:
+            due &= {
+                t.number
+                for t in session.store.snapshot().trays
+                if t.raw_removed and t.auto == "verified"
+            }
+        with self._lock:
+            if self._session is not session or self._cancel_auto.is_set():
+                return
             due -= self._auto_active
             self._auto_active.update(due)
         for number in sorted(due):
