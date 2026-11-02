@@ -10,7 +10,7 @@ from opticfilm_linux.scanner.driver import (
     install_signal_cleanup,
 )
 
-NEXT_STRIP_ENV = "OPTICFILM_NEXT_STRIP"  # "1" allows the hardware-unproven ``load --next-strip``
+NEXT_STRIP_ENV = "OPTICFILM_NEXT_STRIP"  # explicit off values disable ``load --next-strip``
 EJECT_BUTTON_ENV = "OPTICFILM_EJECT_BUTTON"  # "0" switches the front-panel Eject button off
 
 
@@ -18,7 +18,8 @@ EJECT_BUTTON_OFF = ("0", "false", "no", "off")
 
 
 def next_strip_enabled() -> bool:
-    return os.environ.get(NEXT_STRIP_ENV) == "1"
+    """On by default; explicit off values provide an operator kill switch."""
+    return os.environ.get(NEXT_STRIP_ENV, "").lower() not in EJECT_BUTTON_OFF
 
 
 def eject_button_enabled() -> bool:

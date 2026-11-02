@@ -35,6 +35,7 @@ Verified natively on Linux:
   four finished frames, calibration integrity clean on each, about 5 minutes. The log shows two
   "poll timed out, continuing" warnings that the per-frame diagnostics do not count. One run on
   one scanner is not a reliability figure.
+- On 2026-11-01, a supervised five-swap holder series and a full tray at 7200 dpi passed on one unit with one operator. This is a solid series, not a reliability figure.
 - The scanner's front-panel Eject button, through the driver's `watch` command: one press, one
   eject.
 - The same button through the always-on watcher service (2026-10-31, one unit, one press, scanner
@@ -51,7 +52,6 @@ Not verified, or known problems:
 - The driver's experimental `--cal-wait-bufempty` flag is not usable yet: with the stop gate off
   it aborted the scan after 0.3 s, because the scanner's buffer-empty bit takes about 1 s to clear
   after the execute pulse. It stays off by default and is not needed with the stop gate on.
-- A full tray at 7200 dpi is untested.
 - Ejecting the holder from a cold start timed out twice during homing.
 - The driver's startup recovery is experimental and opt-in.
 - The calibration stop gate is on by default in the driver (`--cal-wait-scanstop off` disables
@@ -128,7 +128,7 @@ ofscan batch new ~/slides/trips --name "Trips" --album "Family Trips" --dpi 600
 ofscan batch scan ~/slides/trips --fake demo-sweep --count 3   # demo: replays a stored sweep
 ofscan batch scan ~/slides/trips                               # real scanner: one tray; use --count 1
 ofscan batch eject                       # between trays: eject the holder
-ofscan batch load                        # load the next holder (needs OPTICFILM_NEXT_STRIP=1)
+ofscan batch load                        # load the next holder (default on; OPTICFILM_NEXT_STRIP=0 disables)
 ofscan batch status ~/slides/trips
 ofscan batch accept-all ~/slides/trips
 ofscan batch export ~/slides/trips --out ~/Pictures/scans
@@ -212,9 +212,11 @@ The scanner has to be loaded by hand once after it is switched on; the app canno
 5. Check that it will not pull out (latched), then press **Scan**.
 
 Between trays press **Eject holder**, swap the holder and push it in, then either repeat the steps
-above or press **Load next holder**. Load next holder runs `of135i load --next-strip`, which is
-not yet proven on this scanner, so it stays disabled unless the app is started with
-`OPTICFILM_NEXT_STRIP=1`. When the driver refuses a scan the window says so in plain words:
+above or press **Load next holder**. Load next holder runs `of135i load --next-strip` and is
+enabled by default; set `OPTICFILM_NEXT_STRIP=0` to disable it. Case-insensitive `false`, `no`,
+and `off` also disable it; unset, empty, and other values enable it. After power-on, the first
+load still requires the interactive terminal steps above. When the driver refuses a scan the
+window says so in plain words:
 power-cycle the scanner (off until its lights go out, then on), load the holder again and rescan
 that tray. The driver's own message is under **Details**.
 

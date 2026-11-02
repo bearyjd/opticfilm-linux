@@ -59,13 +59,16 @@ def test_the_app_uses_the_real_scanner_unless_demo_mode(fake_driver_env, sweep60
     assert isinstance(scanner, HolderControl)
 
 
-def test_next_strip_is_off_unless_switched_on(monkeypatch):
+def test_next_strip_is_on_unless_switched_off(monkeypatch):
     monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
-    assert next_strip_enabled() is False
+    assert next_strip_enabled() is True
     monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "yes")
-    assert next_strip_enabled() is False
+    assert next_strip_enabled() is True
     monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "1")
     assert next_strip_enabled() is True
+
+    monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "0")
+    assert next_strip_enabled() is False
 
 
 def test_the_load_command_follows_the_driver_folder_or_an_override(monkeypatch):

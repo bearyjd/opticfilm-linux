@@ -47,6 +47,7 @@ from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.scanner.select import next_strip_enabled
 from opticfilm_linux.worker import lower_worker_priority
 
 SLIDES_PER_TRAY = 4
@@ -75,14 +76,14 @@ class Controller(HolderCommands):
         self,
         scanner_factory: Callable[[int], Scanner],
         clock: Callable[[], float] = time.monotonic,
-        next_strip: bool = False,
+        next_strip: bool | None = None,
         eject_button: bool = True,
         eject_watch: EjectWatch | None = None,
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
-        self._next_strip = next_strip  # the experimental non-interactive load is allowed
+        self._next_strip = next_strip_enabled() if next_strip is None else next_strip
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
         self._holder_busy = False  # an eject or load is queued or running
         self._lifecycle_pending = 0  # accepted batch changes exclude new holder movements

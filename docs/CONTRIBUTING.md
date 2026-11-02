@@ -31,7 +31,7 @@
 | `ofscan scan [--fake DIR] [--dpi N]` | Scan a holder and process it (default 3600 dpi) |
 | `ofscan process SWEEP_DIR` | Process a stored sweep |
 | `ofscan enhance FILE... [--dpi N]` | Enhance finished images from other scanning software |
-| `ofscan batch new \| status \| scan \| eject \| load \| confirm-scanner \| accept-all \| export` | Drive a batch from a terminal; `load` needs `OPTICFILM_NEXT_STRIP=1` |
+| `ofscan batch new \| status \| scan \| eject \| load \| confirm-scanner \| accept-all \| export` | Drive a batch from a terminal; `load` is enabled by default; `OPTICFILM_NEXT_STRIP=0` disables it |
 | `opticfilm [--fake SWEEP_DIR]` | The desktop app (needs the distribution's PySide6 and Kirigami) |
 | `python scripts/check_spike.py DIR` | Offline verdict for a hardware-run folder |
 | `python scripts/poll_report.py DIR...` | Offline poll-timeout report for run folders |
@@ -56,7 +56,7 @@ Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage
 |----------|----------|---------|
 | `OPTICFILM_DRIVER_DIR` | For the real scanner, unless `of135i` is importable | Checkout of opticfilm135i-linux holding the `of135i/` package. Without it and without an importable `of135i`, the scanner is reported as not found |
 | `OPTICFILM_DRIVER_RUNNER` | No | How the shown load command runs the driver: unset = distrobox container `dev`, `host` = directly, `distrobox:<name>` = that container (letters, digits, `-`, `_`, `.`; must start with a letter or digit). Anything else falls back to the default and is logged |
-| `OPTICFILM_NEXT_STRIP` | No (off) | `1` enables the hardware-unproven `load --next-strip` and the app's load-next-holder; any other value leaves it off |
+| `OPTICFILM_NEXT_STRIP` | No (on) | Exact case-insensitive `0`, `false`, `no`, or `off` disables `load --next-strip` and the app's load-next-holder; unset, empty, and anything else enables it. First load after power-on still uses the interactive terminal command |
 | `OPTICFILM_EJECT_BUTTON` | No (on) | `0`, `false`, `no` or `off` (any case) switches the front-panel Eject button off; anything else leaves it on |
 | `OPTICFILM_LOAD_COMMAND` | No | Replaces the first-load terminal command shown in the app's help dialog |
 | `OPTICFILM_HW_ASSUME_YES` | No | Only for `scripts/hardware/` wrappers that supervise the scanner: skips the interactive confirmation of the motor-moving series and prints a notice. Without it, a closed or piped stdin aborts with no driver call |

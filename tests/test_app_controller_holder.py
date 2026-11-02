@@ -188,3 +188,32 @@ def test_a_failed_tray_banner_is_plain_and_keeps_the_detail(build, tmp_path, err
     c.scan()  # fails at once, so can_scan may never be seen false
     wait_until(c, lambda: c.state().banner is not None)
     assert c.state().banner.message == message and error in c.state().banner.detail
+
+
+def test_load_next_is_available_with_env_unset(sweep600_dir, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
+    scanner = RecordingScanner(sweep600_dir, (ScannerStatus.NOT_READY,))
+    c = Controller(lambda _dpi: scanner)
+    try:
+        open_new(c, tmp_path / "default-on")
+        wait_until(c, lambda: c.state().can_eject)
+        assert c.state().can_load_next and c.state().next_strip_enabled
+        c.load_next_holder()
+        wait_until(c, lambda: scanner.calls == ["load_next_strip"])
+    finally:
+        c.shutdown()
+
+
+def test_load_next_env_zero_keeps_switched_off_banner(sweep600_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "0")
+    scanner = RecordingScanner(sweep600_dir, (ScannerStatus.NOT_READY,))
+    c = Controller(lambda _dpi: scanner)
+    try:
+        open_new(c, tmp_path / "explicit-off")
+        wait_until(c, lambda: c.state().can_eject)
+        assert not c.state().can_load_next and not c.state().next_strip_enabled
+        c.load_next_holder()
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "switched off" in c.state().banner.message and scanner.calls == []
+    finally:
+        c.shutdown()

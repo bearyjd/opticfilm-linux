@@ -79,7 +79,10 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
 
     for name, text in (
         ("eject", "eject the film holder"),
-        ("load", "load the next holder without a terminal (needs OPTICFILM_NEXT_STRIP=1)"),
+        (
+            "load",
+            "load the next holder without a terminal (default on; OPTICFILM_NEXT_STRIP=0 disables)",
+        ),
     ):
         holder = sub.add_parser(name, help=text)
         holder.add_argument("--fake", type=Path, help="use the stored sweep in this folder")
@@ -170,8 +173,8 @@ def _holder(args: argparse.Namespace) -> int:
     command = args.batch_command
     if command == "load" and not next_strip_enabled():
         raise ScanError(
-            "loading the next holder is not proven on this scanner yet; "
-            f"set {NEXT_STRIP_ENV}=1 to allow it, or load the holder by hand"
+            "loading the next holder is switched off; "
+            f"unset {NEXT_STRIP_ENV} to enable it, or use the terminal load instructions"
         )
     try:
         scanner: Scanner = FakeScanner(args.fake) if args.fake is not None else real_scanner()

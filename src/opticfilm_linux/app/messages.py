@@ -40,7 +40,8 @@ _SCANNER = {
     ScannerStatus.READY: "Scanner ready",
     ScannerStatus.BUSY: "Scanner busy",
     ScannerStatus.NOT_READY: (
-        'Scanner is not loaded. Open "How to load the scanner", then press Scan.'
+        "Scanner is not loaded. Between trays, press Load next holder. After power-on, "
+        'open "How to load the scanner" for the first terminal load.'
     ),
     ScannerStatus.NOT_CONNECTED: "Scanner not found. Switch it on and check the USB cable.",
     ScannerStatus.ERROR: (
