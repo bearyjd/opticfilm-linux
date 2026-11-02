@@ -233,7 +233,8 @@ def test_auto_status_counts_flagged_and_failed_after_acceptance():
     assert state.auto_export
     assert state.auto_flagged == 2
     assert state.auto_failed == 1
-    assert "1 finished" in state.auto_status
+    assert "0 finished" in state.auto_status
+    assert "1 waiting" in state.auto_status
     assert "2 flagged" in state.auto_status
     assert "1 failed" in state.auto_status
     assert state.held_tray == 1

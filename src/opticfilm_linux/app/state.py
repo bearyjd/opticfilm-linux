@@ -30,6 +30,7 @@ class SlideCard:
     exported: bool
     updating: bool
     preview_token: int  # modified time of the "after" preview; 0 when there is none
+    before_preview_token: int = 0
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class TrayRow:
     auto_failed: tuple[int, ...] = ()
     auto_flagged: tuple[int, ...] = ()
     auto_error: str = ""
+    can_recover_raw: bool = False
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,9 @@ def _tray_row(
         error=tray.error,
         needs_look=sum(1 for s in tray.slides if s.status is SlideStatus.NEEDS_LOOK),
         raw_removed=tray.raw_removed,
+        can_recover_raw=tray.raw_removed
+        and bool(tray.cleanup_sweeps)
+        and tray.number in raw_pending,
         auto=tray.auto,
         auto_failed=tray.auto_failed,
         auto_flagged=tray.auto_flagged,
@@ -190,6 +195,7 @@ def _slide_card(
         exported=slide.exported,
         updating=key in updating,
         preview_token=tokens.get(key, 0),
+        before_preview_token=tokens.get((*key, "before"), 0),
     )
 
 
@@ -390,8 +396,16 @@ def _auto_fields(manifest: BatchManifest | None, readonly: bool, preview_tokens=
     trays = manifest.trays
     flagged = sum(len(t.auto_flagged) for t in trays)
     failed = sum(len(t.auto_failed) or int(t.auto == "failed") for t in trays)
-    finished = sum(t.auto in ("held", "freed") for t in trays)
-    active = sum(t.auto in ("pending", "exported", "verified") for t in trays)
+    finished = sum(t.auto == "freed" for t in trays)
+    held_count = sum(
+        t.auto in ("held", "blocked") or (t.auto == "verified" and bool(t.auto_error))
+        for t in trays
+    )
+    active = sum(
+        t.auto in ("pending", "exported", "verified")
+        and not (t.auto == "verified" and t.auto_error)
+        for t in trays
+    )
     first, empty = _approval_candidates(trays)
     held = (
         first.number
@@ -420,7 +434,7 @@ def _auto_fields(manifest: BatchManifest | None, readonly: bool, preview_tokens=
         "held_tray": held,
         "auto_status": (
             f"Automatic export: {finished} finished, {active} in progress, "
-            f"{flagged} flagged, {failed} failed"
+            f"{held_count} waiting, {flagged} flagged, {failed} failed"
         )
         if any(t.auto and t.auto != "off" for t in trays)
         else "",

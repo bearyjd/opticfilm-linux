@@ -49,13 +49,28 @@ def _replace_slide(
     new_slide = dataclasses.replace(slide, empty_confirmed=None, **changes)
     slides = tuple(new_slide if s.position == slide.position else s for s in tray.slides)
     trays = tuple(
-        dataclasses.replace(t, slides=slides) if t.number == tray.number else t
-        for t in manifest.trays
+        _reviewed_tray(t, slides) if t.number == tray.number else t for t in manifest.trays
     )
     return dataclasses.replace(manifest, trays=trays)
 
 
-EDITABLE_STAGES = (TrayStage.REVIEW, TrayStage.ENHANCING)
+def _reviewed_tray(tray: TrayRecord, slides, *, render_changed: bool = False) -> TrayRecord:
+    changed = render_changed or any(
+        a.settings != b.settings or a.preview_stale != b.preview_stale
+        for a, b in zip(tray.slides, slides, strict=True)
+    )
+    rearm = changed and tray.auto in ("held", "exported", "verified")
+    return dataclasses.replace(
+        tray,
+        slides=slides,
+        stage=TrayStage.REVIEW if changed and tray.stage is TrayStage.EXPORTED else tray.stage,
+        auto="pending" if rearm else tray.auto,
+        auto_error="" if rearm else tray.auto_error,
+        auto_failed=() if rearm else tray.auto_failed,
+    )
+
+
+EDITABLE_STAGES = (TrayStage.REVIEW, TrayStage.ENHANCING, TrayStage.EXPORTED)
 
 
 def _require_raw(tray: TrayRecord) -> None:
@@ -166,7 +181,7 @@ def apply_slide_settings(
 
 def accept_all(store: BatchStore) -> None:
     def accepted(slide: SlideRecord) -> SlideRecord:
-        if slide.status is SlideStatus.BLANK:
+        if slide.status is SlideStatus.BLANK or slide.owner_decided:
             return slide
         return dataclasses.replace(
             slide,
@@ -240,7 +255,7 @@ def set_tray_mode(store: BatchStore, number: int, mode: Mode) -> None:
                 if changed
                 else t.slides
             )
-            return dataclasses.replace(t, mode=mode, slides=slides)
+            return dataclasses.replace(_reviewed_tray(t, slides, render_changed=changed), mode=mode)
 
         return dataclasses.replace(manifest, trays=tuple(renewed(t) for t in manifest.trays))
 
@@ -260,7 +275,7 @@ def _reoriented(tray: TrayRecord) -> TrayRecord:
     )
     # an exported tray now has slides to export again, so it is back in review
     stage = TrayStage.REVIEW if tray.stage is TrayStage.EXPORTED else tray.stage
-    return dataclasses.replace(tray, slides=slides, stage=stage)
+    return dataclasses.replace(_reviewed_tray(tray, slides), stage=stage)
 
 
 def set_batch_orientation(store: BatchStore, rotation: int, mirror: bool) -> tuple[int, ...]:
@@ -367,7 +382,7 @@ def _edit_many(
                         slide = updated
                 slides.append(slide)
             stage = TrayStage.REVIEW if settings_changed else tray.stage
-            trays.append(dataclasses.replace(tray, slides=tuple(slides), stage=stage))
+            trays.append(dataclasses.replace(_reviewed_tray(tray, tuple(slides)), stage=stage))
         return dataclasses.replace(manifest, trays=tuple(trays))
 
     store.update(change)

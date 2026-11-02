@@ -158,7 +158,7 @@ def test_verified_tray_waits_for_current_settings_approval_before_cleanup(store,
     monkeypatch.setattr(automatic, "cleanup_raw", unexpected_cleanup)
     auto.run(2)
     assert auto._tray(2).auto == "held"
-    assert auto._tray(2).auto_error == ""
+    assert auto._tray(2).auto_error == "Waiting for first-tray raw removal approval"
     assert 2 not in auto.resume()
 
 
@@ -286,5 +286,5 @@ def test_confirmed_empty_warning_is_cleared_while_raw_stays_held(store):
     )
     auto._verify_and_finish(1)
     assert auto._tray(1).auto == "held"
-    assert auto._tray(1).auto_error == ""
+    assert auto._tray(1).auto_error == "Waiting for first-tray raw removal approval"
     assert not auto._tray(1).raw_removed

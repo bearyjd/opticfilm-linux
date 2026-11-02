@@ -99,7 +99,7 @@ def _directory_fd(directory: Path, *, create: bool):
                     raise
                 try:
                     os.mkdir(component, dir_fd=descriptor)
-                    os.fsync(descriptor)
+                    _sync_directory(descriptor)
                 except FileExistsError:
                     pass
                 child = os.open(component, flags, dir_fd=descriptor)
@@ -190,11 +190,15 @@ def _sync_directory(descriptor: int) -> None:
     try:
         os.fsync(descriptor)
     except OSError as exc:
-        if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
-            raise
+        if exc.errno in (errno.EINVAL, errno.ENOTSUP):
+            raise OSError(
+                exc.errno, "Directory sync is unsupported; cannot guarantee a durable export."
+            ) from exc
+        raise
 
 
 def _sync_directories(directory: Path, root: Path | None = None) -> None:
+    """Persist every ancestor entry, including directories left by a failed export."""
     root = (root or directory).absolute()
     parent = directory.absolute()
     if not parent.is_relative_to(root):
@@ -202,7 +206,7 @@ def _sync_directories(directory: Path, root: Path | None = None) -> None:
     while True:
         with _directory_fd(parent, create=False) as descriptor:
             _sync_directory(descriptor)
-        if parent == root:
+        if parent == parent.parent:
             return
         parent = parent.parent
 

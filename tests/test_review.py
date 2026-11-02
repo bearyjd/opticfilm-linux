@@ -219,7 +219,7 @@ def test_runner_status_change_and_accept_all_emit_events(store, sweep_dir):
     runner.accept_all()
     events = list(runner.events.queue)
     assert SlideUpdated(1, 2) in events
-    assert _slide(store, 1, 2).status is SlideStatus.ACCEPTED
+    assert _slide(store, 1, 2).status is SlideStatus.NEEDS_LOOK
     runner.close()
 
 
@@ -262,9 +262,7 @@ def test_concurrent_edits_and_enhancement_never_corrupt_the_manifest(store, swee
     assert reopened.snapshot().trays[2].stage is TrayStage.REVIEW
 
 
-@pytest.mark.parametrize(
-    "stage", [TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.FAILED, TrayStage.EXPORTED]
-)
+@pytest.mark.parametrize("stage", [TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.FAILED])
 def test_edits_and_mode_changes_need_a_reviewable_tray(store, stage):
     store.update_tray(1, stage=stage)
     with pytest.raises(BatchError, match="review"):

@@ -44,6 +44,7 @@ TRAY_KEYS = (
     "error",
     "needsLook",
     "rawRemoved",
+    "canRecoverRaw",
     "auto",
     "autoFailed",
     "autoError",
@@ -86,6 +87,7 @@ def _tray_dict(row: TrayRow) -> dict[str, Any]:
         "error": row.error or "",
         "needsLook": row.needs_look,
         "rawRemoved": row.raw_removed,
+        "canRecoverRaw": row.can_recover_raw,
         "auto": row.auto,
         "autoFailed": ", ".join(map(str, row.auto_failed)),
         "autoError": row.auto_error,
@@ -111,7 +113,9 @@ def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
         "exported": card.exported,
         "updating": card.updating,
         "afterUrl": f"{base}/after/{card.preview_token}" if card.preview_token else "",
-        "beforeUrl": f"{base}/before/{card.preview_token}" if card.preview_token else "",
+        "beforeUrl": f"{base}/before/{card.before_preview_token}"
+        if card.before_preview_token
+        else "",
     }
 
 
@@ -660,6 +664,11 @@ class Bridge(QObject):
     @Slot(int)
     def confirmFreeHeld(self, number: int) -> None:  # noqa: N802
         self._controller.confirm_free_held(number)
+
+    @Slot(int)
+    def recoverInterruptedCleanup(self, number: int) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.recover_interrupted_cleanup(number)
 
     @Slot()
     def cancelFreeSpace(self) -> None:  # noqa: N802

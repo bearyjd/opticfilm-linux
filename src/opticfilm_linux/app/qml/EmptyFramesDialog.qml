@@ -12,10 +12,43 @@ Kirigami.Dialog {
     objectName: "emptyFramesDialog"
     title: qsTr("Review empty frames in tray %1").arg(tray)
     standardButtons: Kirigami.Dialog.NoButton
-    onPreviewsChanged: loaded = 0
+    property string zoomUrl: ""
+    onPreviewsChanged: Qt.callLater(refreshLoaded)
+
+    function refreshLoaded() {
+        let ready = 0;
+        for (let i = 0; i < frames.count; ++i) {
+            const frame = frames.itemAt(i);
+            if (frame && frame.ready)
+                ready += 1;
+        }
+        loaded = ready;
+    }
+
+    function enlargeFrame(index: int) {
+        zoomUrl = previews[index].url;
+        enlarged.open();
+    }
+
+    property QQC2.Dialog zoomDialog: QQC2.Dialog {
+        id: enlarged
+        objectName: "enlargedEmptyFrame"
+        parent: QQC2.Overlay.overlay
+        modal: true
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        width: parent.width * 0.9
+        height: parent.height * 0.9
+        title: qsTr("Inspect empty frame")
+        standardButtons: QQC2.Dialog.Close
+        contentItem: Image {
+            fillMode: Image.PreserveAspectFit
+            source: dialog.zoomUrl
+        }
+    }
 
     ColumnLayout {
-        implicitWidth: Kirigami.Units.gridUnit * 34
+        implicitWidth: Kirigami.Units.gridUnit * 44
         QQC2.Label {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
@@ -25,23 +58,31 @@ Kirigami.Dialog {
             Layout.fillWidth: true
             columns: 2
             Repeater {
+            id: frames
             model: dialog.previews
+            onItemAdded: Qt.callLater(dialog.refreshLoaded)
+            onItemRemoved: Qt.callLater(dialog.refreshLoaded)
             delegate: ColumnLayout {
                 required property var modelData
+                required property int index
+                property bool ready: preview.status === Image.Ready && modelData.fingerprint !== ""
+                onReadyChanged: Qt.callLater(dialog.refreshLoaded)
+                Component.onCompleted: Qt.callLater(dialog.refreshLoaded)
                 Layout.fillWidth: true
                 QQC2.Label { text: qsTr("Frame %1").arg(modelData.position) }
                 Image {
+                    id: preview
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Kirigami.Units.gridUnit * 9
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 11
                     fillMode: Image.PreserveAspectFit
                     source: modelData.url
-                    property bool counted: false
-                    onStatusChanged: {
-                        if (status === Image.Ready && !counted && modelData.fingerprint !== "") {
-                            counted = true;
-                            dialog.loaded += 1;
-                        }
-                    }
+
+                }
+                QQC2.Button {
+                    objectName: "enlargeEmptyFrame" + modelData.position
+                    text: qsTr("Enlarge frame %1").arg(modelData.position)
+                    enabled: preview.status === Image.Ready
+                    onClicked: dialog.enlargeFrame(index)
                 }
             }
         }

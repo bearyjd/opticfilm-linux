@@ -134,3 +134,12 @@ def _still_freeable(tray: TrayRecord) -> bool:
         and all(is_empty_confirmed(tray, s) for s in tray.slides if s.status is SlideStatus.BLANK)
         and all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
     )
+
+
+def _unreviewed_flags(tray: TrayRecord) -> bool:
+    return any(
+        slide.status is not SlideStatus.BLANK
+        and not slide.owner_decided
+        and (slide.position in tray.auto_flagged or slide.flags)
+        for slide in tray.slides
+    )

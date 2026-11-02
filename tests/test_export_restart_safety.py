@@ -68,8 +68,9 @@ def test_failed_release_rollback_cannot_authorize_later_cleanup_after_reopen(del
     export.Path(first.slides[0].export_path).write_bytes(b"invalid delivery")
     store.close()
     with BatchStore.open(store.directory) as reopened:
-        with pytest.raises(export.ExportVerificationFailed):
+        with pytest.raises(export.CleanupPolicyRefused, match="tray 1.*recover") as refused:
             export.cleanup_raw(reopened, second.number)
+        assert isinstance(refused.value.__cause__, export.ExportVerificationFailed)
         assert reopened.sweep_dir(first.number, 1).exists()
         assert reopened.sweep_dir(second.number, 1).exists()
 

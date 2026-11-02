@@ -34,11 +34,19 @@ ListView {
         required property string auto
         required property string autoFailed
         required property string autoError
+        required property bool canRecoverRaw
         required property string autoFlagged
 
         width: ListView.view.width
         highlighted: number === bridge.selectedTray
         onClicked: bridge.selectTray(number)
+
+        ConfirmDialog {
+            id: recoverDialog
+            title: qsTr("Recover raw scans of tray %1?").arg(row.number)
+            subtitle: qsTr("Recovery checks that every raw scan is intact, restores this tray to review and resets its export marks. Review the frames, export them again, and approve raw removal again. Missing or damaged raw scans require restoring the original folders or rescanning.")
+            onConfirmed: bridge.recoverInterruptedCleanup(row.number)
+        }
 
         contentItem: ColumnLayout {
             spacing: Kirigami.Units.smallSpacing
@@ -73,6 +81,12 @@ ListView {
                 text: (row.autoFailed !== "" ? qsTr("Failed slides: %1. ").arg(row.autoFailed) : "") + (row.autoFlagged !== "" ? qsTr("Flagged slides: %1").arg(row.autoFlagged) : "")
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
+            }
+            QQC2.Button {
+                objectName: "recoverRaw" + row.number
+                visible: row.canRecoverRaw && !bridge.readonly
+                text: qsTr("Recover intact raw scans…")
+                onClicked: recoverDialog.open()
             }
             QQC2.Label {
                 visible: row.stage === "review" && row.needsLook > 0

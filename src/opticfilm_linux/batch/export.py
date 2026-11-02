@@ -1,8 +1,7 @@
 """Export accepted slides, and the one explicit way raw scans are ever deleted.
 
 Export always recomputes a slide from its raw sweep and stored settings; previews are never the
-source. A slide is marked exported only after its file is written, so a crash can at worst
-produce a duplicate file on the next export, never a missing one.
+source. Slides are marked exported only after writing; interrupted exports can produce duplicates.
 
 Cleanup defends against application bugs, crashes, power loss, concurrent application actions,
 malformed or stale manifests, and owner mistakes such as moved exports or symlinked raw folders.
@@ -33,6 +32,12 @@ from typing import Literal
 
 from PIL import Image
 
+from opticfilm_linux.batch.cleanup_recovery import (
+    _cleanup_listable,
+)
+from opticfilm_linux.batch.cleanup_recovery import (
+    recover_interrupted_cleanup as recover_interrupted_cleanup,
+)
 from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.enhance import RawRemoved, options_for
 from opticfilm_linux.batch.export_contract import (
@@ -46,6 +51,7 @@ from opticfilm_linux.batch.export_contract import (
     _slide_spec,
     _stale,
     _still_freeable,
+    _unreviewed_flags,
 )
 from opticfilm_linux.batch.layout import section_directory
 from opticfilm_linux.batch.model import (
@@ -61,7 +67,14 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
-from opticfilm_linux.output import Format, JpegSize, OutputSpec, jpeg_geometry, write_slide
+from opticfilm_linux.output import (
+    Format,
+    JpegSize,
+    OutputSpec,
+    _sync_directory,
+    jpeg_geometry,
+    write_slide,
+)
 from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
 from opticfilm_linux.provenance import raw_region_sha256
@@ -364,7 +377,7 @@ def _durable_digest(path: Path) -> str:
         os.fsync(handle.fileno())
     descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        os.fsync(descriptor)
+        _sync_directory(descriptor)
     finally:
         os.close(descriptor)
     return digest.hexdigest()
@@ -546,7 +559,8 @@ def _delete(
     except OSError as exc:
         raise BatchError(
             f"the raw scans of tray {tray.number} were only partly removed and can no longer be "
-            f"used; removal pending; free disk space again to finish: {exc}"
+            f"used; removal pending. Retry cleanup only if all remaining raw is intact; otherwise "
+            f"recover this tray after restoring its original raw folders, or rescan it: {exc}"
         ) from exc
 
 
@@ -621,15 +635,6 @@ def _check_blank_decisions(tray: TrayRecord) -> None:
         )
 
 
-def _unreviewed_flags(tray: TrayRecord) -> bool:
-    return any(
-        slide.status is not SlideStatus.BLANK
-        and not slide.owner_decided
-        and (slide.position in tray.auto_flagged or slide.flags)
-        for slide in tray.slides
-    )
-
-
 def _cleanup_policy(manifest: BatchManifest, number: int, *, release_first: bool) -> None:
     if _tray(manifest, number).raw_removed:
         return  # finish an already committed removal even if automatic mode was disabled
@@ -659,7 +664,13 @@ def _recheck_released_raw(store: BatchStore, manifest: BatchManifest, number: in
         return
     for tray in manifest.trays:
         if tray.number != number and _half_cleaned(store, tray):
-            _checked_snapshot(store, tray, tuple(_checked_sweep_folders(store, tray.number)))
+            try:
+                _checked_snapshot(store, tray, tuple(_checked_sweep_folders(store, tray.number)))
+            except BatchError as exc:
+                raise CleanupPolicyRefused(
+                    f"tray {tray.number} has an interrupted cleanup; recover that tray before "
+                    f"freeing other raw scans: {exc}"
+                ) from exc
 
 
 def check_cleanup_allowed(
@@ -750,14 +761,15 @@ def _commit_cleanup(
     return evidence
 
 
-def freeable_trays(store: BatchStore) -> tuple[FreeableTray, ...]:
-    """Fully exported trays whose raw scans are still on disk, with the space they use.
+def freeable_trays(store: BatchStore, *, release_first: bool = False) -> tuple[FreeableTray, ...]:
+    """Verified trays currently allowed by cleanup policy, with the raw space they use.
 
     Includes trays whose cleanup was interrupted (marked removed, sweep folders still there).
     """
     found = []
     for tray in store.snapshot().trays:
-        if _still_freeable(tray) or _half_cleaned(store, tray):
+        candidate = _still_freeable(tray) or _half_cleaned(store, tray)
+        if candidate and _cleanup_listable(store, tray.number, release_first=release_first):
             size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
             found.append(FreeableTray(number=tray.number, bytes=size))
     return tuple(found)
@@ -775,7 +787,8 @@ def free_space(
 
     ``only`` limits it to the trays the owner was shown and confirmed. Returns the bytes freed.
     """
-    trays = tuple(t for t in freeable_trays(store) if only is None or t.number in only)
+    candidates = freeable_trays(store, release_first=release_first)
+    trays = tuple(t for t in candidates if only is None or t.number in only)
     freed = 0
     for done, tray in enumerate(trays, start=1):
         if cancel is not None and cancel.is_set():

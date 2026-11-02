@@ -32,6 +32,9 @@ def auto_controller(sweep600_dir, tmp_path, monkeypatch):
         def arm(self, number):
             return number == 1
 
+        def _eligible(self, tray):
+            return True
+
         def resume(self):
             return ()
 
@@ -239,7 +242,11 @@ def test_stale_auto_callback_cannot_clear_reopened_session_reservation(
         open_new(c, tmp_path / "batch")
         old = c._session
         captured = []
-        monkeypatch.setattr(c, "_after_pending_commands", lambda job, message: captured.append(job))
+        monkeypatch.setattr(
+            c,
+            "_after_pending_commands",
+            lambda job, message, **kw: captured.append((job, kw["on_finished"])),
+        )
         c._queue_auto(old, 1)
         c.close_batch()
         wait_until(c, lambda: c.state().batch_name is None)
@@ -248,7 +255,8 @@ def test_stale_auto_callback_cannot_clear_reopened_session_reservation(
         assert c._session is not old
         with c._lock:
             c._auto_active.add(1)
-        captured[0](c._session.runner)
+        captured[0][0](c._session.runner)
+        captured[0][1]()
         assert 1 in c._auto_active
     finally:
         c.shutdown()
@@ -470,7 +478,8 @@ def test_setting_destination_retries_only_missing_destination_failure(
         if damaged:
             assert "verification failed" in trays[0].auto_error
         else:
-            assert trays[0].auto_error == "" and trays[0].auto_failed == ()
+            assert trays[0].auto_error == "Waiting for first-tray raw removal approval"
+            assert trays[0].auto_failed == ()
     finally:
         c.shutdown()
 

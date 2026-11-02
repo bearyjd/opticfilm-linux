@@ -236,7 +236,7 @@ def test_auto_never_free_crash_then_reopen_without_verification(store, monkeypat
         reopened.close()
 
 
-def test_auto_handled_tray_never_reaccepted_or_exported_on_reopen(store):
+def test_changed_mode_rearms_export_without_reaccepting_owner_exclusion(store):
     auto = pipeline(store)
     auto.arm(1)
     auto.run(1)
@@ -244,8 +244,10 @@ def test_auto_handled_tray_never_reaccepted_or_exported_on_reopen(store):
     review.set_tray_mode(store, 1, "negative")
     review.set_slide_status(store, 1, 1, SlideStatus.NEEDS_LOOK)
     assert not auto.arm(1)
-    assert 1 not in pipeline(store).resume()
+    assert 1 in pipeline(store).resume()
     auto.run(1)
+    assert store.snapshot().trays[0].auto == "blocked"
+    assert 1 not in pipeline(store).resume()
     assert store.snapshot().trays[0].slides[0].status is SlideStatus.NEEDS_LOOK
     assert len(list((store.directory.parent / "album").glob("*.jpg"))) == 3
 

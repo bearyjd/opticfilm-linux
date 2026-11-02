@@ -112,8 +112,10 @@ def test_free_space_without_explicit_release_keeps_first_held(delivery):
         lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, auto_export=True))
     )
     store.update_tray(1, auto="held")
+    assert export.freeable_trays(store) == ()
+    assert export.free_space(store, only=(1,)) == 0
     with pytest.raises(export.CleanupRefused, match="first"):
-        export.free_space(store, only=(1,))
+        export.cleanup_raw(store, 1)
     _assert_raw_kept(store)
 
 

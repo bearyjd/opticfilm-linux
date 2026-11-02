@@ -91,6 +91,21 @@ class AutoPipeline:
                 retried.append(tray.number)
         return tuple(retried)
 
+    def retry_completed_exports(self) -> tuple[int, ...]:
+        """Reconcile a manual export with failed automatic progress, then verify again."""
+        retried = []
+        for tray in self.store.snapshot().trays:
+            if tray.auto != "failed" or tray.raw_removed or tray.stage not in READY:
+                continue
+            accepted = [s for s in tray.slides if s.status is SlideStatus.ACCEPTED]
+            if not accepted or self._owner_excluded(tray):
+                continue
+            if any(not s.exported or s.preview_stale for s in accepted):
+                continue
+            self._update(tray.number, auto="exported", auto_failed=(), auto_error="")
+            retried.append(tray.number)
+        return tuple(retried)
+
     def _eligible(self, tray) -> bool:
         if tray.stage not in READY:
             return False
@@ -155,6 +170,8 @@ class AutoPipeline:
 
     def _export_pending(self, number: int, *, before) -> bool:
         self._accept_pending(number)
+        if any(s.preview_stale for s in self._tray(number).slides):
+            return False
         if self._blocked(number):
             return False
         defaults = self.store.snapshot().defaults
@@ -290,7 +307,27 @@ class AutoPipeline:
         self._update(number, auto="verified", auto_error="", auto_failed=())
         manifest = self.store.snapshot()
         tray = self._tray(number)
-        permitted = (
+        permitted = self._cleanup_permitted(manifest, tray, release)
+        if not permitted:
+            reason = self._cleanup_hold_reason(manifest, tray)
+            self._update(number, auto="held", auto_error=reason, auto_failed=())
+            return
+        if self.cancel.is_set():
+            return
+        tray = self._tray(number)
+        if not tray.raw_removed or any(self.store.tray_dir(number).glob("sweep-*")):
+            cleanup_raw(self.store, number, release_first=release)
+        self._update(number, auto="freed", auto_error="", auto_failed=())
+
+    def _cleanup_hold_reason(self, manifest, tray) -> str:
+        if self._unreviewed_flags(tray):
+            return "Waiting for owner review of flagged slides"
+        if manifest.defaults.keep_raw:
+            return "Raw scans kept by batch settings"
+        return "Waiting for first-tray raw removal approval"
+
+    def _cleanup_permitted(self, manifest, tray, release: bool) -> bool:
+        return (
             manifest.defaults.auto_export
             and not manifest.defaults.keep_raw
             and not self._unreviewed_flags(tray)
@@ -302,15 +339,6 @@ class AutoPipeline:
                 )
             )
         )
-        if not permitted:
-            self._update(number, auto="held", auto_error="", auto_failed=())
-            return
-        if self.cancel.is_set():
-            return
-        tray = self._tray(number)
-        if not tray.raw_removed or any(self.store.tray_dir(number).glob("sweep-*")):
-            cleanup_raw(self.store, number, release_first=release)
-        self._update(number, auto="freed", auto_error="", auto_failed=())
 
     def _release_candidate(self, manifest):
         first = min(manifest.trays, key=lambda t: t.number)
