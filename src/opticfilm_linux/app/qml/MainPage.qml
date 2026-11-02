@@ -44,6 +44,33 @@ Kirigami.Page {
         onConfirmed: bridge.rescan(bridge.selectedTray)
     }
     ConfirmDialog {
+        id: heldReleaseDialog
+        objectName: "heldReleaseDialog"
+        property int tray: 0
+        property string rawBytes: "0"
+        title: qsTr("Release raw cleanup for tray %1?").arg(tray)
+        subtitle: qsTr("This will remove approximately %1 bytes of raw scans from tray %2. Later trays will be freed automatically after verification. Raw scans can no longer be adjusted or exported again. Choosing Yes confirms that you have opened the delivered JPEGs for this tray and checked the results and settings.").arg(rawBytes).arg(tray)
+        onConfirmed: {
+            if (tray === bridge.heldTray && !bridge.readonly)
+                bridge.confirmFreeHeld(tray);
+        }
+    }
+    Connections {
+        target: bridge
+        function onHeldReleaseReady(number, size) {
+            heldReleaseDialog.tray = number;
+            heldReleaseDialog.rawBytes = size;
+            heldReleaseDialog.open();
+        }
+        function onBatchReplaced() {
+            heldReleaseDialog.close();
+        }
+        function onChanged() {
+            if (heldReleaseDialog.tray !== bridge.heldTray)
+                heldReleaseDialog.close();
+        }
+    }
+    ConfirmDialog {
         id: confirmScannerDialog
 
         objectName: "confirmScannerDialog"
@@ -167,7 +194,7 @@ Kirigami.Page {
                 objectName: "freeHeldRaw"
                 visible: bridge.heldTray > 0 && !bridge.readonly
                 text: qsTr("Approve settings and release raw cleanup")
-                onClicked: bridge.confirmFreeHeld(bridge.heldTray)
+                onClicked: bridge.requestHeldRelease(bridge.heldTray)
             }
         }
 

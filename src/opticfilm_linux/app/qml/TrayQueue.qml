@@ -44,7 +44,7 @@ ListView {
         ConfirmDialog {
             id: recoverDialog
             title: qsTr("Recover raw scans of tray %1?").arg(row.number)
-            subtitle: qsTr("Recovery verifies the current raw scans and any remaining older sweeps, restores this tray to review and resets its export marks. Older sweeps already removed by cleanup are not required. Review the frames, export them again, and approve raw removal again. Missing or damaged raw scans require restoring the original folders or rescanning.")
+            subtitle: qsTr("Recovery verifies the current raw scans, restores this tray to review and resets its export marks. Incomplete older sweeps are kept and do not need verification for recovery. Review the frames, export them again, and approve raw removal again. Missing or damaged current raw scans require restoring the original folders or rescanning.")
             onConfirmed: bridge.recoverInterruptedCleanup(row.number)
         }
 

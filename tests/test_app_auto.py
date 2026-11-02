@@ -424,7 +424,7 @@ def test_auto_held_backlog_never_free_when_settings_disallow(store, option):
 
 
 @pytest.mark.parametrize("damage", [False, True])
-def test_auto_cleanup_crash_reopen_finishes_committed_deletion(store, monkeypatch, damage):
+def test_auto_cleanup_crash_reopen_preserves_raw_for_owner_recovery(store, monkeypatch, damage):
     auto = pipeline(store)
     auto.arm(1)
     auto.run(1)
@@ -445,11 +445,13 @@ def test_auto_cleanup_crash_reopen_finishes_committed_deletion(store, monkeypatc
     monkeypatch.setattr(exports, "_delete", real)
     with BatchStore.open(directory) as reopened:
         resumed = pipeline(reopened)
-        assert 1 in resumed.resume()
+        assert 1 not in resumed.resume()
         resumed.run(1)
         tray = reopened.snapshot().trays[0]
-        assert tray.auto == ("failed" if damage else "freed")
-        assert reopened.sweep_dir(1, 1).exists() is damage
+        assert tray.auto == "verified"
+        assert reopened.sweep_dir(1, 1).exists()
+        exports.recover_interrupted_cleanup(reopened, 1)
+        assert not reopened.snapshot().trays[0].raw_removed
 
 
 def test_auto_run_coordinates_work_in_under_fifty_lines():

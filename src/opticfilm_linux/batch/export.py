@@ -36,6 +36,7 @@ from PIL import Image
 from opticfilm_linux.batch.cleanup_recovery import (
     _cleanup_listable,
     _compare_cleanup_evidence,
+    _record_cleanup_complete,
 )
 from opticfilm_linux.batch.cleanup_recovery import (
     recover_interrupted_cleanup as recover_interrupted_cleanup,
@@ -669,8 +670,8 @@ def _recheck_released_raw(store: BatchStore, manifest: BatchManifest, number: in
                 _checked_snapshot(store, tray, tuple(_checked_sweep_folders(store, tray.number)))
             except BatchError as exc:
                 raise CleanupPolicyRefused(
-                    f"tray {tray.number} has an interrupted cleanup; recover that tray before "
-                    f"freeing other raw scans: {exc}"
+                    f"tray {tray.number}: recover intact raw, restore original folders or rescan "
+                    f"before freeing other raw scans: {exc}"
                 ) from exc
 
 
@@ -714,8 +715,7 @@ def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
     freed = sum(_folder_size(path) for path in folders)
     before = _commit_cleanup(store, tray, folders, release_first=release_first)
     _delete(store, before, number, folders, release_first=release_first)
-    if tray.auto:
-        store.update_tray(number, auto="freed", auto_error="", auto_failed=())
+    _record_cleanup_complete(store, tray)
     return freed
 
 

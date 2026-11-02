@@ -72,14 +72,10 @@ def test_owner_recovery_refuses_partial_current_raw(interrupted, missing):
     assert store.snapshot().trays[0].raw_removed
 
 
-@pytest.mark.parametrize("change", ["extra", "legacy", "older_partial", "duplicate_version"])
+@pytest.mark.parametrize("change", ["extra", "legacy", "duplicate_version"])
 def test_owner_recovery_requires_intact_remaining_inventory(interrupted, change):
     store, _ = interrupted
-    if change == "older_partial":
-        store.update_tray(1, cleanup_sweeps=(0, 1))
-    if change == "older_partial":
-        store.sweep_dir(1, 0).mkdir()
-    elif change == "extra":
+    if change == "extra":
         store.sweep_dir(1, 0).mkdir()
     elif change == "duplicate_version":
         shutil.copytree(store.sweep_dir(1, 1), store.tray_dir(1) / "sweep-01")
@@ -119,7 +115,7 @@ def test_recovery_availability_matches_recovery_verification(interrupted, damage
     available = Controller._raw_recoverable(
         SimpleNamespace(store=store), store.snapshot(), frozenset({1})
     )
-    assert available == (frozenset({1}) if damage == "none" else frozenset())
+    assert available == (frozenset({1}) if damage in ("none", "older_partial") else frozenset())
 
 
 def test_recovery_availability_cache_rechecks_changed_raw(interrupted, monkeypatch):
@@ -139,7 +135,7 @@ def test_recovery_availability_cache_rechecks_changed_raw(interrupted, monkeypat
     assert not cleanup_recovery.can_recover_interrupted_cleanup(store, manifest, tray)
 
 
-def test_owner_recovery_checks_every_recorded_sweep(interrupted):
+def test_owner_recovery_preserves_every_recorded_sweep(interrupted):
     store, _ = interrupted
     shutil.copytree(store.sweep_dir(1, 1), store.sweep_dir(1, 0))
     store.update_tray(1, cleanup_sweeps=(0, 1))

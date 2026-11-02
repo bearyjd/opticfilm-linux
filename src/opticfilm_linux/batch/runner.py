@@ -63,11 +63,11 @@ def _restart_rescan(manifest: BatchManifest, tray: TrayRecord) -> BatchManifest:
         raw_removed=False,
         cleanup_sweeps=(),
         auto=("pending" if manifest.defaults.auto_export else "held")
-        if current.raw_removed and current.auto not in ("", "off")
+        if current.auto not in ("", "off")
         else current.auto,
-        auto_error="" if current.raw_removed else current.auto_error,
-        auto_failed=() if current.raw_removed else current.auto_failed,
-        auto_flagged=() if current.raw_removed else current.auto_flagged,
+        auto_error="",
+        auto_failed=(),
+        auto_flagged=(),
     )
     return dataclasses.replace(
         manifest,

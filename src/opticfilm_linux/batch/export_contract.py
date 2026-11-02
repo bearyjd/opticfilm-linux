@@ -118,11 +118,33 @@ def _render_signature(defaults: BatchDefaults, root: Path, fmt: Format, jpeg_siz
 
 
 def _release_candidate(manifest: BatchManifest, number: int) -> bool:
+    if not manifest.trays:
+        return False
     first = min(manifest.trays, key=lambda tray: tray.number)
     confirmed_empty = bool(first.slides) and all(
         is_empty_confirmed(first, slide) for slide in first.slides
     )
-    return number == first.number or first.raw_removed or confirmed_empty
+    if not first.raw_removed and not confirmed_empty:
+        return number == first.number
+    candidate = next(
+        (
+            tray
+            for tray in sorted(manifest.trays, key=lambda tray: tray.number)
+            if _approval_ready(tray)
+            and (not manifest.defaults.auto_export or tray.auto in ("held", "verified"))
+        ),
+        None,
+    )
+    return candidate is not None and number == candidate.number
+
+
+def _approval_ready(tray: TrayRecord) -> bool:
+    return (
+        _still_freeable(tray)
+        and tray.auto in ("", "off", "held", "verified")
+        and not _unreviewed_flags(tray)
+        and any(slide.status is SlideStatus.ACCEPTED and slide.exported for slide in tray.slides)
+    )
 
 
 def _still_freeable(tray: TrayRecord) -> bool:

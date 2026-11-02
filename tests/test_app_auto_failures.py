@@ -79,22 +79,21 @@ def test_auto_cleanup_failure_reports_actual_raw_state(store, monkeypatch, fault
         raise OSError("cleanup failed")
 
     if fault == "complete":
-        real = store.update_tray
+        real = store.update_tray_if
 
-        def fail_completion(number, **changes):
+        def fail_completion(number, predicate, **changes):
             if changes.get("auto") == "freed":
                 raise OSError("saving completion failed")
-            return real(number, **changes)
+            return real(number, predicate, **changes)
 
-        monkeypatch.setattr(store, "update_tray", fail_completion)
+        monkeypatch.setattr(store, "update_tray_if", fail_completion)
     else:
         monkeypatch.setattr(auto_module, "cleanup_raw", fail_cleanup)
     auto.confirm_free_held(1)
     assert expected in store.snapshot().trays[0].auto_error.lower()
 
 
-@pytest.mark.parametrize("remaining", [False, True])
-def test_auto_recovered_cleanup_failure_never_claims_raw_kept(store, monkeypatch, remaining):
+def test_auto_completed_cleanup_failure_never_claims_raw_kept(store, monkeypatch):
     import shutil
 
     from opticfilm_linux.app import auto as auto_module
@@ -108,8 +107,7 @@ def test_auto_recovered_cleanup_failure_never_claims_raw_kept(store, monkeypatch
         )
     )
     store.update_tray(1, auto="verified", raw_removed=True)
-    if not remaining:
-        shutil.rmtree(store.sweep_dir(1, 1))
+    shutil.rmtree(store.sweep_dir(1, 1))
     real = auto._update
 
     def fail_completion(number, **changes):
@@ -125,7 +123,7 @@ def test_auto_recovered_cleanup_failure_never_claims_raw_kept(store, monkeypatch
     auto.run(1)
     error = store.snapshot().trays[0].auto_error.lower()
     assert "raw data kept" not in error
-    assert ("cleanup incomplete" if remaining else "raw data removed") in error
+    assert "raw data removed" in error
 
 
 @pytest.mark.parametrize("held", [False, True])

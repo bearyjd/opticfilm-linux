@@ -56,7 +56,7 @@ def _replace_slide(
 
 def _reviewed_tray(tray: TrayRecord, slides, *, render_changed: bool = False) -> TrayRecord:
     changed = render_changed or any(
-        a.settings != b.settings or a.preview_stale != b.preview_stale
+        a.settings != b.settings or a.preview_stale != b.preview_stale or a.status != b.status
         for a, b in zip(tray.slides, slides, strict=True)
     )
     rearm = changed and tray.auto in ("held", "exported", "verified")
@@ -229,8 +229,7 @@ def accept_tray(store: BatchStore, number: int, *, automatic: bool = False) -> N
         return dataclasses.replace(
             manifest,
             trays=tuple(
-                dataclasses.replace(t, slides=slides) if t.number == number else t
-                for t in manifest.trays
+                _reviewed_tray(t, slides) if t.number == number else t for t in manifest.trays
             ),
         )
 
@@ -382,8 +381,7 @@ def _edit_many(
                         settings_changed |= updated.settings != slide.settings
                         slide = updated
                 slides.append(slide)
-            stage = TrayStage.REVIEW if settings_changed else tray.stage
-            trays.append(dataclasses.replace(_reviewed_tray(tray, tuple(slides)), stage=stage))
+            trays.append(_reviewed_tray(tray, tuple(slides), render_changed=settings_changed))
         return dataclasses.replace(manifest, trays=tuple(trays))
 
     store.update(change)

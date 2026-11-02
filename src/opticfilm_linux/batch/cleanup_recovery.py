@@ -1,9 +1,10 @@
 """Explicit owner recovery of intact raw after a committed cleanup was interrupted.
 
 Recovery never deletes scans or trusts the removal marker as evidence. Recorded folder
-membership must be a subset of the recorded cleanup, every remaining sweep must decode and
-split, and any available current
-raw hashes must match. Legacy scans without hashes need their configured infrared plane;
+membership must be a subset of the recorded cleanup. The current sweep must decode and
+split, and any available current raw hashes must match. Older sweeps may remain partly
+deleted; recovery preserves those folders without treating them as current raw evidence.
+Legacy scans without hashes need their configured infrared plane;
 missing raw cannot be restored by clearing a manifest marker. Delivery files may be missing:
 recovery returns the tray to review and requires fresh exports and release approval.
 """
@@ -83,31 +84,26 @@ def _recovery_raw(store: BatchStore, manifest: BatchManifest, tray: TrayRecord, 
     current = store.sweep_dir(tray.number, tray.sweep_version)
     if current not in folders:
         raise ValueError("current raw sweep is missing")
-    for path in folders:
-        sweep = export.load_sweep(path)
-        regions = export.split_slides(sweep)
-        if path != current:
-            if manifest.defaults.infrared and sweep.ir is None:
-                raise ValueError("configured infrared raw scan is missing from an older sweep")
-            continue
-        positions = [slide.position for slide in tray.slides]
-        if (
-            any(type(position) is not int for position in positions)
-            or len(positions) != len(regions)
-            or set(positions) != set(range(1, len(regions) + 1))
-        ):
-            raise ValueError("manifest positions must cover every raw position exactly once")
-        for slide in tray.slides:
-            expected = (
-                slide.blank_fingerprint
-                if slide.status is SlideStatus.BLANK
-                else (slide.exports[-1].raw_sha256 if slide.exports else "")
-            )
-            if expected:
-                if raw_region_sha256(regions[slide.position - 1]) != expected:
-                    raise ValueError("current raw scan differs from its recorded hash")
-            elif manifest.defaults.infrared and sweep.ir is None:
-                raise ValueError("configured infrared raw scan is missing")
+    sweep = export.load_sweep(current)
+    regions = export.split_slides(sweep)
+    positions = [slide.position for slide in tray.slides]
+    if (
+        any(type(position) is not int for position in positions)
+        or len(positions) != len(regions)
+        or set(positions) != set(range(1, len(regions) + 1))
+    ):
+        raise ValueError("manifest positions must cover every raw position exactly once")
+    for slide in tray.slides:
+        expected = (
+            slide.blank_fingerprint
+            if slide.status is SlideStatus.BLANK
+            else (slide.exports[-1].raw_sha256 if slide.exports else "")
+        )
+        if expected:
+            if raw_region_sha256(regions[slide.position - 1]) != expected:
+                raise ValueError("current raw scan differs from its recorded hash")
+        elif manifest.defaults.infrared and sweep.ir is None:
+            raise ValueError("configured infrared raw scan is missing")
 
 
 def _recovered_tray(tray: TrayRecord, *, automatic: bool) -> TrayRecord:
@@ -171,6 +167,23 @@ def recover_interrupted_cleanup(store: BatchStore, number: int) -> None:
 
         store.update(reset)
         export._PENDING_CLEANUP_RESETS.get(store, {}).pop(number, None)
+
+
+def _record_cleanup_complete(store: BatchStore, tray: TrayRecord) -> None:
+    """Clear automatic progress only while the cleanup's recorded owner is unchanged."""
+    if tray.auto in ("", "off"):
+        return
+    store.update_tray_if(
+        tray.number,
+        lambda current: (
+            current.raw_removed
+            and (current.auto, current.auto_error, current.auto_failed)
+            == (tray.auto, tray.auto_error, tray.auto_failed)
+        ),
+        auto="freed",
+        auto_error="",
+        auto_failed=(),
+    )
 
 
 def _compare_cleanup_evidence(

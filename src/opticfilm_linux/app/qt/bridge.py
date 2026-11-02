@@ -10,7 +10,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
-from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller, _check_export_directory
+from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
 from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_text
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
@@ -26,12 +26,12 @@ from opticfilm_linux.app.prefs import (
     remember_export,
     remember_theme,
 )
+from opticfilm_linux.app.qt.destination import DestinationCheck
 from opticfilm_linux.app.qt.models import DictListModel
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
 from opticfilm_linux.batch.slots import slot_orientations
-from opticfilm_linux.batch.store import BatchError
 
 TICK_MS = 500
 DEBOUNCE_MS = 300
@@ -127,6 +127,9 @@ class Bridge(QObject):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
+    automaticExportProblemChanged = Signal()  # noqa: N815
+    heldReleaseReady = Signal(int, str)  # noqa: N815
+    _heldReleasePrepared = Signal(int, int, str)  # noqa: N815
 
     def __init__(
         self,
@@ -159,6 +162,9 @@ class Bridge(QObject):
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(DEBOUNCE_MS)
         self._flush_timer.timeout.connect(self._flush)
+        self._destination = DestinationCheck(self)
+        self._destination.changed.connect(self.automaticExportProblemChanged)
+        self._heldReleasePrepared.connect(self._held_release_ready)
 
     def start(self) -> None:
         self._timer.start()
@@ -352,23 +358,27 @@ class Bridge(QObject):
 
     # -- batch ---------------------------------------------------------------------------
 
-    @Slot(str, str, str, result=str)
-    def automaticExportProblem(self, parent_url: str, name: str, export_url: str) -> str:  # noqa: N802
-        """Explain why setup cannot use this automatic export destination."""
-        if not export_url.strip():
-            return "Choose an export folder for automatic export."
+    automaticExportProblem = Property(  # noqa: N815
+        str, lambda self: self._destination.problem, notify=automaticExportProblemChanged
+    )
+
+    @Slot(bool, str, str, str)
+    def checkAutomaticExport(
+        self, enabled: bool, parent_url: str, name: str, export_url: str
+    ) -> None:  # noqa: N802
+        """Debounce filesystem checks and invalidate any result for previous inputs."""
         destination = QUrl(export_url)
-        if not destination.isLocalFile():
-            return "Choose a local export folder for automatic export."
         parent = QUrl(parent_url)
-        if not parent.isLocalFile() or not name.strip():
-            return "Choose a batch folder and enter a batch name."
-        try:
-            folder = batch_subfolder(Path(parent.toLocalFile()), name)
-            _check_export_directory(folder, Path(destination.toLocalFile()))
-        except (BatchError, OSError, ValueError) as exc:
-            return str(exc)
-        return ""
+        problem = ""
+        if not enabled:
+            problem = "Automatic export is off."
+        elif not export_url.strip():
+            problem = "Choose an export folder for automatic export."
+        elif not destination.isLocalFile():
+            problem = "Choose a local export folder for automatic export."
+        elif not parent.isLocalFile() or not name.strip():
+            problem = "Choose a batch folder and enter a batch name."
+        self._destination.request(parent.toLocalFile(), name, destination.toLocalFile(), problem)
 
     @Slot(str, str, str, str, int)
     @Slot(str, str, str, str, int, int)
@@ -673,6 +683,19 @@ class Bridge(QObject):
         )
 
     @Slot(int)
+    def requestHeldRelease(self, number: int) -> None:  # noqa: N802
+        self._flush_now()
+        session = self._state.batch_session
+        self._controller.request_held_release(
+            number, lambda size: self._heldReleasePrepared.emit(session, number, str(size))
+        )
+
+    @Slot(int, int, str)
+    def _held_release_ready(self, session: int, number: int, size: str) -> None:
+        if session == self._state.batch_session and number == self._state.held_tray:
+            self.heldReleaseReady.emit(number, size)
+
+    @Slot(int)
     def confirmFreeHeld(self, number: int) -> None:  # noqa: N802
         self._flush_now()
         self._controller.confirm_free_held(number)
@@ -703,6 +726,7 @@ class Bridge(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._timer.stop()
+        self._destination.close()
         self._flush_now()
         self._controller.shutdown()
 

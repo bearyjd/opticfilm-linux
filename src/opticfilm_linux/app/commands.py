@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from opticfilm_linux.app.holder import WAIT_BATCH
+from opticfilm_linux.app.raw import cleanup_pending
 from opticfilm_linux.app.state import Banner
 from opticfilm_linux.batch.export import clear_exported
 from opticfilm_linux.batch.layout import advance_section
@@ -425,7 +426,9 @@ class ReviewCommands:
                 eligible = {
                     t.number
                     for t in session.store.snapshot().trays
-                    if t.raw_removed and t.auto == "verified"
+                    if t.raw_removed
+                    and t.auto == "verified"
+                    and not cleanup_pending(session.store, t)
                 }
                 self._schedule_auto(session, due & eligible)
 
@@ -485,7 +488,11 @@ class ReviewCommands:
         with self._lock:
             if self._session is not session:
                 return
-            if tray.auto == "verified" and tray.auto_error:
+            if (
+                tray.auto == "verified"
+                and tray.auto_error
+                and not cleanup_pending(session.store, tray)
+            ):
                 if tray.number not in self._auto_retried:
                     self._auto_retried.add(tray.number)
                     self._auto_due.add(tray.number)
@@ -500,6 +507,18 @@ class ReviewCommands:
             if self._session is session:
                 self._auto_due.update(backlog)
         self._submit_auto_due()
+
+    def request_held_release(self, number: int, ready: Callable[[int], None]) -> None:
+        """Prepare the raw-byte estimate on the controller worker before owner approval."""
+        from opticfilm_linux.app.raw import raw_inventory
+
+        def job(_runner: BatchRunner) -> None:
+            store = self._open_store()
+            if self.state().held_tray != number:
+                return
+            ready(sum(raw_inventory(store, (number,)).values()))
+
+        self._after_pending_commands(job, f"Could not prepare raw cleanup of tray {number}")
 
     def confirm_free_held(self, number: int) -> None:
         """The owner's one explicit release of the checked first tray."""

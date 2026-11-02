@@ -146,6 +146,7 @@ def _surviving_delivery(delivery):
     store.sweep_dir(2, 1).mkdir(parents=True)
     (store.sweep_dir(2, 1) / "scan").write_bytes(b"new raw")
     export.export_batch(store, directory, "jpeg")
+    store.update_tray(2, auto="held")
     return store
 
 
@@ -200,12 +201,13 @@ def test_empty_first_requires_confirmation_and_later_jpeg_approval(delivery, con
     store.sweep_dir(2, 1).mkdir(parents=True)
     (store.sweep_dir(2, 1) / "scan").write_bytes(b"later JPEG evidence raw")
     export.export_batch(store, directory, "jpeg")
+    store.update_tray(2, auto="held")
     assert not store.snapshot().first_tray_released
     if not confirmed:
         with pytest.raises(export.CleanupRefused, match="only the first tray"):
             export.release_first_tray(store, 2)
         return
-    with pytest.raises(export.CleanupRefused, match="no verified JPEGs"):
+    with pytest.raises(export.CleanupRefused, match="only the first tray"):
         export.release_first_tray(store, 1)
     with pytest.raises(export.CleanupPolicyRefused, match="explicit owner release"):
         export.cleanup_raw(store, 1)

@@ -3,9 +3,15 @@
 from collections.abc import Collection
 from pathlib import Path
 
+from opticfilm_linux.batch.model import TrayRecord
 from opticfilm_linux.batch.store import BatchStore
 
 RawInventory = dict[Path, int]
+
+
+def cleanup_pending(store: BatchStore, tray: TrayRecord) -> bool:
+    """An interrupted removal needs an explicit owner action before any more deletion."""
+    return tray.raw_removed and any(store.tray_dir(tray.number).glob("sweep-*"))
 
 
 def raw_inventory(store: BatchStore, numbers: Collection[int]) -> RawInventory:

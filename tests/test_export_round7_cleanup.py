@@ -84,7 +84,7 @@ def test_release_rejects_freed_first_tray_as_new_settings_evidence(delivery):
     store.update(
         lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, jpeg_size="3600"))
     )
-    with pytest.raises(export.CleanupRefused, match="freed first tray"):
+    with pytest.raises(export.CleanupRefused, match="only the first tray"):
         export.release_first_tray(store, 1)
     assert not store.snapshot().first_tray_released
 
@@ -150,7 +150,7 @@ def test_release_rejects_all_blank_tray_without_jpeg_evidence(delivery):
     store, _ = _delivered(delivery)
     slide = store.snapshot().trays[0].slides[0]
     store.update_tray(1, slides=(_confirmed_blank(store.snapshot().trays[0], slide),))
-    with pytest.raises(export.CleanupRefused, match="no verified JPEGs"):
+    with pytest.raises(export.CleanupRefused, match="only the first tray"):
         export.release_first_tray(store, 1)
     assert not store.snapshot().first_tray_released
 

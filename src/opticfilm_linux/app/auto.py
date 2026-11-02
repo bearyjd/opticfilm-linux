@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from opticfilm_linux.app.raw import raw_failure, raw_inventory
+from opticfilm_linux.app.raw import cleanup_pending, raw_failure, raw_inventory
 from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.export import (
     CleanupPolicyRefused,
@@ -121,9 +121,8 @@ class AutoPipeline:
         if tray.stage not in READY:
             return False
         if tray.raw_removed:
-            # Cleanup commits the removed flag before unlinking; a crash can leave sweep
-            # folders behind. Only this verified cleanup state may finish after recovery.
-            return tray.auto == "verified"
+            # Only completion with no remaining raw is safe to reconcile automatically.
+            return tray.auto == "verified" and not cleanup_pending(self.store, tray)
         if tray.auto == "blocked":
             return not self._awaiting_review(tray) and not (
                 self._owner_excluded(tray) and "blocked by your decision" in tray.auto_error
@@ -153,8 +152,9 @@ class AutoPipeline:
                 except _Superseded:
                     pass
             return
-        before = raw_inventory(self.store, (number,))
+        before = None
         try:
+            before = raw_inventory(self.store, (number,))
             if tray.auto in ("pending", "blocked") and not self._export_pending(
                 number, before=before, expected=tray.auto
             ):
@@ -233,7 +233,9 @@ class AutoPipeline:
             return
 
     def _record_failure(self, number, exc, *, before, expected) -> None:
-        if isinstance(exc, CleanupRetryRequired):
+        if isinstance(exc, CleanupRetryRequired) and not cleanup_pending(
+            self.store, self._tray(number)
+        ):
             self._update(
                 number, expected=expected, auto="verified", auto_error=str(exc), auto_failed=()
             )
@@ -262,6 +264,8 @@ class AutoPipeline:
         )
 
     def _failure_outcome(self, number, before) -> str:
+        if before is None:
+            return "raw cleanup outcome unknown (could not inspect raw files before the job)"
         try:
             after = raw_inventory(self.store, (number,))
             return raw_failure(self.store, (number,), before, after)
@@ -341,8 +345,10 @@ class AutoPipeline:
         expected = tray.auto if expected is None else expected
         if tray.auto != expected or expected not in (*INCOMPLETE, "held", "blocked"):
             return
-        before = raw_inventory(self.store, (number,)) if before is None else before
+        if cleanup_pending(self.store, tray):
+            return
         try:
+            before = raw_inventory(self.store, (number,)) if before is None else before
             if tray.raw_removed:
                 cleanup_raw(self.store, number)
                 self._cleanup_finished(number, expected=expected)
@@ -371,7 +377,7 @@ class AutoPipeline:
     def _finish_verified(self, number: int, *, release: bool) -> None:
         manifest = self.store.snapshot()
         tray = self._tray(number)
-        if tray.auto != "verified":
+        if tray.auto != "verified" or cleanup_pending(self.store, tray):
             return
         if not self._cleanup_permitted(manifest, tray, release):
             reason = self._cleanup_hold_reason(manifest, tray)
@@ -382,7 +388,9 @@ class AutoPipeline:
         if self.cancel.is_set():
             return
         tray = self._tray(number)
-        if not tray.raw_removed or any(self.store.tray_dir(number).glob("sweep-*")):
+        if cleanup_pending(self.store, tray):
+            return
+        if not tray.raw_removed:
             cleanup_raw(self.store, number, release_first=release)
         self._cleanup_finished(number, expected="verified")
 
@@ -453,8 +461,9 @@ class AutoPipeline:
             or tray.raw_removed
         ):
             return
-        before = raw_inventory(self.store, (number,))
+        before = None
         try:
+            before = raw_inventory(self.store, (number,))
             if self._blocked(number, expected=tray.auto) or self._unreviewed_flags(
                 self._tray(number)
             ):

@@ -313,7 +313,7 @@ def build_state(
     busy = holder_busy or scan_pending or readonly or jobs_running
     return AppState(
         **_batch_fields(manifest, selected, preview_tokens, updating),
-        **_auto_fields(manifest, readonly, preview_tokens),
+        **_auto_fields(manifest, readonly, preview_tokens, raw_pending),
         **_scanner_fields(
             manifest,
             scanner,
@@ -395,20 +395,25 @@ def _approval_ready(tray: TrayRecord) -> bool:
     )
 
 
-def _auto_fields(manifest: BatchManifest | None, readonly: bool, preview_tokens=None) -> dict:
+def _auto_waiting(tray: TrayRecord, raw_pending: frozenset[int]) -> bool:
+    return tray.auto in ("held", "blocked") or (
+        tray.auto == "verified"
+        and (bool(tray.auto_error) or (tray.raw_removed and tray.number in raw_pending))
+    )
+
+
+def _auto_fields(
+    manifest: BatchManifest | None, readonly: bool, preview_tokens=None, raw_pending=frozenset()
+) -> dict:
     if manifest is None:
         return {}
     trays = manifest.trays
     flagged = sum(len(t.auto_flagged) for t in trays)
     failed = sum(len(t.auto_failed) or int(t.auto == "failed") for t in trays)
     finished = sum(t.auto == "freed" for t in trays)
-    held_count = sum(
-        t.auto in ("held", "blocked") or (t.auto == "verified" and bool(t.auto_error))
-        for t in trays
-    )
+    held_count = sum(_auto_waiting(t, raw_pending) for t in trays)
     active = sum(
-        t.auto in ("pending", "exported", "verified")
-        and not (t.auto == "verified" and t.auto_error)
+        t.auto in ("pending", "exported", "verified") and not _auto_waiting(t, raw_pending)
         for t in trays
     )
     first, empty = _approval_candidates(trays)

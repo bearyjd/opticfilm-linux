@@ -73,7 +73,7 @@ def test_auto_flags_hold_cleanup_until_owner_review(store):
 
 @pytest.mark.parametrize("keep_raw", [False, True])
 @pytest.mark.parametrize("folders", [False, True])
-def test_auto_disabled_recovers_committed_cleanup(store, keep_raw, folders):
+def test_auto_disabled_only_reconciles_completed_cleanup(store, keep_raw, folders):
     import shutil
 
     auto = pipeline(store)
@@ -87,10 +87,10 @@ def test_auto_disabled_recovers_committed_cleanup(store, keep_raw, folders):
             m, defaults=dataclasses.replace(m.defaults, auto_export=False, keep_raw=keep_raw)
         )
     )
-    assert 1 in auto.resume()
+    assert (1 in auto.resume()) is not folders
     auto.run(1)
-    assert auto._tray(1).auto == "freed"
-    assert not store.sweep_dir(1, 1).exists()
+    assert auto._tray(1).auto == ("verified" if folders else "freed")
+    assert store.sweep_dir(1, 1).exists() is folders
 
 
 def test_first_release_requires_reviewed_first_tray(store):

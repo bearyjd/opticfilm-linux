@@ -244,7 +244,7 @@ def test_confirmed_empty_first_tray_waits_for_later_jpeg_approval_then_cleans_up
     assert not store.sweep_dir(1, 1).exists()
 
 
-def test_committed_cleanup_with_remaining_raw_refuses_lost_export_evidence(store, monkeypatch):
+def test_committed_cleanup_with_remaining_raw_waits_for_owner_recovery(store, monkeypatch):
     auto = pipeline(store)
     auto.arm(1)
     auto.run(1)
@@ -258,11 +258,10 @@ def test_committed_cleanup_with_remaining_raw_refuses_lost_export_evidence(store
         pytest.fail("committed tombstone recovery must not verify delivery artifacts")
 
     monkeypatch.setattr(automatic, "verify_tray_export", unexpected_verification)
-    assert 1 in auto.resume()
+    assert 1 not in auto.resume()
     auto.run(1)
-    assert auto._tray(1).auto == "failed"
+    assert auto._tray(1).auto == "verified"
     assert store.sweep_dir(1, 1).exists()
-    assert "raw still present" in auto._tray(1).auto_error
 
 
 def test_confirmed_empty_warning_is_cleared_while_raw_stays_held(store):

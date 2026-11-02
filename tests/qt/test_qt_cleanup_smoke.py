@@ -56,6 +56,20 @@ def test_automatic_first_tray_can_be_checked_and_freed(loaded, tmp_path):
         ),
     )
     QMetaObject.invokeMethod(button, "click")
+    dialog = root.findChild(QObject, "heldReleaseDialog")
+    _wait(bridge, lambda: dialog.property("visible"))
+    assert "tray 1" in dialog.property("title")
+    assert int(dialog.property("rawBytes")) > 0
+    text = dialog.property("subtitle")
+    assert dialog.property("rawBytes") in text
+    assert "Later trays will be freed automatically" in text
+    assert "opened the delivered JPEGs" in text
+    assert not bridge._controller._session.store.snapshot().trays[0].raw_removed
+    QMetaObject.invokeMethod(dialog, "reject")
+    assert not bridge._controller._session.store.snapshot().first_tray_released
+    QMetaObject.invokeMethod(button, "click")
+    _wait(bridge, lambda: dialog.property("visible"))
+    QMetaObject.invokeMethod(dialog, "accept")
     raw_role = next(
         role for role, name in bridge.trays.roleNames().items() if bytes(name) == b"rawRemoved"
     )
