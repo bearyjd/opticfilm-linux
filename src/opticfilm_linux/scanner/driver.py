@@ -556,7 +556,8 @@ class DriverScanner:
 
     def load_next_strip(self) -> None:
         """Load the next holder without a terminal (``load --next-strip``): only after the
-        first, interactive load since power-on."""
+        first, interactive load since power-on. Enabled by default in the app and batch CLI;
+        OPTICFILM_NEXT_STRIP provides their operator kill switch."""
         self._holder_command(
             ["load", "--next-strip"], f"loading the next holder failed. {TERMINAL_LOAD_HINT}"
         )

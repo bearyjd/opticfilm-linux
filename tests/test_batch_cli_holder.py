@@ -28,7 +28,9 @@ def test_batch_eject_asks_the_driver_to_eject(driver_env, capsys):
     assert "eject finished" in capsys.readouterr().out
 
 
-def test_batch_load_is_refused_until_next_strip_is_switched_on(driver_env, monkeypatch, capsys):
+def test_batch_load_is_refused_when_next_strip_is_explicitly_off(driver_env, monkeypatch, capsys):
+    monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "0")
+
     def no_backend():
         raise AssertionError("the gate must refuse before any scanner is built")
 
@@ -38,8 +40,7 @@ def test_batch_load_is_refused_until_next_strip_is_switched_on(driver_env, monke
     assert not (driver_env.parent / "trace.log").exists()  # no driver command of any kind
 
 
-def test_batch_load_runs_next_strip_when_switched_on(driver_env, monkeypatch, capsys):
-    monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "1")
+def test_batch_load_runs_next_strip_by_default(driver_env, capsys):
     assert main(["batch", "load"]) == 0
     assert json.loads(driver_env.read_text()) == ["load", "--next-strip"]
     assert "load finished" in capsys.readouterr().out
@@ -66,7 +67,8 @@ def test_batch_eject_and_load_work_on_a_fake_scanner(driver_env, sweep600_dir, m
     assert not (driver_env.parent / "trace.log").exists()  # the driver was never started
 
 
-def test_batch_load_on_a_fake_scanner_is_still_gated(driver_env, sweep600_dir, capsys):
+def test_batch_load_on_a_fake_scanner_is_still_gated(driver_env, sweep600_dir, monkeypatch, capsys):
+    monkeypatch.setenv("OPTICFILM_NEXT_STRIP", "0")
     assert main(["batch", "load", "--fake", str(sweep600_dir)]) == 2
     assert "OPTICFILM_NEXT_STRIP" in capsys.readouterr().err
 
