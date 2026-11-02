@@ -46,28 +46,7 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     batch = commands.add_parser("batch", help="scan and review many trays in a batch folder")
     sub = batch.add_subparsers(dest="batch_command", required=True)
 
-    new = sub.add_parser("new", help="create a batch folder")
-    new.add_argument("directory", type=Path)
-    new.add_argument("--name", required=True)
-    new.add_argument("--album", default="")
-    new.add_argument("--date", default=None)
-    new.add_argument("--dpi", type=int, default=3600)
-    add_orientation_options(new)
-    new.add_argument(
-        "--slot-rotate",
-        type=parse_slot_rotations,
-        default={},
-        metavar="SLOT=DEGREES,...",
-        help="turn the slide in these holder slots of every tray clockwise, on top of --rotate "
-        "(e.g. 2=180,3=180 when slots 2 and 3 are always loaded upside down)",
-    )
-    new.add_argument(
-        "--slot-mirror",
-        type=parse_slot_positions,
-        default=(),
-        metavar="SLOT,...",
-        help="flip the slide in these holder slots of every tray left-right, after turning it",
-    )
+    _add_new_command(sub)
 
     status = sub.add_parser("status", help="list the trays")
     status.add_argument("directory", type=Path)
@@ -104,6 +83,31 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     export.add_argument("directory", type=Path)
     export.add_argument("--out", type=Path, required=True)
     export.add_argument("--format", choices=["tiff16", "png8", "jpeg"], default="tiff16")
+
+
+def _add_new_command(sub: argparse._SubParsersAction) -> None:
+    new = sub.add_parser("new", help="create a batch folder")
+    new.add_argument("directory", type=Path)
+    new.add_argument("--name", required=True)
+    new.add_argument("--album", default="")
+    new.add_argument("--date", default=None)
+    new.add_argument("--dpi", type=int, default=3600)
+    add_orientation_options(new)
+    new.add_argument(
+        "--slot-rotate",
+        type=parse_slot_rotations,
+        default={},
+        metavar="SLOT=DEGREES,...",
+        help="turn the slide in these holder slots of every tray clockwise, on top of --rotate "
+        "(e.g. 2=180,3=180 when slots 2 and 3 are always loaded upside down)",
+    )
+    new.add_argument(
+        "--slot-mirror",
+        type=parse_slot_positions,
+        default=(),
+        metavar="SLOT,...",
+        help="flip the slide in these holder slots of every tray left-right, after turning it",
+    )
 
 
 def _tray_line(tray: TrayRecord) -> str:

@@ -31,7 +31,7 @@ Kirigami.Page {
             return;
         for (let i = 0; i < slideRepeater.count; ++i) {
             const card = slideRepeater.itemAt(i);
-            if (card && card.position === currentSlide && card.status !== "blank")
+            if (card && card.position === currentSlide)
                 bridge.setAccepted(bridge.selectedTray, currentSlide, card.status !== "accepted");
         }
     }
@@ -44,6 +44,33 @@ Kirigami.Page {
         onConfirmed: bridge.rescan(bridge.selectedTray)
     }
     ConfirmDialog {
+        id: heldReleaseDialog
+        objectName: "heldReleaseDialog"
+        property int tray: 0
+        property string rawBytes: "0"
+        title: qsTr("Release raw cleanup for tray %1?").arg(tray)
+        subtitle: qsTr("This will remove approximately %1 bytes of raw scans from tray %2. Later trays will be freed automatically after verification. Raw scans can no longer be adjusted or exported again. Choosing Yes confirms that you have opened the delivered JPEGs for this tray and checked the results and settings.").arg(rawBytes).arg(tray)
+        onConfirmed: {
+            if (tray === bridge.heldTray && !bridge.readonly)
+                bridge.confirmFreeHeld(tray);
+        }
+    }
+    Connections {
+        target: bridge
+        function onHeldReleaseReady(number, size) {
+            heldReleaseDialog.tray = number;
+            heldReleaseDialog.rawBytes = size;
+            heldReleaseDialog.open();
+        }
+        function onBatchReplaced() {
+            heldReleaseDialog.close();
+        }
+        function onChanged() {
+            if (heldReleaseDialog.tray !== bridge.heldTray)
+                heldReleaseDialog.close();
+        }
+    }
+    ConfirmDialog {
         id: confirmScannerDialog
 
         objectName: "confirmScannerDialog"
@@ -53,6 +80,9 @@ Kirigami.Page {
     }
     ExportDialog {
         id: exportDialog
+    }
+    EmptyFramesDialog {
+        id: emptyFramesDialog
     }
     FreeSpaceDialog {
         id: freeSpaceDialog
@@ -137,6 +167,36 @@ Kirigami.Page {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            visible: bridge.batchAutoExport || bridge.autoStatus !== "" || bridge.emptyConfirmationCount > 0
+
+            QQC2.Label {
+                objectName: "autoPipelineStatus"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
+            }
+            QQC2.Button {
+                objectName: "confirmEmptyFrames"
+                visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
+                text: qsTr("Review %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
+                onClicked: {
+                    emptyFramesDialog.tray = bridge.emptyConfirmationTray;
+                    emptyFramesDialog.sweepVersion = bridge.emptyConfirmationSweepVersion;
+                    emptyFramesDialog.previews = bridge.emptyConfirmationPreviews.slice();
+                    emptyFramesDialog.open();
+                }
+            }
+            QQC2.Button {
+                objectName: "freeHeldRaw"
+                visible: bridge.heldTray > 0 && !bridge.readonly
+                text: qsTr("Approve settings and release raw cleanup")
+                onClicked: bridge.requestHeldRelease(bridge.heldTray)
+            }
+        }
 
         FirstLoadCard {
             onTerminalHelp: loadHelpDialog.open()

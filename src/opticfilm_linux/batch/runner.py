@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 
-from opticfilm_linux.batch import review
+from opticfilm_linux.batch import export, review
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
 from opticfilm_linux.batch.events import BatchEvent, SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.layout import allocate_location, location_is_active
@@ -43,6 +43,38 @@ RESCANNABLE = (TrayStage.REVIEW, TrayStage.FAILED)
 IN_FLIGHT = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
 
 log = logging.getLogger(__name__)
+
+
+def _restart_rescan(manifest: BatchManifest, tray: TrayRecord) -> BatchManifest:
+    number = tray.number
+    current = next(t for t in manifest.trays if t.number == number)
+    if current.raw_removed and not current.cleanup_sweeps:
+        review._require_raw(current)
+    if not location_is_active(manifest, current):
+        raise BatchError("This tray belongs to a closed section; scan a fresh tray.")
+    if current != tray:
+        raise BatchError(f"tray {number} changed meanwhile; try again")
+    updated = dataclasses.replace(
+        current,
+        stage=TrayStage.SCANNING,
+        sweep_version=current.sweep_version + 1,
+        slides=tuple(SlideRecord(position=s.position, exports=s.exports) for s in current.slides),
+        error=None,
+        raw_removed=False,
+        cleanup_sweeps=(),
+        auto=("pending" if manifest.defaults.auto_export else "held")
+        if current.auto not in ("", "off")
+        else current.auto,
+        auto_error="",
+        auto_failed=(),
+        auto_flagged=(),
+    )
+    return dataclasses.replace(
+        manifest,
+        first_tray_released=(False if current.raw_removed else manifest.first_tray_released),
+        released_render=None if current.raw_removed else manifest.released_render,
+        trays=tuple(updated if t.number == number else t for t in manifest.trays),
+    )
 
 
 class BatchRunner:
@@ -88,46 +120,36 @@ class BatchRunner:
         return number
 
     def rescan_tray(self, number: int) -> int:
-        """Scan a tray again, keeping the old sweep. The tray must be in review or failed."""
+        """Scan a tray again, retaining any remaining old sweeps."""
         manifest = self._store.snapshot()
         tray = next((t for t in manifest.trays if t.number == number), None)
         if tray is None:
             raise BatchError(f"no tray {number} in this batch")
+        if tray.raw_removed and not tray.cleanup_sweeps:
+            review._require_raw(tray)
         if not location_is_active(manifest, tray):
             raise BatchError(
                 "This tray belongs to a closed section; scan a fresh tray in the current section."
             )
-        if tray.stage not in RESCANNABLE:
+        if tray.stage not in RESCANNABLE and not (
+            tray.raw_removed and tray.stage is TrayStage.EXPORTED
+        ):
             raise BatchError(
                 f"tray {number} is {tray.stage}; it can only be re-scanned from review"
             )
         self._require_ready()
+
         with self._scan_guard:
             self._require_no_scan_pending()
-
-            def restart(manifest: BatchManifest) -> BatchManifest:
-                current = next(t for t in manifest.trays if t.number == number)
-                if not location_is_active(manifest, current):
-                    raise BatchError("This tray belongs to a closed section; scan a fresh tray.")
-                if current.stage not in RESCANNABLE or current.sweep_version != tray.sweep_version:
-                    raise BatchError(f"tray {number} changed meanwhile; try again")
-                updated = dataclasses.replace(
-                    current,
-                    stage=TrayStage.SCANNING,
-                    sweep_version=current.sweep_version + 1,
-                    slides=tuple(
-                        SlideRecord(position=s.position, exports=s.exports) for s in current.slides
-                    ),
-                    error=None,
-                )
-                return dataclasses.replace(
-                    manifest,
-                    trays=tuple(updated if t.number == number else t for t in manifest.trays),
-                )
-
-            self._store.update(restart)
-            self._emit(TrayStageChanged(number, TrayStage.SCANNING))
-            self._submit(self._scan_pool, self._scan_job, number, scan=True)
+            if not export._CLEANUP_LOCK.acquire(blocking=False):
+                raise BatchError("raw scans are being removed; try rescan after cleanup finishes")
+            try:
+                export._retry_cleanup_resets(self._store)
+                self._store.update(lambda manifest: _restart_rescan(manifest, tray))
+                self._emit(TrayStageChanged(number, TrayStage.SCANNING))
+                self._submit(self._scan_pool, self._scan_job, number, scan=True)
+            finally:
+                export._CLEANUP_LOCK.release()
         return number
 
     def resume(self) -> None:
@@ -161,6 +183,7 @@ class BatchRunner:
 
     def set_slide_status(self, number: int, position: int, status: SlideStatus) -> None:
         review.set_slide_status(self._store, number, position, status)
+        self._queue_stale_previews()
         self._emit(SlideUpdated(number, position))
 
     def accept_all(self) -> None:
@@ -322,7 +345,9 @@ class BatchRunner:
                 continue
             for slide in tray.slides:
                 key = (tray.number, slide.position)
-                if slide.preview_stale and slide.status is not SlideStatus.BLANK:
+                if slide.preview_stale or (
+                    slide.status is SlideStatus.BLANK and not slide.blank_fingerprint
+                ):
                     if key not in attempted:
                         return key
         return None

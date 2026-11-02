@@ -16,7 +16,12 @@ Kirigami.FormLayout {
     required property real sharpen
     required property bool ownerDecided
 
-    enabled: !bridge.readonly && status !== "blank"
+    enabled: !bridge.readonly
+
+    QQC2.Label {
+        visible: panel.status === "blank"
+        text: qsTr("Accept this frame as a slide before adjusting it.")
+    }
 
     RowLayout {
         Kirigami.FormData.label: qsTr("Slide %1").arg(panel.position)
@@ -27,6 +32,7 @@ Kirigami.FormLayout {
             onToggled: bridge.setAccepted(panel.tray, panel.position, checked)
         }
         QQC2.Button {
+            enabled: panel.status !== "blank"
             text: qsTr("Rotate left")
             icon.name: "object-rotate-left"
             QQC2.ToolTip.text: qsTr("Rotate left ( [ )")
@@ -34,6 +40,7 @@ Kirigami.FormLayout {
             onClicked: bridge.rotate(panel.tray, panel.position, -1)
         }
         QQC2.Button {
+            enabled: panel.status !== "blank"
             text: qsTr("Rotate right")
             icon.name: "object-rotate-right"
             QQC2.ToolTip.text: qsTr("Rotate right ( ] )")
@@ -41,6 +48,7 @@ Kirigami.FormLayout {
             onClicked: bridge.rotate(panel.tray, panel.position, 1)
         }
         QQC2.Button {
+            enabled: panel.status !== "blank"
             text: qsTr("Mirror")
             icon.name: "object-flip-horizontal"
             checkable: true
@@ -55,6 +63,7 @@ Kirigami.FormLayout {
     }
 
     QQC2.Slider {
+        enabled: panel.status !== "blank"
         Kirigami.FormData.label: qsTr("Brightness (EV):")
         from: -2
         to: 2
@@ -63,6 +72,7 @@ Kirigami.FormLayout {
         onMoved: bridge.adjust(panel.tray, panel.position, "brightness", value)
     }
     QQC2.Slider {
+        enabled: panel.status !== "blank"
         Kirigami.FormData.label: qsTr("Colour strength:")
         from: 0
         to: 1
@@ -71,6 +81,7 @@ Kirigami.FormLayout {
         onMoved: bridge.adjust(panel.tray, panel.position, "color", value)
     }
     QQC2.Slider {
+        enabled: panel.status !== "blank"
         Kirigami.FormData.label: qsTr("Grain reduction:")
         from: 0
         to: 1
@@ -79,6 +90,7 @@ Kirigami.FormLayout {
         onMoved: bridge.adjust(panel.tray, panel.position, "grain", value)
     }
     QQC2.Slider {
+        enabled: panel.status !== "blank"
         Kirigami.FormData.label: qsTr("Sharpening:")
         from: 0
         to: 2

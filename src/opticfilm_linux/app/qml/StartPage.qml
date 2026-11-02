@@ -11,6 +11,9 @@ Kirigami.ScrollablePage {
 
     property url parentFolder: ""
     property url exportFolder: ""
+    readonly property string automaticExportProblem: autoExportSwitch.checked ? bridge.automaticExportProblem : ""
+    readonly property var automaticExportInputs: [autoExportSwitch.checked, parentFolder.toString(), nameField.text, exportFolder.toString()]
+    onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
 
     Component.onCompleted: exportFolder = bridge.lastExportFolder
 
@@ -96,7 +99,9 @@ Kirigami.ScrollablePage {
                 objectName: "newBatchSection"
                 Kirigami.FormData.label: qsTr("Section:")
                 text: "a"
-                validator: RegularExpressionValidator { regularExpression: /[a-f]|0[1-9]|[1-9][0-9]/ }
+                validator: RegularExpressionValidator {
+                    regularExpression: /[a-f]|0[1-9]|[1-9][0-9]/
+                }
             }
             QQC2.SpinBox {
                 id: sectionSizeField
@@ -124,7 +129,9 @@ Kirigami.ScrollablePage {
                 objectName: "newBatchDpi"
 
                 Kirigami.FormData.label: qsTr("Resolution (dpi):")
-                model: bridge.dpiChoices.map(dpi => ({value: dpi}))
+                model: bridge.dpiChoices.map(dpi => ({
+                            value: dpi
+                        }))
                 textRole: "value"
                 valueRole: "value"
                 enabled: bridge.demoDpi === 0
@@ -149,9 +156,18 @@ Kirigami.ScrollablePage {
                 objectName: "newBatchExportFormat"
                 Kirigami.FormData.label: qsTr("Export format:")
                 model: [
-                    {key: "jpeg", label: qsTr("JPEG")},
-                    {key: "png8", label: qsTr("8-bit PNG")},
-                    {key: "tiff16", label: qsTr("16-bit TIFF (best quality)")}
+                    {
+                        key: "jpeg",
+                        label: qsTr("JPEG")
+                    },
+                    {
+                        key: "png8",
+                        label: qsTr("8-bit PNG")
+                    },
+                    {
+                        key: "tiff16",
+                        label: qsTr("16-bit TIFF (best quality)")
+                    }
                 ]
                 textRole: "label"
                 valueRole: "key"
@@ -161,11 +177,46 @@ Kirigami.ScrollablePage {
                 id: jpegSizeBox
                 objectName: "newBatchJpegSize"
                 Kirigami.FormData.label: qsTr("JPEG size:")
-                model: [{key: "full", label: qsTr("Full size")}, {key: "3600", label: qsTr("3600 dpi size")}]
+                model: [
+                    {
+                        key: "full",
+                        label: qsTr("Full size")
+                    },
+                    {
+                        key: "3600",
+                        label: qsTr("3600 dpi size")
+                    }
+                ]
                 textRole: "label"
                 valueRole: "key"
                 enabled: exportFormatBox.currentValue === "jpeg"
                 Component.onCompleted: currentIndex = Math.max(0, indexOfValue(bridge.lastExportJpegSize))
+            }
+            QQC2.Switch {
+                id: autoExportSwitch
+                objectName: "newBatchAutoExport"
+                Kirigami.FormData.label: qsTr("Automatic export:")
+                text: qsTr("Export JPEGs after each tray")
+                checked: false
+            }
+            QQC2.Label {
+                visible: autoExportSwitch.checked
+                text: keepRawBox.checked ? qsTr("Raw scans are kept after automatic export.") : qsTr("Raw data is kept until you check and free the first tray. Later trays are freed after verification.")
+                wrapMode: Text.Wrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+            }
+            QQC2.CheckBox {
+                id: keepRawBox
+                objectName: "newBatchKeepRaw"
+                text: qsTr("Keep raw scans after export")
+                checked: false
+            }
+            QQC2.Label {
+                objectName: "automaticExportProblem"
+                visible: page.automaticExportProblem !== ""
+                text: page.automaticExportProblem
+                wrapMode: Text.Wrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
             }
             RowLayout {
                 Kirigami.FormData.label: qsTr("Slide orientation:")
@@ -228,11 +279,11 @@ Kirigami.ScrollablePage {
                 text: qsTr("Create batch")
                 icon.name: "document-new"
                 highlighted: true
-                enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== ""
+                enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== "" && page.automaticExportProblem === ""
                 onClicked: {
                     // hidden slot rows do not count: the owner said all slots are loaded alike
                     const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
-                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value);
+                    bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value, autoExportSwitch.checked, keepRawBox.checked);
                 }
             }
         }

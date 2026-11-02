@@ -403,9 +403,24 @@ def test_scan_and_rescan_replace_evidence(tmp_path, sweep_dir):
         store.close()
 
 
+def _historical_blank_slide(history):
+    from opticfilm_linux.batch.model import Flag, SlideRecord
+
+    return SlideRecord(
+        1,
+        SlideStatus.BLANK,
+        flags=(Flag.DUST,),
+        settings=SlideSettings(rotation=90),
+        owner_decided=True,
+        exported=True,
+        preview_stale=True,
+        exports=(history,),
+    )
+
+
 @pytest.mark.parametrize("scan_fails", [False, True])
 def test_rescan_preserves_export_history_after_reopen(tmp_path, sweep_dir, scan_fails):
-    from opticfilm_linux.batch.model import ExportRecord, Flag, SlideRecord, TrayLocation
+    from opticfilm_linux.batch.model import ExportRecord, SlideRecord, TrayLocation
     from opticfilm_linux.provenance import ScanEvidence
 
     history = ExportRecord("family/box-1/a/001.jpg", 11, 9, 7200, 3600, "T001S1", "a" * 64)
@@ -421,16 +436,7 @@ def test_rescan_preserves_export_history_after_reopen(tmp_path, sweep_dir, scan_
 
     directory = tmp_path / "history"
     store = BatchStore.create(directory, "T", defaults=BatchDefaults(dpi=600), collection="family")
-    old_slide = SlideRecord(
-        1,
-        SlideStatus.BLANK,
-        flags=(Flag.DUST,),
-        settings=SlideSettings(rotation=90),
-        owner_decided=True,
-        exported=True,
-        preview_stale=True,
-        exports=(history,),
-    )
+    old_slide = _historical_blank_slide(history)
     tray = TrayRecord(
         1, TrayStage.REVIEW, slides=(old_slide,), location=location, evidence=evidence
     )
@@ -458,3 +464,35 @@ def test_rescan_preserves_export_history_after_reopen(tmp_path, sweep_dir, scan_
         store.close()
     with BatchStore.open(directory) as reopened:
         assert reopened.snapshot().trays[0] == after
+
+
+def test_rescan_after_interrupted_cleanup_starts_fresh_capture(tmp_path, sweep_dir):
+    store, runner = _make(tmp_path, sweep_dir)
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    store.update_tray(
+        1,
+        stage=TrayStage.EXPORTED,
+        raw_removed=True,
+        cleanup_sweeps=(1,),
+        auto="freed",
+        auto_error="old error",
+        auto_failed=(1,),
+        auto_flagged=(1,),
+    )
+    store.update(
+        lambda m: dataclasses.replace(m, first_tray_released=True, released_render=m.defaults)
+    )
+    (store.sweep_dir(1, 1) / "rgb.npy").unlink()
+
+    runner.rescan_tray(1)
+    assert runner.wait_idle(TIMEOUT)
+    manifest = store.snapshot()
+    tray = manifest.trays[0]
+    assert tray.stage is TrayStage.REVIEW and tray.sweep_version == 2
+    assert not tray.raw_removed and not tray.cleanup_sweeps
+    assert tray.auto == "held" and not tray.auto_error and not tray.auto_failed
+    assert not tray.auto_flagged
+    assert not manifest.first_tray_released and manifest.released_render is None
+    assert store.sweep_dir(1, 2).is_dir()
+    runner.close()

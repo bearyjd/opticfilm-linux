@@ -292,11 +292,9 @@ def test_holder_buttons_follow_the_flags_on_a_ready_scanner(loaded, tmp_path):
     assert not bridge.hasBanner and warnings == []
 
 
-def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_dir, tmp_path):
+def _recording_scanner(sweep600_dir, calls):
     from opticfilm_linux.scanner.base import ScannerStatus
     from opticfilm_linux.scanner.fake import FakeScanner
-
-    calls: list[str] = []
 
     class Recording(FakeScanner):
         def eject(self) -> None:
@@ -305,7 +303,12 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         def load_next_strip(self) -> None:
             calls.append("load")
 
-    scanner = Recording(sweep600_dir, (ScannerStatus.NOT_READY,))
+    return Recording(sweep600_dir, (ScannerStatus.NOT_READY,))
+
+
+def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_dir, tmp_path):
+    calls: list[str] = []
+    scanner = _recording_scanner(sweep600_dir, calls)
     controller = Controller(lambda _dpi: scanner, next_strip=True)
     bridge = Bridge(
         controller,
@@ -592,214 +595,97 @@ def test_start_page_saves_export_folder_and_size(loaded, tmp_path):
     assert not warnings
 
 
-@pytest.mark.parametrize(
-    "fmt,trailing_slash", [("jpeg", False), ("png8", False), ("tiff16", False), ("jpeg", True)]
-)
-def test_last_export_initializes_next_batch_without_changing_existing_batch(
-    loaded, tmp_path, fmt, trailing_slash
-):
+@pytest.mark.parametrize("keep_raw", [False, True])
+def test_start_page_automatic_export_is_opt_in_and_saved(loaded, tmp_path, keep_raw):
     bridge, engine, warnings = loaded
-    parent = QUrl.fromLocalFile(str(tmp_path)).toString()
-    bridge.newBatch(parent, "Original", "", "", 600)
-    _wait(bridge, lambda: bridge.hasBatch)
-    original_session = bridge._state.batch_session
-    bridge.newBatch(parent, "Exporting", "", "", 600)
-    _wait(bridge, lambda: bridge.hasBatch and bridge._state.batch_session != original_session)
-    folder_url = QUrl.fromLocalFile(str(tmp_path / "photos")).toString()
-    bridge.startExport(folder_url + ("/" if trailing_slash else ""), fmt, "3600")
-    _wait(bridge, lambda: bridge.exportFinished)
-    assert bridge.lastExportFolder == folder_url
-    bridge.closeBatch()
-    _wait(bridge, lambda: not bridge.hasBatch)
-    _drain_deferred_deletes()
     root = engine.rootObjects()[0]
+    switch = root.findChild(QObject, "newBatchAutoExport")
+    assert switch is not None
+    assert not switch.property("checked")
+    retain = root.findChild(QObject, "newBatchKeepRaw")
+    assert retain is not None
+    assert retain.property("text") == "Keep raw scans after export"
+    assert not retain.property("checked")
+    retain.setProperty("checked", keep_raw)
     page = root.findChild(QObject, "startPage")
-    assert page.property("exportFolder") == QUrl(folder_url)
-    assert root.findChild(QObject, "newBatchExportFormat").property("currentValue") == fmt
-    size = root.findChild(QObject, "newBatchJpegSize")
-    assert size.property("currentValue") == "3600"
-    assert size.property("enabled") == (fmt == "jpeg")
-    page.setProperty("parentFolder", QUrl(parent))
-    root.findChild(QObject, "newBatchName").setProperty("text", "Next")
+    page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
+    page.setProperty("exportFolder", QUrl.fromLocalFile(str(tmp_path / "photos")))
+    root.findChild(QObject, "newBatchName").setProperty("text", "Automatic")
+    switch.setProperty("checked", True)
     create = root.findChild(QObject, "createBatch")
     _wait(bridge, lambda: create.property("enabled"))
-    assert QMetaObject.invokeMethod(create, "click")
+    QMetaObject.invokeMethod(create, "click")
     _wait(bridge, lambda: bridge.hasBatch)
-    assert (bridge.batchExportFolder, bridge.batchExportFormat, bridge.batchJpegSize) == (
-        folder_url,
-        fmt,
-        "3600",
-    )
-    bridge.openBatch(str(tmp_path / "Original"), False)
-    _wait(bridge, lambda: bridge.batchName == "Original")
-    assert (bridge.batchExportFolder, bridge.batchExportFormat, bridge.batchJpegSize) == (
-        "",
-        "jpeg",
-        "full",
-    )
-    assert not warnings
-
-
-def test_rejected_export_does_not_replace_remembered_defaults(loaded, tmp_path):
-    from opticfilm_linux.app.prefs import export_defaults, remember_export
-
-    bridge, _engine, warnings = loaded
-    remember_export(bridge._prefs, "file:///previous", "png8", "3600")
-    before = export_defaults(bridge._prefs)
-    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Reject", "", "", 600)
-    _wait(bridge, lambda: bridge.hasBatch)
-    bridge.startExport(
-        QUrl.fromLocalFile(str(tmp_path / "Reject" / "raw")).toString(), "jpeg", "full"
-    )
-    _wait(bridge, lambda: bridge.hasBanner)
-    assert export_defaults(bridge._prefs) == before
-    assert not warnings
-
-
-def test_section_controls_bind(loaded, tmp_path):
+    assert bridge.batchAutoExport
     from opticfilm_linux.batch.store import BatchStore
 
+    with BatchStore.open(tmp_path / "Automatic", readonly=True) as store:
+        assert store.snapshot().defaults.keep_raw is keep_raw
+    _drain_deferred_deletes()
+    assert root.findChild(QObject, "autoPipelineStatus") is not None
+    assert root.findChild(QObject, "freeHeldRaw") is not None
+    assert not warnings
+
+
+@pytest.mark.parametrize("destination", ["", "https://example.com/photos", "file", "inside"])
+def test_start_page_requires_valid_automatic_destination(loaded, tmp_path, destination):
     bridge, engine, warnings = loaded
     root = engine.rootObjects()[0]
     page = root.findChild(QObject, "startPage")
     page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
-    root.findChild(QObject, "newBatchName").setProperty("text", "Section UI")
-    collection = root.findChild(QObject, "newBatchCollection")
-    assert collection is not None
-    collection.setProperty("text", "family")
-    root.findChild(QObject, "newBatchBox").setProperty("value", 2)
-    root.findChild(QObject, "newBatchSection").setProperty("text", "01")
-    root.findChild(QObject, "newBatchSectionSize").setProperty("value", 10)
+    root.findChild(QObject, "newBatchName").setProperty("text", "Automatic")
     create = root.findChild(QObject, "createBatch")
     _wait(bridge, lambda: create.property("enabled"))
-    assert QMetaObject.invokeMethod(create, "click")
-    _wait(bridge, lambda: bridge.hasBatch or bridge.hasBanner)
-    assert bridge.hasBatch, (bridge.bannerMessage, bridge.bannerDetail, warnings)
-    _wait(bridge, lambda: bridge.canFinishBox)
-    assert (bridge.collection, bridge.box, bridge.section, bridge.sectionSize) == (
-        "family",
-        2,
-        "01",
-        10,
-    )
-    _wait(bridge, lambda: root.findChild(QObject, "nextSectionButton") is not None)
-    QMetaObject.invokeMethod(root.findChild(QObject, "nextSectionButton"), "click")
-    _wait(bridge, lambda: bridge.section == "02")
-    QMetaObject.invokeMethod(root.findChild(QObject, "finishBoxButton"), "click")
-    _wait(bridge, lambda: bridge.box == 3)
-    assert bridge.section == "01" and bridge.selectedTray == -1
-    with BatchStore.open(tmp_path / "Section UI", readonly=True) as store:
-        m = store.snapshot()
-        assert (m.collection, m.box, m.section, m.section_size) == ("family", 3, "01", 10)
+    if destination == "file":
+        path = tmp_path / "file"
+        path.write_text("occupied")
+        url = QUrl.fromLocalFile(str(path))
+    elif destination == "inside":
+        url = QUrl.fromLocalFile(str(tmp_path / "Automatic" / "photos"))
+    else:
+        url = QUrl(destination)
+    page.setProperty("exportFolder", url)
+    root.findChild(QObject, "newBatchAutoExport").setProperty("checked", True)
+    _wait(bridge, lambda: not create.property("enabled"))
+    reason = root.findChild(QObject, "automaticExportProblem")
+    assert reason.property("visible")
+    assert reason.property("text")
+    page.setProperty("exportFolder", QUrl.fromLocalFile(str(tmp_path / "photos")))
+    _wait(bridge, lambda: create.property("enabled"))
+    assert not reason.property("visible")
     assert not warnings
 
 
-def test_first_load_card_reseats_then_reports_exit_code(qapp, sweep600_dir, tmp_path):
-    from test_first_load import InteractiveScanner
+@pytest.mark.parametrize("keep_raw", [None, False, True])
+def test_new_batch_qml_retention_slot(loaded, tmp_path, keep_raw):
+    import json
 
-    scanner = InteractiveScanner(sweep600_dir)
-    c = Controller(lambda _dpi: scanner)
-    bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
-    provider = PreviewProvider(lambda n, p, k: c.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
-    try:
-        root = engine.rootObjects()[0]
-        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "First", "", "", 600)
-        _wait(bridge, lambda: bridge.canFirstLoad)
-        _click(root, "firstLoadButton")
-        _wait(bridge, lambda: bridge.loadPhase == "await_reinsert")
-        assert _prop(root, "firstLoadText", "text") == (
-            "Pull the holder fully OUT, then push it back in to the stop. Press Done."
-        )
-        assert not _prop(root, "ejectButton", "enabled")
-        _click(root, "firstLoadDoneButton")
-        bridge.firstLoadDone()
-        _wait(bridge, lambda: bridge.loadPhase == "done" and not bridge.holderBusy)
-        assert bridge.loadExitCode == "0" and scanner.calls == ["load", "done"]
-        assert _prop(root, "firstLoadExitCode", "text") == "Driver exit code: 0"
-        assert warnings == []
-    finally:
-        bridge.shutdown()
-        engine.deleteLater()
+    from opticfilm_linux.batch.store import BatchStore
 
-
-def test_first_load_card_cancel_warns_then_stops(qapp, sweep600_dir, tmp_path):
-    from test_first_load import InteractiveScanner
-
-    scanner = InteractiveScanner(sweep600_dir)
-    c = Controller(lambda _dpi: scanner)
-    bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
-    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
-    try:
-        root = engine.rootObjects()[0]
-        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Cancel", "", "", 600)
-        _wait(bridge, lambda: bridge.canFirstLoad)
-        _click(root, "firstLoadButton")
-        _wait(bridge, lambda: bridge.loadPhase == "await_reinsert")
-        _click(root, "firstLoadCancelButton")
-        dialog = root.findChild(QObject, "firstLoadCancelDialog")
-        _wait(bridge, lambda: dialog.property("visible"))
-        assert "power cycle" in dialog.property("subtitle")
-        QMetaObject.invokeMethod(dialog, "accepted")
-        _wait(bridge, lambda: bridge.loadPhase == "failed" and not bridge.holderBusy)
-        assert scanner.calls == ["load", "cancel"] and bridge.loadExitCode == "130"
-        assert warnings == []
-    finally:
-        bridge.shutdown()
-        engine.deleteLater()
-
-
-def _held_first_load_scanner(sweep, phase):
-    from opticfilm_linux.scanner.base import ScanError
-    from test_first_load import InteractiveScanner
-
-    class HeldScanner(InteractiveScanner):
-        def load_interactive(self, on_prompt, done, cancel):
-            self.calls.append("load")
-            if phase != "jogging":
-                on_prompt()
-            if cancel.wait(TIMEOUT):
-                self.calls.append("cancel")
-            raise ScanError("cancelled, exit code 130")
-
-    return HeldScanner(sweep)
-
-
-@pytest.mark.parametrize("phase", ["jogging", "await_reinsert", "loading"])
-def test_first_load_quit_warns_and_can_be_rejected(qapp, sweep600_dir, tmp_path, phase):
-    scanner = _held_first_load_scanner(sweep600_dir, phase)
-    c = Controller(lambda _dpi: scanner)
-    bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
-    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
-    stopped = False
-    try:
-        root = engine.rootObjects()[0]
-        bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Quit", "", "", 600)
-        _wait(bridge, lambda: bridge.canFirstLoad)
-        _click(root, "firstLoadButton")
-        target = "await_reinsert" if phase == "loading" else phase
-        _wait(bridge, lambda: bridge.loadPhase == target and scanner.calls == ["load"])
-        if phase == "loading":
-            bridge.firstLoadDone()
-            _wait(bridge, lambda: bridge.loadPhase == "loading")
-        assert bridge.closeRequested() == "first_load_running"
-        assert QMetaObject.invokeMethod(root, "close")
-        dialog = root.findChild(QObject, "firstLoadQuitDialog")
-        _wait(bridge, lambda: dialog.property("visible"))
-        assert "power cycle" in dialog.property("subtitle")
-        assert QMetaObject.invokeMethod(dialog, "reject")
-        _wait(bridge, lambda: not dialog.property("visible"))
-        assert root.property("visible") and bridge.loadPhase == phase
-        assert scanner.calls == ["load"] and bridge.holderBusy
-        assert QMetaObject.invokeMethod(root, "close")
-        _wait(bridge, lambda: dialog.property("visible"))
-        assert QMetaObject.invokeMethod(dialog, "accept")
-        _wait(bridge, lambda: not root.property("visible"))
-        bridge.shutdown()  # main() connects application quit to this same cleanup.
-        stopped = True
-        assert scanner.calls == ["load", "cancel"]
-        assert warnings == []
-    finally:
-        if not stopped:
-            bridge.shutdown()
-        engine.deleteLater()
+    bridge, engine, warnings = loaded
+    args = [
+        QUrl.fromLocalFile(str(tmp_path)).toString(),
+        "Retention",
+        "",
+        "",
+        600,
+        0,
+        False,
+        [],
+        [],
+        str(tmp_path / "photos"),
+        "jpeg",
+        "full",
+        "",
+        1,
+        "a",
+        140,
+        True,
+    ]
+    if keep_raw is not None:
+        args.append(keep_raw)
+    _qml_call(engine, "bridge.newBatch(" + ",".join(map(json.dumps, args)) + ")")
+    _wait(bridge, lambda: bridge.hasBatch)
+    with BatchStore.open(tmp_path / "Retention", readonly=True) as store:
+        assert store.snapshot().defaults.keep_raw is bool(keep_raw)
+    assert not warnings

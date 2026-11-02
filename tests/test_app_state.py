@@ -1,4 +1,7 @@
+import ast
 import itertools
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +15,29 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.scanner.base import ScannerStatus
+
+
+def test_cleanup_result_text_shows_failure_and_actual_freed_bytes():
+    from opticfilm_linux.app import state as state_module
+    from opticfilm_linux.app.messages import bytes_text
+    from opticfilm_linux.app.state import AppState, FreeSpaceView
+
+    # Exercise the pure formatter without requiring a running Qt application.
+    source = Path(state_module.__file__).parent / "qt" / "bridge.py"
+    tree = ast.parse(source.read_text())
+    formatter = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_free_text"
+    )
+    namespace = {"AppState": AppState, "bytes_text": bytes_text}
+    exec(compile(ast.Module(body=[formatter], type_ignores=[]), str(source), "exec"), namespace)
+    view = FreeSpaceView(
+        ((1, 12),), 12, freed=5, message="Cleanup failed; raw data partly removed."
+    )
+    text = namespace["_free_text"](replace(EMPTY_STATE, free_space=view))
+    assert "Cleanup failed; raw data partly removed." in text
+    assert f"Freed {bytes_text(5)}." in text
 
 
 def _manifest() -> BatchManifest:
@@ -185,7 +211,219 @@ def test_can_scan_respects_holder_latch(latch, allowed):
     assert state.can_confirm_holder_latched is (latch == "RELEASED")
 
 
+def test_auto_status_counts_flagged_and_failed_after_acceptance():
+    from dataclasses import replace
+
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        auto="held",
+        stage=TrayStage.EXPORTED,
+        auto_flagged=(2, 4),
+        slides=tuple(
+            replace(s, status=SlideStatus.ACCEPTED, exported=True, owner_decided=True)
+            for s in manifest.trays[0].slides
+        ),
+    )
+    second = replace(manifest.trays[1], stage=TrayStage.REVIEW, auto="failed", auto_failed=(1,))
+    manifest = replace(
+        manifest, trays=(first, second), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    state = _build(manifest)
+    assert state.auto_export
+    assert state.auto_flagged == 2
+    assert state.auto_failed == 1
+    assert "0 finished" in state.auto_status
+    assert "1 waiting" in state.auto_status
+    assert "2 flagged" in state.auto_status
+    assert "1 failed" in state.auto_status
+    assert state.held_tray == 1
+    assert state.trays[0].auto == "held"
+    assert state.trays[1].auto_failed == (1,)
+
+
+def test_keep_raw_and_readonly_hide_first_tray_release():
+    from dataclasses import replace
+
+    manifest = _manifest()
+    manifest = replace(
+        manifest,
+        trays=(replace(manifest.trays[0], auto="held"),),
+        defaults=replace(manifest.defaults, auto_export=True, keep_raw=True),
+    )
+    assert _build(manifest).held_tray is None
+    manifest = replace(manifest, defaults=replace(manifest.defaults, keep_raw=False))
+    assert _build(manifest, readonly=True).held_tray is None
+
+
+@pytest.mark.parametrize("auto", ["off", "failed", "freed", "blocked"])
+def test_first_settings_release_hidden_without_verified_held_first_tray(auto):
+    manifest = _manifest()
+    first = replace(manifest.trays[0], auto=auto, raw_removed=auto == "freed")
+    manifest = replace(
+        manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    assert _build(manifest).held_tray is None
+    assert (
+        _build(
+            replace(
+                manifest,
+                first_tray_released=True,
+                released_render=replace(manifest.defaults, auto_export=False, keep_raw=False),
+            )
+        ).held_tray
+        is None
+    )
+
+
+def test_changed_render_settings_require_verified_first_tray_evidence():
+    manifest = _manifest()
+    approved = replace(manifest.defaults, auto_export=False, keep_raw=False)
+    manifest = replace(
+        manifest,
+        defaults=replace(manifest.defaults, auto_export=True, jpeg_size="3600"),
+        first_tray_released=True,
+        released_render=approved,
+    )
+    assert _build(manifest).held_tray is None
+
+
+def test_committed_cleanup_waiting_for_completion_is_visible():
+    manifest = _manifest()
+    tray = replace(manifest.trays[0], raw_removed=True, auto="verified", cleanup_sweeps=(1,))
+    assert (
+        _build(replace(manifest, trays=(tray,)), raw_pending=frozenset({1})).trays[0].stage_text
+        == "Raw removal pending"
+    )
+
+
 def test_load_next_is_available_by_default_with_env_unset(monkeypatch):
     monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
     state = _build(scanner=ScannerStatus.NOT_READY, holder_control=True)
     assert state.can_load_next and state.next_strip_enabled
+
+
+@pytest.mark.parametrize("auto", ["", "held", "freed", "failed"])
+def test_manual_interrupted_cleanup_shows_raw_removal_pending(auto):
+    tray = replace(_manifest().trays[0], raw_removed=True, auto=auto)
+    manifest = replace(_manifest(), trays=(tray,))
+    state = _build(manifest, raw_pending=frozenset({tray.number}))
+    assert state.trays[0].stage_text == "Raw removal pending"
+    assert _build(manifest).trays[0].stage_text != "Raw removal pending"
+
+
+def test_recovery_button_requires_verified_recovery_evidence():
+    tray = replace(_manifest().trays[0], raw_removed=True, cleanup_sweeps=(1,))
+    manifest = replace(_manifest(), trays=(tray,))
+    assert not _build(manifest, raw_pending=frozenset({1})).trays[0].can_recover_raw
+    assert (
+        _build(manifest, raw_pending=frozenset({1}), raw_recoverable=frozenset({1}))
+        .trays[0]
+        .can_recover_raw
+    )
+
+
+def test_confirmed_blank_flags_do_not_hide_first_tray_release():
+    manifest = _manifest()
+    accepted = SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True)
+    from opticfilm_linux.batch.model import EmptyConfirmation
+
+    blank = SlideRecord(
+        2,
+        status=SlideStatus.BLANK,
+        flags=(Flag.DUST,),
+        owner_decided=True,
+        blank_fingerprint="b" * 64,
+        empty_confirmed=EmptyConfirmation(manifest.trays[0].sweep_version, "b" * 64),
+    )
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.EXPORTED,
+        auto="held",
+        auto_flagged=(2,),
+        slides=(accepted, blank),
+    )
+    manifest = replace(
+        manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    assert _build(manifest).held_tray == 1
+
+
+def test_undecided_empty_frames_expose_confirmation_before_release():
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.EXPORTED,
+        auto="held",
+        slides=(
+            SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True),
+            SlideRecord(2, status=SlideStatus.BLANK),
+        ),
+    )
+    manifest = replace(
+        manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    state = _build(manifest)
+    assert state.held_tray is None
+    assert state.empty_confirmation_tray == 1
+    assert state.empty_confirmation_count == 1
+
+
+def test_freed_first_tray_allows_surviving_held_settings_approval():
+    manifest = _manifest()
+    first = replace(manifest.trays[0], stage=TrayStage.EXPORTED, raw_removed=True, auto="freed")
+    second = replace(
+        first,
+        number=2,
+        raw_removed=False,
+        auto="held",
+        slides=(SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True),),
+    )
+    manifest = replace(
+        manifest, trays=(first, second), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    assert _build(manifest).held_tray == 2
+
+
+def test_empty_confirmation_includes_every_blank_with_rendered_fingerprints():
+    from opticfilm_linux.batch.model import EmptyConfirmation
+
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.REVIEW,
+        sweep_version=3,
+        slides=(
+            SlideRecord(
+                1,
+                status=SlideStatus.BLANK,
+                blank_fingerprint="a" * 64,
+                empty_confirmed=EmptyConfirmation(3, "a" * 64),
+            ),
+            SlideRecord(2, status=SlideStatus.BLANK, blank_fingerprint="b" * 64),
+        ),
+    )
+    state = _build(
+        replace(manifest, trays=(first,)),
+        preview_tokens={(1, 1): 20, (1, 1, "before"): 10, (1, 2): 30},
+    )
+    assert state.empty_confirmation_sweep_version == 3
+    assert state.empty_confirmation_count == 2
+    assert [(p, digest) for p, digest, _ in state.empty_confirmation_previews] == [
+        (1, "a" * 64),
+        (2, "b" * 64),
+    ]
+    assert [token for _, _, token in state.empty_confirmation_previews] == [10, 0]
+
+
+def test_legacy_owner_blank_still_needs_explicit_confirmation():
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.EXPORTED,
+        auto="held",
+        slides=(SlideRecord(1, status=SlideStatus.BLANK, owner_decided=True),),
+    )
+    state = _build(replace(manifest, trays=(first,)))
+    assert state.empty_confirmation_tray == 1
+    assert state.held_tray is None

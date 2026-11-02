@@ -1,5 +1,6 @@
 import dataclasses
 import os
+import stat
 import threading
 
 import pytest
@@ -60,6 +61,53 @@ def test_update_writes_atomically_when_replace_fails(tmp_path, monkeypatch):
     on_disk = from_json((tmp_path / "batch" / "batch.json").read_text())
     assert on_disk == before
     assert not (tmp_path / "batch" / "batch.json.tmp").exists()
+
+
+def test_update_syncs_manifest_directory_after_replace(tmp_path, monkeypatch):
+    with _store(tmp_path) as store:
+        calls = []
+        directory_fds = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def sync(fd):
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+            calls.append("directory synced" if is_directory else "file synced")
+            if is_directory:
+                assert os.path.samestat(os.fstat(fd), store.directory.stat())
+                directory_fds.append(fd)
+            real_fsync(fd)
+
+        def replace(source, destination):
+            real_replace(source, destination)
+            calls.append("replaced")
+
+        monkeypatch.setattr("opticfilm_linux.batch.store.os.fsync", sync)
+        monkeypatch.setattr("opticfilm_linux.batch.store.os.replace", replace)
+        store.update(_add_tray)
+        assert calls == ["file synced", "replaced", "directory synced"]
+        with pytest.raises(OSError):
+            os.fstat(directory_fds[0])
+
+
+def test_manifest_directory_sync_failure_propagates(tmp_path, monkeypatch):
+    with _store(tmp_path) as store:
+        before = store.snapshot()
+        directory_fds = []
+        real_fsync = os.fsync
+
+        def sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                directory_fds.append(fd)
+                raise OSError("manifest directory sync failed")
+            real_fsync(fd)
+
+        monkeypatch.setattr("opticfilm_linux.batch.store.os.fsync", sync)
+        with pytest.raises(OSError, match="manifest directory sync failed"):
+            store.update(_add_tray)
+        assert store.snapshot() == before
+        assert not (store.directory / "batch.json.tmp").exists()
+        with pytest.raises(OSError):
+            os.fstat(directory_fds[0])
 
 
 def test_update_is_not_applied_when_change_raises(tmp_path):

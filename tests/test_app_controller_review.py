@@ -31,17 +31,20 @@ def _slide(c, position=1):
     return next(s for s in c.state().slides if s.position == position)
 
 
-def test_accept_all_accepts_every_non_blank_slide_in_review(reviewed):
+def test_accept_all_accepts_undecided_slides_and_preserves_owner_exclusion(reviewed):
     reviewed.set_status(1, 2, SlideStatus.NEEDS_LOOK)
     wait_until(reviewed, lambda: _slide(reviewed, 2).status is SlideStatus.NEEDS_LOOK)
     reviewed.accept_all()
     wait_until(
         reviewed,
         lambda: all(
-            s.status in (SlideStatus.ACCEPTED, SlideStatus.BLANK) for s in reviewed.state().slides
+            s.status in (SlideStatus.ACCEPTED, SlideStatus.BLANK)
+            for s in reviewed.state().slides
+            if s.position != 2
         ),
     )
     assert _slide(reviewed, 2).owner_decided
+    assert _slide(reviewed, 2).status is SlideStatus.NEEDS_LOOK
 
 
 def test_edit_marks_owner_decided_changes_preview_token_and_keeps_status(reviewed):

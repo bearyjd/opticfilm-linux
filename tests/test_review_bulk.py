@@ -211,3 +211,12 @@ def test_select_and_edit_4000_slides_is_not_quadratic(tmp_path):
         result = apply_settings_many(store, selection.keys, {"brightness_ev": 0.5})
         assert perf_counter() - started < 8.0  # generous: guards a quadratic blowup, not CI speed
         assert len(result.before) == 4000
+
+
+def test_restore_blank_requires_new_preview_and_fingerprint():
+    original = SlideRecord(1, SlideStatus.ACCEPTED, blank_fingerprint="a" * 64)
+    store = MemoryStore(dataclasses.replace(tray(), slides=(original,)))
+    restore_many(store, {(1, 1): (original.settings, SlideStatus.BLANK, False)})
+    restored = slide(store)
+    assert restored.preview_stale
+    assert restored.blank_fingerprint == ""

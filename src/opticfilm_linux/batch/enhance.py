@@ -27,6 +27,7 @@ from opticfilm_linux.batch.store import BatchError, BatchStore, is_interrupted
 from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.split import SlideSplitError, is_blank, split_slides
+from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import SweepFormatError, load_sweep
 
 BEFORE_GAMMA = 2.2  # raw scans are linear; this makes the "before" preview look natural
@@ -81,20 +82,14 @@ def _merge_slide(
     blank: bool,
     defaults: BatchDefaults,
     publish: Callable[[], None] = lambda: None,
+    fingerprint: str = "",
 ) -> None:
-    """Write fresh flags (and an automatic status) into the slide's *current* record.
-
-    Results computed from an out-of-date snapshot are dropped: the sweep was replaced by a
-    re-scan, the tray mode or the batch defaults (orientation) changed, or the owner changed
-    this slide's settings meanwhile (a newer job is queued for those). The owner's status,
-    settings and export mark are never overwritten, because only flags and an automatic status
-    are written, onto the live record. ``publish`` (moving the new previews into place) runs
-    under the store's lock and only when the result is kept, so a preview of an old
-    orientation or old settings is never shown.
-    """
+    """Keep owner choices and publish current previews atomically under the store lock."""
 
     def change(manifest: BatchManifest) -> BatchManifest:
         now = _tray(manifest, number)
+        if now.raw_removed:
+            return manifest
         if now.sweep_version != tray.sweep_version or now.mode != tray.mode:
             return manifest
         if manifest.defaults != defaults:
@@ -103,18 +98,9 @@ def _merge_slide(
         if current is not None and current.settings != snapshot.settings:
             return manifest
         base = current or snapshot
-        if blank:
-            record = dataclasses.replace(
-                base, status=SlideStatus.BLANK, flags=(), preview_stale=False
-            )
-        else:
-            auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
-            record = dataclasses.replace(
-                base,
-                status=base.status if base.owner_decided else auto,
-                flags=flags,
-                preview_stale=False,
-            )
+        if blank and _protect_content(base) and base.status is not SlideStatus.BLANK:
+            return manifest
+        record = _classified_record(base, flags, blank, fingerprint)
         others = tuple(s for s in now.slides if s.position != snapshot.position)
         slides = tuple(sorted(others + (record,), key=lambda s: s.position))
         trays = tuple(
@@ -125,6 +111,25 @@ def _merge_slide(
         return dataclasses.replace(manifest, trays=trays)
 
     store.update(change)
+
+
+def _protect_content(slide: SlideRecord) -> bool:
+    return slide.auto_accepted or slide.exported or slide.owner_decided
+
+
+def _classified_record(
+    base: SlideRecord, flags: tuple[Flag, ...], blank: bool, fingerprint: str
+) -> SlideRecord:
+    auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
+    return dataclasses.replace(
+        base,
+        status=base.status if base.owner_decided else SlideStatus.BLANK if blank else auto,
+        flags=() if blank else flags,
+        preview_stale=False,
+        blank_fingerprint=fingerprint if blank else "",
+        empty_confirmed=None,
+        auto_accepted=base.auto_accepted and not blank,
+    )
 
 
 def _pending(path: Path) -> Path:
@@ -141,11 +146,16 @@ def _process_slide(
 ) -> None:
     defaults = store.snapshot().defaults
     position = slide.index + 1
-    if defaults.skip_blank and is_blank(slide):
-        _merge_slide(store, number, tray, snapshot, (), blank=True, defaults=defaults)
-        return
-    enhanced = enhance_slide(
-        slide, options_for(defaults, tray.mode, snapshot.settings, snapshot.position), sweep.dpi
+    blank = (
+        snapshot.status is SlideStatus.BLANK
+        and (snapshot.owner_decided or snapshot.preview_stale or not snapshot.blank_fingerprint)
+    ) or (defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide))
+    enhanced = (
+        slide.rgb
+        if blank
+        else enhance_slide(
+            slide, options_for(defaults, tray.mode, snapshot.settings, snapshot.position), sweep.dpi
+        )
     )
     before = store.preview_path(number, position, "before")
     after = store.preview_path(number, position, "after")
@@ -156,9 +166,19 @@ def _process_slide(
 
     try:
         write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
-        write_preview(make_preview(enhanced), _pending(after))
-        flags = compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
-        _merge_slide(store, number, tray, snapshot, flags, False, defaults, publish)
+        write_preview(make_preview(enhanced, gamma=BEFORE_GAMMA if blank else 1.0), _pending(after))
+        flags = () if blank else compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
+        _merge_slide(
+            store,
+            number,
+            tray,
+            snapshot,
+            flags,
+            blank,
+            defaults,
+            publish,
+            raw_region_sha256(slide) if blank else "",
+        )
     finally:  # a result that was dropped leaves nothing behind
         _pending(before).unlink(missing_ok=True)
         _pending(after).unlink(missing_ok=True)
@@ -179,6 +199,7 @@ def enhance_tray(
         number,
         lambda t: (
             t.stage is not TrayStage.SCANNING
+            and not t.raw_removed
             and not is_interrupted(t)
             and t.sweep_version == version
         ),
@@ -187,6 +208,8 @@ def enhance_tray(
     )
     if not started:
         now = _tray(store.snapshot(), number)
+        if now.raw_removed:
+            raise RawRemoved(f"the raw scans of tray {number} were removed")
         if now.stage is TrayStage.SCANNING:
             raise BatchError(f"tray {number} is still scanning")
         if is_interrupted(now):  # a partial payload is never treated as a finished tray
@@ -194,7 +217,7 @@ def enhance_tray(
         return  # the tray was re-scanned meanwhile; a newer job will handle it
 
     def current(t: TrayRecord) -> bool:
-        return t.sweep_version == version and t.stage is TrayStage.ENHANCING
+        return not t.raw_removed and t.sweep_version == version and t.stage is TrayStage.ENHANCING
 
     try:
         sweep = load_sweep(store.sweep_dir(number, version))

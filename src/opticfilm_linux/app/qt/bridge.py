@@ -26,6 +26,7 @@ from opticfilm_linux.app.prefs import (
     remember_export,
     remember_theme,
 )
+from opticfilm_linux.app.qt.destination import DestinationCheck
 from opticfilm_linux.app.qt.models import DictListModel
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
@@ -43,6 +44,11 @@ TRAY_KEYS = (
     "error",
     "needsLook",
     "rawRemoved",
+    "canRecoverRaw",
+    "auto",
+    "autoFailed",
+    "autoError",
+    "autoFlagged",
 )
 SLIDE_KEYS = (
     "position",
@@ -81,6 +87,11 @@ def _tray_dict(row: TrayRow) -> dict[str, Any]:
         "error": row.error or "",
         "needsLook": row.needs_look,
         "rawRemoved": row.raw_removed,
+        "canRecoverRaw": row.can_recover_raw,
+        "auto": row.auto,
+        "autoFailed": ", ".join(map(str, row.auto_failed)),
+        "autoError": row.auto_error,
+        "autoFlagged": ", ".join(map(str, row.auto_flagged)),
     }
 
 
@@ -102,7 +113,9 @@ def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
         "exported": card.exported,
         "updating": card.updating,
         "afterUrl": f"{base}/after/{card.preview_token}" if card.preview_token else "",
-        "beforeUrl": f"{base}/before/{card.preview_token}" if card.preview_token else "",
+        "beforeUrl": f"{base}/before/{card.before_preview_token}"
+        if card.before_preview_token
+        else "",
     }
 
 
@@ -114,6 +127,9 @@ class Bridge(QObject):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
+    automaticExportProblemChanged = Signal()  # noqa: N815
+    heldReleaseReady = Signal(int, str)  # noqa: N815
+    _heldReleasePrepared = Signal(int, int, str)  # noqa: N815
 
     def __init__(
         self,
@@ -146,6 +162,9 @@ class Bridge(QObject):
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(DEBOUNCE_MS)
         self._flush_timer.timeout.connect(self._flush)
+        self._destination = DestinationCheck(self)
+        self._destination.changed.connect(self.automaticExportProblemChanged)
+        self._heldReleasePrepared.connect(self._held_release_ready)
 
     def start(self) -> None:
         self._timer.start()
@@ -174,6 +193,7 @@ class Bridge(QObject):
 
     @Slot()
     def poll(self) -> None:
+        self._flush_now()  # tick may schedule automatic export and cleanup
         if self._controller.tick():
             self._apply(self._controller.state())
 
@@ -234,6 +254,28 @@ class Bridge(QObject):
     )
     batchExportFormat = _p(str, changed, lambda s, _: s.export_format)  # noqa: N815
     batchJpegSize = _p(str, changed, lambda s, _: s.jpeg_size)  # noqa: N815
+    batchAutoExport = _p(bool, changed, lambda s, _: s.auto_export)  # noqa: N815
+    autoStatus = _p(str, changed, lambda s, _: s.auto_status)  # noqa: N815
+    emptyConfirmationTray = _p(int, changed, lambda s, _: s.empty_confirmation_tray or 0)
+    emptyConfirmationCount = _p(int, changed, lambda s, _: s.empty_confirmation_count)
+    emptyConfirmationSweepVersion = _p(
+        int, changed, lambda s, _: s.empty_confirmation_sweep_version
+    )
+    emptyConfirmationPreviews = _p(
+        "QVariantList",
+        changed,
+        lambda s, _: [
+            {
+                "position": p,
+                "fingerprint": fingerprint,
+                "url": f"image://preview/{s.empty_confirmation_tray}/{p}/before/{token}"
+                if token
+                else "",
+            }
+            for p, fingerprint, token in s.empty_confirmation_previews
+        ],
+    )
+    heldTray = _p(int, changed, lambda s, _: s.held_tray or 0)  # noqa: N815
     collection = _p(str, changed, lambda s, _: s.collection)
     box = _p(int, changed, lambda s, _: s.box)
     section = _p(str, changed, lambda s, _: s.section)
@@ -285,6 +327,7 @@ class Bridge(QObject):
             and s.free_space.trays
             and not s.free_space.running
             and s.free_space.freed is None
+            and not s.free_space.message
         ),
     )
     hasFreeSpace = _p(bool, changed, lambda s, _: s.free_space is not None)  # noqa: N815
@@ -314,6 +357,28 @@ class Bridge(QObject):
     )
 
     # -- batch ---------------------------------------------------------------------------
+
+    automaticExportProblem = Property(  # noqa: N815
+        str, lambda self: self._destination.problem, notify=automaticExportProblemChanged
+    )
+
+    @Slot(bool, str, str, str)
+    def checkAutomaticExport(
+        self, enabled: bool, parent_url: str, name: str, export_url: str
+    ) -> None:  # noqa: N802
+        """Debounce filesystem checks and invalidate any result for previous inputs."""
+        destination = QUrl(export_url)
+        parent = QUrl(parent_url)
+        problem = ""
+        if not enabled:
+            problem = "Automatic export is off."
+        elif not export_url.strip():
+            problem = "Choose an export folder for automatic export."
+        elif not destination.isLocalFile():
+            problem = "Choose a local export folder for automatic export."
+        elif not parent.isLocalFile() or not name.strip():
+            problem = "Choose a batch folder and enter a batch name."
+        self._destination.request(parent.toLocalFile(), name, destination.toLocalFile(), problem)
 
     @Slot(str, str, str, str, int)
     @Slot(str, str, str, str, int, int)
@@ -362,6 +427,45 @@ class Bridge(QObject):
         str,
         int,
     )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+        int,
+        bool,
+    )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+        int,
+        bool,
+        bool,
+    )
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -380,6 +484,8 @@ class Bridge(QObject):
         box: int = 1,
         section: str = "a",
         section_size: int = 140,
+        auto_export: bool = False,
+        keep_raw: bool = False,
     ) -> None:
         """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
         rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
@@ -399,6 +505,8 @@ class Bridge(QObject):
             export_dir=QUrl(export_dir).toLocalFile() or export_dir,
             export_format=export_format,  # type: ignore[arg-type]
             jpeg_size=jpeg_size,  # type: ignore[arg-type]
+            auto_export=auto_export,
+            keep_raw=keep_raw,
             collection=collection,
             box=box,
             section=section,
@@ -435,10 +543,12 @@ class Bridge(QObject):
 
     @Slot()
     def scan(self) -> None:
+        self._flush_now()
         self._controller.scan()
 
     @Slot(int)
     def rescan(self, number: int) -> None:
+        self._flush_now()
         self._controller.rescan(number)
 
     @Slot()
@@ -479,15 +589,18 @@ class Bridge(QObject):
 
     @Slot(int, int, bool)
     def setAccepted(self, number: int, position: int, accepted: bool) -> None:  # noqa: N802
+        self._flush_now()
         status = SlideStatus.ACCEPTED if accepted else SlideStatus.NEEDS_LOOK
         self._controller.set_status(number, position, status)
 
     @Slot(int, int, int)
     def rotate(self, number: int, position: int, quarter_turns: int) -> None:
+        self._flush_now()
         self._controller.rotate(number, position, quarter_turns)
 
     @Slot(int, int)
     def mirror(self, number: int, position: int) -> None:
+        self._flush_now()
         self._controller.mirror(number, position)
 
     @Slot(int, bool)
@@ -505,10 +618,12 @@ class Bridge(QObject):
     @Slot(int, int)
     def resetSlide(self, number: int, position: int) -> None:  # noqa: N802
         self._pending.pop((number, position), None)
+        self._flush_now()
         self._controller.reset_slide(number, position)
 
     @Slot()
     def acceptAll(self) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.accept_all()
 
     def _flush_now(self) -> None:
@@ -547,11 +662,48 @@ class Bridge(QObject):
 
     @Slot()
     def requestFreeSpace(self) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.request_free_space()
 
     @Slot()
     def confirmFreeSpace(self) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.confirm_free_space()
+
+    @Slot(int, int, "QVariantList")
+    def confirmEmptyFrames(self, number: int, sweep_version: int, previews: list) -> None:  # noqa: N802
+        self._flush_now()
+        positions = tuple(int(item["position"]) for item in previews)
+        fingerprints = {int(item["position"]): str(item["fingerprint"]) for item in previews}
+        self._controller.confirm_empty_frames(
+            number,
+            positions,
+            expected_fingerprints=fingerprints,
+            expected_sweep_version=sweep_version,
+        )
+
+    @Slot(int)
+    def requestHeldRelease(self, number: int) -> None:  # noqa: N802
+        self._flush_now()
+        session = self._state.batch_session
+        self._controller.request_held_release(
+            number, lambda size: self._heldReleasePrepared.emit(session, number, str(size))
+        )
+
+    @Slot(int, int, str)
+    def _held_release_ready(self, session: int, number: int, size: str) -> None:
+        if session == self._state.batch_session and number == self._state.held_tray:
+            self.heldReleaseReady.emit(number, size)
+
+    @Slot(int)
+    def confirmFreeHeld(self, number: int) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.confirm_free_held(number)
+
+    @Slot(int)
+    def recoverInterruptedCleanup(self, number: int) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.recover_interrupted_cleanup(number)
 
     @Slot()
     def cancelFreeSpace(self) -> None:  # noqa: N802
@@ -574,6 +726,7 @@ class Bridge(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._timer.stop()
+        self._destination.close()
         self._flush_now()
         self._controller.shutdown()
 
@@ -587,8 +740,11 @@ def _free_text(state: AppState) -> str:
     view = state.free_space
     if view is None:
         return ""
+    if view.message and view.freed is None:
+        return view.message
     if view.freed is not None:
-        return f"Freed {bytes_text(view.freed)}."
+        result = f"Freed {bytes_text(view.freed)}."
+        return f"{view.message} {result}" if view.message else result
     names = ", ".join(f"tray {n} ({bytes_text(b)})" for n, b in view.trays)
     if not view.trays:
         return "There are no fully exported trays with raw scans to remove."
