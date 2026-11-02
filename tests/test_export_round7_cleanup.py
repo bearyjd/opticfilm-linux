@@ -11,7 +11,7 @@ from test_export_safety import _assert_raw_kept, _delivered
 from test_export_safety import delivery as delivery
 
 
-def test_interrupted_cleanup_rehashes_current_raw(delivery, monkeypatch):
+def test_interrupted_cleanup_trusts_committed_verification(delivery, monkeypatch):
     store, _ = _delivered(delivery)
     store.update_tray(1, raw_removed=True, cleanup_sweeps=(1,))
     original = export.split_slides
@@ -21,9 +21,8 @@ def test_interrupted_cleanup_rehashes_current_raw(delivery, monkeypatch):
         return [dataclasses.replace(slides[0], rgb=np.zeros_like(slides[0].rgb))]
 
     monkeypatch.setattr(export, "split_slides", altered)
-    with pytest.raises(export.CleanupRefused, match="current raw scan"):
-        export.cleanup_raw(store, 1)
-    assert store.sweep_dir(1, 1).exists()
+    export.cleanup_raw(store, 1)
+    assert not store.sweep_dir(1, 1).exists()
 
 
 def test_interrupted_cleanup_trusts_proof_once_current_is_gone(delivery, monkeypatch):
@@ -148,13 +147,18 @@ def test_simultaneous_cleanup_serializes_and_counts_once(delivery, monkeypatch):
 def test_release_rejects_all_blank_tray_without_jpeg_evidence(delivery):
     store, _ = _delivered(delivery)
     slide = store.snapshot().trays[0].slides[0]
-    store.update_tray(1, slides=(dataclasses.replace(slide, status=SlideStatus.BLANK),))
+    store.update_tray(
+        1, slides=(dataclasses.replace(slide, status=SlideStatus.BLANK, owner_decided=True),)
+    )
     with pytest.raises(export.CleanupRefused, match="no verified JPEGs"):
         export.release_first_tray(store, 1)
     assert not store.snapshot().first_tray_released
 
 
-def test_failed_postcommit_reset_cannot_turn_refusal_into_cleanup(delivery, monkeypatch):
+@pytest.mark.parametrize("retry_while_disk_full", [False, True])
+def test_failed_postcommit_reset_cannot_turn_refusal_into_cleanup(
+    delivery, monkeypatch, retry_while_disk_full
+):
     store, _ = _delivered(delivery)
     original_update, original_split = store.update, export.split_slides
 
@@ -174,7 +178,13 @@ def test_failed_postcommit_reset_cannot_turn_refusal_into_cleanup(delivery, monk
     with pytest.raises(OSError, match="no space"):
         export.cleanup_raw(store, 1)
     assert store.snapshot().trays[0].raw_removed
+    assert store.sweep_dir(1, 1).exists()
+    if retry_while_disk_full:
+        with pytest.raises(OSError, match="no space"):
+            export.cleanup_raw(store, 1)
+        assert store.snapshot().trays[0].raw_removed
+        assert store.sweep_dir(1, 1).exists()
     monkeypatch.setattr(store, "update", original_update)
     with pytest.raises(export.CleanupRefused, match="current raw scan"):
         export.cleanup_raw(store, 1)
-    assert store.sweep_dir(1, 1).exists()
+    _assert_raw_kept(store)

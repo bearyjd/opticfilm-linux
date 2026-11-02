@@ -335,6 +335,20 @@ class Controller(FirstLoadCommands, HolderCommands):
 
         self._run_writer(job, f"Could not change slide {position} of tray {number}")
 
+    def confirm_empty_frames(self, number: int) -> None:
+        def job(runner: BatchRunner) -> None:
+            from opticfilm_linux.batch.review import confirm_empty_frames
+
+            session = self._session
+            if session is None:
+                return
+            confirm_empty_frames(session.store, number)
+            with self._lock:
+                self._auto_due.add(number)
+            self._submit_auto_due()
+
+        self._run_writer(job, f"Could not confirm empty frames of tray {number}")
+
     def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
         self._run_writer(
             lambda runner: self._edit(runner, number, position, settings),
@@ -988,6 +1002,7 @@ class Controller(FirstLoadCommands, HolderCommands):
         with self._lock:
             selected = self._selected
         tokens = self._preview_tokens(session, manifest, selected)
+        raw_pending = self._raw_pending(session, manifest)
         with self._lock:
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do
@@ -1020,7 +1035,7 @@ class Controller(FirstLoadCommands, HolderCommands):
                         or (session and session.runner and session.runner.work_pending())
                     ),
                     holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
-                    raw_pending=self._raw_pending(session, manifest),
+                    raw_pending=raw_pending,
                 )
             )
 

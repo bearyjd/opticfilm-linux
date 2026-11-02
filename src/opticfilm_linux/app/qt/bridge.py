@@ -245,6 +245,8 @@ class Bridge(QObject):
     batchJpegSize = _p(str, changed, lambda s, _: s.jpeg_size)  # noqa: N815
     batchAutoExport = _p(bool, changed, lambda s, _: s.auto_export)  # noqa: N815
     autoStatus = _p(str, changed, lambda s, _: s.auto_status)  # noqa: N815
+    emptyConfirmationTray = _p(int, changed, lambda s, _: s.empty_confirmation_tray or 0)
+    emptyConfirmationCount = _p(int, changed, lambda s, _: s.empty_confirmation_count)
     heldTray = _p(int, changed, lambda s, _: s.held_tray or 0)  # noqa: N815
     collection = _p(str, changed, lambda s, _: s.collection)
     box = _p(int, changed, lambda s, _: s.box)
@@ -626,6 +628,10 @@ class Bridge(QObject):
     @Slot()
     def confirmFreeSpace(self) -> None:  # noqa: N802
         self._controller.confirm_free_space()
+
+    @Slot(int)
+    def confirmEmptyFrames(self, number: int) -> None:  # noqa: N802
+        self._controller.confirm_empty_frames(number)
 
     @Slot(int)
     def confirmFreeHeld(self, number: int) -> None:  # noqa: N802

@@ -311,10 +311,10 @@ def test_manual_interrupted_cleanup_shows_raw_removal_pending(auto):
     assert _build(manifest).trays[0].stage_text != "Raw removal pending"
 
 
-def test_blank_flags_do_not_hide_first_tray_release():
+def test_confirmed_blank_flags_do_not_hide_first_tray_release():
     manifest = _manifest()
     accepted = SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True)
-    blank = SlideRecord(2, status=SlideStatus.BLANK, flags=(Flag.DUST,))
+    blank = SlideRecord(2, status=SlideStatus.BLANK, flags=(Flag.DUST,), owner_decided=True)
     first = replace(
         manifest.trays[0],
         stage=TrayStage.EXPORTED,
@@ -326,3 +326,39 @@ def test_blank_flags_do_not_hide_first_tray_release():
         manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
     )
     assert _build(manifest).held_tray == 1
+
+
+def test_undecided_empty_frames_expose_confirmation_before_release():
+    manifest = _manifest()
+    first = replace(
+        manifest.trays[0],
+        stage=TrayStage.EXPORTED,
+        auto="held",
+        slides=(
+            SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True),
+            SlideRecord(2, status=SlideStatus.BLANK),
+        ),
+    )
+    manifest = replace(
+        manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    state = _build(manifest)
+    assert state.held_tray is None
+    assert state.empty_confirmation_tray == 1
+    assert state.empty_confirmation_count == 1
+
+
+def test_freed_first_tray_allows_surviving_held_settings_approval():
+    manifest = _manifest()
+    first = replace(manifest.trays[0], stage=TrayStage.EXPORTED, raw_removed=True, auto="freed")
+    second = replace(
+        first,
+        number=2,
+        raw_removed=False,
+        auto="held",
+        slides=(SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True),),
+    )
+    manifest = replace(
+        manifest, trays=(first, second), defaults=replace(manifest.defaults, auto_export=True)
+    )
+    assert _build(manifest).held_tray == 2

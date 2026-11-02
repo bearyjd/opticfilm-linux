@@ -11,7 +11,9 @@ from pathlib import Path
 from opticfilm_linux.app.raw import raw_failure, raw_inventory
 from opticfilm_linux.batch.export import (
     CleanupPolicyRefused,
+    CleanupRetryRequired,
     ExportVerificationFailed,
+    _release_defaults,
     cleanup_raw,
     export_batch,
     verify_tray_export,
@@ -96,13 +98,16 @@ class AutoPipeline:
             # folders behind. Only this verified cleanup state may finish after recovery.
             return tray.auto == "verified"
         if tray.auto == "blocked":
-            return not self._awaiting_review(tray)
+            return not self._awaiting_review(tray) and not (
+                self._owner_excluded(tray) and "blocked by your decision" in tray.auto_error
+            )
         if tray.auto in INCOMPLETE:
             return True
         manifest = self.store.snapshot()
         return (
             tray.auto == "held"
             and manifest.first_tray_released
+            and manifest.released_render == _release_defaults(manifest.defaults)
             and manifest.defaults.auto_export
             and not manifest.defaults.keep_raw
             and not self._unreviewed_flags(tray)
@@ -135,11 +140,10 @@ class AutoPipeline:
                 {
                     s.position
                     for s in tray.slides
-                    if s.status is not SlideStatus.BLANK
-                    and (
+                    if (
                         s.position in tray.auto_flagged
                         or s.flags
-                        or s.status is SlideStatus.NEEDS_LOOK
+                        or s.status in (SlideStatus.NEEDS_LOOK, SlideStatus.BLANK)
                     )
                 }
             )
@@ -188,6 +192,9 @@ class AutoPipeline:
         return True
 
     def _failed(self, number: int, exc: Exception, *, before) -> None:
+        if isinstance(exc, CleanupRetryRequired):
+            self._update(number, auto="verified", auto_error=str(exc), auto_failed=())
+            return
         if isinstance(exc, CleanupPolicyRefused) and not self._tray(number).raw_removed:
             self._update(number, auto="held", auto_error=str(exc), auto_failed=())
             return
@@ -205,10 +212,16 @@ class AutoPipeline:
 
     def _unreviewed_flags(self, tray) -> bool:
         return any(
-            s.status is not SlideStatus.BLANK
-            and (s.position in tray.auto_flagged or s.flags)
+            (s.status is SlideStatus.BLANK or s.position in tray.auto_flagged or s.flags)
             and not s.owner_decided
             for s in tray.slides
+        )
+
+    def _owner_excluded(self, tray) -> tuple[int, ...]:
+        return tuple(
+            s.position
+            for s in tray.slides
+            if s.owner_decided and s.status is SlideStatus.NEEDS_LOOK
         )
 
     def _awaiting_review(self, tray) -> tuple[int, ...]:
@@ -221,11 +234,7 @@ class AutoPipeline:
     def _blocked(self, number: int) -> bool:
         held = self._awaiting_review(self._tray(number))
         if not held:
-            excluded = tuple(
-                s.position
-                for s in self._tray(number).slides
-                if s.owner_decided and s.status is SlideStatus.NEEDS_LOOK
-            )
+            excluded = self._owner_excluded(self._tray(number))
             if excluded:
                 self._update(
                     number,
@@ -233,7 +242,7 @@ class AutoPipeline:
                     auto_failed=(),
                     auto_error="Owner excluded slides "
                     + ", ".join(map(str, excluded))
-                    + "; raw scans kept",
+                    + "; blocked by your decision; raw scans kept",
                 )
             return bool(excluded)
         self._update(
@@ -244,10 +253,27 @@ class AutoPipeline:
         )
         return True
 
+    def _hold_empty_frames(self, number: int) -> bool:
+        empty = sum(
+            s.status is SlideStatus.BLANK and not s.owner_decided for s in self._tray(number).slides
+        )
+        if empty:
+            self._update(
+                number,
+                auto="held",
+                auto_failed=(),
+                auto_error=(f"{empty} frame(s) look empty - confirm they are empty to free raw"),
+            )
+        return bool(empty)
+
     def _verify_and_finish(self, number: int, *, release: bool = False) -> None:
         if self.cancel.is_set():
             return
-        if self._blocked(number):
+        if self._tray(number).raw_removed:
+            cleanup_raw(self.store, number)
+            self._update(number, auto="freed", auto_error="", auto_failed=())
+            return
+        if self._blocked(number) or self._hold_empty_frames(number):
             return
         if any(s.preview_stale for s in self._tray(number).slides):
             self._update(number, auto="held", auto_error="Waiting for updated previews")
@@ -255,29 +281,64 @@ class AutoPipeline:
         verify_tray_export(self.store, number)
         self._update(number, auto="verified")
         manifest = self.store.snapshot()
-        first = min(t.number for t in manifest.trays)
         tray = self._tray(number)
-        permitted = tray.raw_removed or (
+        permitted = (
             manifest.defaults.auto_export
             and not manifest.defaults.keep_raw
             and not self._unreviewed_flags(tray)
-            and (manifest.first_tray_released or (release and number == first))
+            and (
+                release
+                or (
+                    manifest.first_tray_released
+                    and manifest.released_render == _release_defaults(manifest.defaults)
+                )
+            )
         )
         if not permitted:
-            self._update(number, auto="held")
+            self._update(number, auto="held", auto_error="", auto_failed=())
             return
         if self.cancel.is_set():
             return
         tray = self._tray(number)
         if not tray.raw_removed or any(self.store.tray_dir(number).glob("sweep-*")):
-            cleanup_raw(self.store, number, release_first=release and number == first)
-        self._update(number, auto="freed")
+            cleanup_raw(self.store, number, release_first=release)
+        self._update(number, auto="freed", auto_error="", auto_failed=())
+
+    def _release_candidate(self, manifest):
+        first = min(manifest.trays, key=lambda t: t.number)
+        confirmed_empty = bool(first.slides) and all(
+            s.status is SlideStatus.BLANK and s.owner_decided for s in first.slides
+        )
+        if not first.raw_removed and not confirmed_empty:
+            return first.number
+        return next(
+            (
+                t.number
+                for t in sorted(manifest.trays, key=lambda t: t.number)
+                if self._approval_ready(t)
+            ),
+            None,
+        )
+
+    def _approval_ready(self, tray) -> bool:
+        return (
+            not tray.raw_removed
+            and tray.stage is TrayStage.EXPORTED
+            and tray.auto == "held"
+            and not self._unreviewed_flags(tray)
+            and not any(s.preview_stale for s in tray.slides)
+            and any(s.status is SlideStatus.ACCEPTED and s.exported for s in tray.slides)
+            and all(
+                s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+                for s in tray.slides
+            )
+        )
 
     def confirm_free_held(self, number: int) -> None:
         manifest = self.store.snapshot()
         tray = self._tray(number)
         if (
-            number != min(t.number for t in manifest.trays)
+            number != self._release_candidate(manifest)
             or tray.stage not in READY
             or tray.auto != "held"
             or tray.raw_removed

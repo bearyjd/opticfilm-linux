@@ -41,12 +41,12 @@ Rectangle {
                 asynchronous: true
                 cache: false
                 fillMode: Image.PreserveAspectFit
-                source: card.status === "blank" ? "" : (card.showBefore ? card.beforeUrl : card.afterUrl)
+                source: card.showBefore ? card.beforeUrl : card.afterUrl
             }
             QQC2.Label {
                 anchors.centerIn: parent
-                visible: card.status === "blank"
-                text: qsTr("Empty window")
+                visible: card.status === "blank" && card.afterUrl === ""
+                text: qsTr("Looks empty. Select Accepted to inspect.")
                 opacity: 0.6
             }
             QQC2.BusyIndicator {
@@ -74,7 +74,7 @@ Rectangle {
                 Layout.fillWidth: true
             }
             QQC2.Switch {
-                visible: card.status !== "blank"
+                visible: true
                 text: qsTr("Before")
                 checked: card.showBefore
                 onToggled: card.showBefore = checked

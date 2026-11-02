@@ -75,10 +75,39 @@ def set_slide_status(store: BatchStore, number: int, position: int, status: Slid
 
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, slide = _find(manifest, number, position)
-        if slide.status is SlideStatus.BLANK:
-            raise BatchError(f"slide {position} of tray {number} is blank")
         return _replace_slide(
-            manifest, tray, slide, status=status, owner_decided=True, auto_accepted=False
+            manifest,
+            tray,
+            slide,
+            status=status,
+            owner_decided=True,
+            auto_accepted=False,
+            preview_stale=slide.preview_stale or slide.status is SlideStatus.BLANK,
+        )
+
+    store.update(change)
+
+
+def confirm_empty_frames(store: BatchStore, number: int) -> None:
+    """Record the owner's explicit inspection of this tray's empty frames."""
+
+    def change(manifest: BatchManifest) -> BatchManifest:
+        tray, _ = _find(manifest, number)
+        _require_raw(tray)
+        if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED):
+            raise BatchError(f"tray {number} is not ready for empty-frame confirmation")
+        slides = tuple(
+            dataclasses.replace(s, owner_decided=True, auto_accepted=False)
+            if s.status is SlideStatus.BLANK
+            else s
+            for s in tray.slides
+        )
+        return dataclasses.replace(
+            manifest,
+            trays=tuple(
+                dataclasses.replace(t, slides=slides) if t.number == number else t
+                for t in manifest.trays
+            ),
         )
 
     store.update(change)

@@ -129,6 +129,7 @@ def test_auto_never_free_when_setting_disallows(store, setting):
         lambda m: dataclasses.replace(
             m,
             first_tray_released=True,
+            released_render=exports._release_defaults(m.defaults),
             defaults=dataclasses.replace(
                 m.defaults, keep_raw=setting == "keep_raw", auto_export=setting != "off"
             ),
@@ -181,7 +182,7 @@ def test_auto_detector_classifications_preserved_and_listed(store):
     auto.arm(1)
     auto.run(1)
     tray = store.snapshot().trays[0]
-    assert tray.auto_flagged == (2, 3)
+    assert tray.auto_flagged == (1, 2, 3)
     assert tray.slides[0].status is SlideStatus.BLANK
     assert tray.slides[1].status is SlideStatus.NEEDS_LOOK
     assert not any(s.exported for s in tray.slides)
@@ -189,7 +190,11 @@ def test_auto_detector_classifications_preserved_and_listed(store):
 
 
 def test_auto_never_free_one_failed_slide_but_exports_others(store, monkeypatch):
-    store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+    store.update(
+        lambda m: dataclasses.replace(
+            m, first_tray_released=True, released_render=exports._release_defaults(m.defaults)
+        )
+    )
     real = exports.enhance_slide
 
     def fail(slide, *args):
@@ -213,7 +218,11 @@ def test_auto_never_free_crash_then_reopen_without_verification(store, monkeypat
     auto = pipeline(store)
     auto.arm(2)
     auto.run(2)
-    store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+    store.update(
+        lambda m: dataclasses.replace(
+            m, first_tray_released=True, released_render=exports._release_defaults(m.defaults)
+        )
+    )
     store.update_tray(2, auto=phase)
     path = Path(store.snapshot().trays[1].slides[0].export_path)
     path.unlink()
@@ -297,7 +306,11 @@ def test_auto_never_free_through_symlink_outside_batch(store, tmp_path):
 
 
 def test_auto_never_free_when_owner_edits_during_verification(store):
-    store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+    store.update(
+        lambda m: dataclasses.replace(
+            m, first_tray_released=True, released_render=exports._release_defaults(m.defaults)
+        )
+    )
     changed = False
 
     def update():
@@ -412,9 +425,7 @@ def test_auto_held_backlog_never_free_when_settings_disallow(store, option):
 
 
 @pytest.mark.parametrize("damage", [False, True])
-def test_auto_cleanup_crash_reopen_reverifies_before_deleting_remaining_raw(
-    store, monkeypatch, damage
-):
+def test_auto_cleanup_crash_reopen_finishes_committed_deletion(store, monkeypatch, damage):
     auto = pipeline(store)
     auto.arm(1)
     auto.run(1)
@@ -438,8 +449,8 @@ def test_auto_cleanup_crash_reopen_reverifies_before_deleting_remaining_raw(
         assert 1 in resumed.resume()
         resumed.run(1)
         tray = reopened.snapshot().trays[0]
-        assert tray.auto == ("failed" if damage else "freed")
-        assert reopened.sweep_dir(1, 1).exists() is damage
+        assert tray.auto == "freed"
+        assert not reopened.sweep_dir(1, 1).exists()
 
 
 def test_auto_run_coordinates_work_in_under_fifty_lines():
@@ -614,7 +625,11 @@ def test_auto_recovered_cleanup_failure_never_claims_raw_kept(store, monkeypatch
     auto = pipeline(store)
     auto.arm(1)
     auto.run(1)
-    store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+    store.update(
+        lambda m: dataclasses.replace(
+            m, first_tray_released=True, released_render=exports._release_defaults(m.defaults)
+        )
+    )
     store.update_tray(1, auto="verified", raw_removed=True)
     if not remaining:
         shutil.rmtree(store.sweep_dir(1, 1))
@@ -649,7 +664,11 @@ def test_auto_cleanup_failure_uses_current_flag_and_folders(store, monkeypatch, 
         auto.arm(number)
         auto.run(number)
     else:
-        store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
+        store.update(
+            lambda m: dataclasses.replace(
+                m, first_tray_released=True, released_render=exports._release_defaults(m.defaults)
+            )
+        )
         auto.arm(number)
     if state == "absent":
         shutil.rmtree(store.sweep_dir(number, 1))
@@ -821,7 +840,10 @@ def test_owner_held_auto_slide_is_blocked_without_export_failure(store):
 def test_keep_raw_held_tray_resumes_after_setting_change(store):
     store.update(
         lambda m: dataclasses.replace(
-            m, first_tray_released=True, defaults=dataclasses.replace(m.defaults, keep_raw=True)
+            m,
+            first_tray_released=True,
+            released_render=exports._release_defaults(m.defaults),
+            defaults=dataclasses.replace(m.defaults, keep_raw=True),
         )
     )
     auto = pipeline(store)
@@ -995,7 +1017,10 @@ def test_blank_slots_ignore_live_and_remembered_flags(store, phase, live_flags):
     auto.confirm_free_held(1)
     tray = auto._tray(2)
     blank = dataclasses.replace(
-        tray.slides[0], status=SlideStatus.BLANK, flags=(Flag.DUST,) if live_flags else ()
+        tray.slides[0],
+        status=SlideStatus.BLANK,
+        owner_decided=True,
+        flags=(Flag.DUST,) if live_flags else (),
     )
     store.update_tray(2, auto_flagged=(1,), slides=(blank, *tray.slides[1:]))
     assert 2 in auto.resume()
@@ -1004,7 +1029,7 @@ def test_blank_slots_ignore_live_and_remembered_flags(store, phase, live_flags):
     assert tray.auto == "freed" and tray.raw_removed
     assert not store.sweep_dir(2, 1).exists()
     if phase == "pending":
-        assert tray.auto_flagged == ()
+        assert tray.auto_flagged == (1,)
         assert not tray.slides[0].exported
 
 

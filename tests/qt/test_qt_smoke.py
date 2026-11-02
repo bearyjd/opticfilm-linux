@@ -989,3 +989,44 @@ def test_first_load_quit_warns_and_can_be_rejected(qapp, sweep600_dir, tmp_path,
         if not stopped:
             bridge.shutdown()
         engine.deleteLater()
+
+
+def test_empty_frames_confirmation_names_target_when_another_tray_is_selected(loaded, tmp_path):
+    from dataclasses import replace
+
+    from opticfilm_linux.batch.model import SlideStatus
+
+    bridge, engine, warnings = loaded
+    _scanned(bridge, tmp_path, "Empty confirmation")
+    store = bridge._controller._session.store
+    tray = store.snapshot().trays[0]
+    store.update_tray(
+        tray.number,
+        slides=tuple(
+            replace(s, status=SlideStatus.BLANK, owner_decided=False) for s in tray.slides
+        ),
+    )
+    selected = replace(
+        tray,
+        number=2,
+        slides=tuple(
+            replace(s, status=SlideStatus.ACCEPTED, owner_decided=True) for s in tray.slides
+        ),
+    )
+    store.update(lambda m: replace(m, trays=(*m.trays, selected)))
+    bridge.selectTray(2)
+    bridge._controller._rebuild()
+    _wait(
+        bridge,
+        lambda: bridge.emptyConfirmationCount == len(tray.slides) and bridge.selectedTray == 2,
+    )
+    root = engine.rootObjects()[0]
+    _wait(bridge, lambda: _prop(root, "confirmEmptyFrames", "visible"))
+    assert "frame(s) look empty" in _prop(root, "autoPipelineStatus", "text")
+    assert "in tray 1" in _prop(root, "confirmEmptyFrames", "text")
+    _click(root, "confirmEmptyFrames")
+    _wait(bridge, lambda: bridge.emptyConfirmationCount == 0)
+    assert all(
+        s.status is SlideStatus.BLANK and s.owner_decided for s in store.snapshot().trays[0].slides
+    )
+    assert store.snapshot().trays[1] == selected

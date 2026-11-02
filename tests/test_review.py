@@ -94,10 +94,22 @@ def test_set_status_rejects_pending_and_blank(store, status):
         set_slide_status(store, 1, 1, status)
 
 
-def test_a_blank_slide_cannot_be_accepted(store):
+def test_owner_can_rescue_a_slide_classified_blank(store):
     _mark(store, 1, 2, status=SlideStatus.BLANK)
-    with pytest.raises(BatchError, match="blank"):
-        set_slide_status(store, 1, 2, SlideStatus.ACCEPTED)
+    set_slide_status(store, 1, 2, SlideStatus.ACCEPTED)
+    assert _slide(store, 1, 2).status is SlideStatus.ACCEPTED
+    assert _slide(store, 1, 2).owner_decided
+
+
+def test_empty_confirmation_preserves_blank_classification(store):
+    from opticfilm_linux.batch.review import confirm_empty_frames
+
+    _mark(store, 1, 2, status=SlideStatus.BLANK)
+    before = _slide(store, 1, 1)
+    confirm_empty_frames(store, 1)
+    assert _slide(store, 1, 2).status is SlideStatus.BLANK
+    assert _slide(store, 1, 2).owner_decided
+    assert _slide(store, 1, 1) == before
 
 
 def test_apply_settings_keeps_status_and_marks_decision(store):

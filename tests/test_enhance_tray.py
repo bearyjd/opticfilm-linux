@@ -284,3 +284,22 @@ def test_dust_flag_sees_the_slides_raw_colour_image(tmp_path, monkeypatch):
     raw = [slide.rgb for slide in split_slides(sweep)]
     assert len(seen) == 4
     assert all(any(np.array_equal(v, r) for r in raw) for v in seen)
+
+
+def test_owner_rescue_of_blank_regenerates_preview_and_survives_detection(tmp_path):
+    from opticfilm_linux.batch.review import set_slide_status
+
+    store = _store(tmp_path, make_sweep(dpi=600, filled=(True, False, True, True)))
+    enhance_tray(store, 1)
+    before = store.snapshot()
+    tray = _tray(store)
+    blank = tray.slides[1]
+    set_slide_status(store, 1, 2, SlideStatus.ACCEPTED)
+    assert _tray(store).slides[1].preview_stale
+    enhance_module._merge_slide(store, 1, tray, blank, (), True, before.defaults)
+    assert _tray(store).slides[1].status is SlideStatus.ACCEPTED
+    assert _tray(store).slides[1].preview_stale
+    reenhance_slide(store, 1, 2)
+    assert store.preview_path(1, 2, "after").is_file()
+    assert _tray(store).slides[1].status is SlideStatus.ACCEPTED
+    assert not _tray(store).slides[1].preview_stale

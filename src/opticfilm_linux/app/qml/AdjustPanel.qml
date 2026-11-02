@@ -16,7 +16,7 @@ Kirigami.FormLayout {
     required property real sharpen
     required property bool ownerDecided
 
-    enabled: !bridge.readonly && status !== "blank"
+    enabled: !bridge.readonly
 
     RowLayout {
         Kirigami.FormData.label: qsTr("Slide %1").arg(panel.position)

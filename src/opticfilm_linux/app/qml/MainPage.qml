@@ -31,7 +31,7 @@ Kirigami.Page {
             return;
         for (let i = 0; i < slideRepeater.count; ++i) {
             const card = slideRepeater.itemAt(i);
-            if (card && card.position === currentSlide && card.status !== "blank")
+            if (card && card.position === currentSlide)
                 bridge.setAccepted(bridge.selectedTray, currentSlide, card.status !== "accepted");
         }
     }
@@ -141,13 +141,19 @@ Kirigami.Page {
         RowLayout {
             Layout.fillWidth: true
             Layout.margins: Kirigami.Units.smallSpacing
-            visible: bridge.batchAutoExport || bridge.autoStatus !== ""
+            visible: bridge.batchAutoExport || bridge.autoStatus !== "" || bridge.emptyConfirmationCount > 0
 
             QQC2.Label {
                 objectName: "autoPipelineStatus"
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                text: bridge.autoStatus
+                text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
+            }
+            QQC2.Button {
+                objectName: "confirmEmptyFrames"
+                visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
+                text: qsTr("Confirm %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
+                onClicked: bridge.confirmEmptyFrames(bridge.emptyConfirmationTray)
             }
             QQC2.Button {
                 objectName: "freeHeldRaw"

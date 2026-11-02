@@ -82,9 +82,7 @@ def _merge_slide(
     defaults: BatchDefaults,
     publish: Callable[[], None] = lambda: None,
 ) -> None:
-    """Keep owner choices; drop stale results and results arriving after raw cleanup.
-    ``publish`` moves previews into place under the store lock only when the result is kept.
-    """
+    """Keep owner choices and publish current previews atomically under the store lock."""
 
     def change(manifest: BatchManifest) -> BatchManifest:
         now = _tray(manifest, number)
@@ -98,6 +96,8 @@ def _merge_slide(
         if current is not None and current.settings != snapshot.settings:
             return manifest
         base = current or snapshot
+        if blank and base.owner_decided and base.status is not SlideStatus.BLANK:
+            return manifest  # a late automatic blank result cannot undo owner rescue
         if blank:
             record = dataclasses.replace(
                 base, status=SlideStatus.BLANK, flags=(), preview_stale=False
@@ -136,7 +136,11 @@ def _process_slide(
 ) -> None:
     defaults = store.snapshot().defaults
     position = slide.index + 1
-    if defaults.skip_blank and is_blank(slide):
+    if (
+        defaults.skip_blank
+        and not (snapshot.owner_decided and snapshot.status is not SlideStatus.BLANK)
+        and is_blank(slide)
+    ):
         _merge_slide(store, number, tray, snapshot, (), blank=True, defaults=defaults)
         return
     enhanced = enhance_slide(

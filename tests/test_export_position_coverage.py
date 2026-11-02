@@ -25,7 +25,9 @@ def test_blank_positions_count_toward_complete_raw_coverage(delivery, monkeypatc
     split = export.split_slides(None)
     monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
     slide = store.snapshot().trays[0].slides[0]
-    blank = dataclasses.replace(slide, position=2, status=SlideStatus.BLANK, exports=())
+    blank = dataclasses.replace(
+        slide, position=2, status=SlideStatus.BLANK, exports=(), owner_decided=True
+    )
     store.update_tray(1, slides=(slide, blank))
     assert export.cleanup_raw(store, 1) > 0
     assert store.snapshot().trays[0].raw_removed
@@ -36,7 +38,7 @@ def test_duplicate_blank_cannot_conceal_unrepresented_raw_position(delivery, mon
     split = export.split_slides(None)
     monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
     slide = store.snapshot().trays[0].slides[0]
-    blank = dataclasses.replace(slide, status=SlideStatus.BLANK, exports=())
+    blank = dataclasses.replace(slide, status=SlideStatus.BLANK, exports=(), owner_decided=True)
     store.update_tray(1, slides=(slide, blank))
     with pytest.raises(export.CleanupRefused, match="positions"):
         export.cleanup_raw(store, 1)

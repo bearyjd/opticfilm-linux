@@ -121,6 +121,8 @@ class AppState:
     auto_status: str = ""
     auto_flagged: int = 0
     auto_failed: int = 0
+    empty_confirmation_tray: int | None = None
+    empty_confirmation_count: int = 0
     held_tray: int | None = None
 
 
@@ -326,10 +328,50 @@ def _release_needed(manifest: BatchManifest) -> bool:
 
 def _release_flags(tray: TrayRecord) -> bool:
     return any(
-        s.status is not SlideStatus.BLANK
-        and (s.flags or s.position in tray.auto_flagged)
+        (s.status is SlideStatus.BLANK or s.flags or s.position in tray.auto_flagged)
         and not s.owner_decided
         for s in tray.slides
+    )
+
+
+def _approval_candidates(trays):
+    candidates = [t for t in trays if not t.raw_removed]
+    original = min(trays, key=lambda t: t.number) if trays else None
+    first = original
+    confirmed_empty = (
+        original is not None
+        and bool(original.slides)
+        and all(s.status is SlideStatus.BLANK and s.owner_decided for s in original.slides)
+    )
+    if original is not None and (original.raw_removed or confirmed_empty):
+        first = next(
+            (t for t in sorted(candidates, key=lambda t: t.number) if _approval_ready(t)),
+            None,
+        )
+    empty = next(
+        (
+            t
+            for t in candidates
+            if t.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)
+            and any(s.status is SlideStatus.BLANK and not s.owner_decided for s in t.slides)
+        ),
+        None,
+    )
+    return first, empty
+
+
+def _approval_ready(tray: TrayRecord) -> bool:
+    return (
+        not tray.raw_removed
+        and tray.stage is TrayStage.EXPORTED
+        and tray.auto == "held"
+        and not _release_flags(tray)
+        and not any(s.preview_stale for s in tray.slides)
+        and any(s.status is SlideStatus.ACCEPTED and s.exported for s in tray.slides)
+        and all(
+            s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+            for s in tray.slides
+        )
     )
 
 
@@ -341,7 +383,7 @@ def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
     failed = sum(len(t.auto_failed) or int(t.auto == "failed") for t in trays)
     finished = sum(t.auto in ("held", "freed") for t in trays)
     active = sum(t.auto in ("pending", "exported", "verified") for t in trays)
-    first = min(trays, key=lambda t: t.number) if trays else None
+    first, empty = _approval_candidates(trays)
     held = (
         first.number
         if first is not None
@@ -365,6 +407,12 @@ def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
         "auto_export": manifest.defaults.auto_export,
         "auto_flagged": flagged,
         "auto_failed": failed,
+        "empty_confirmation_tray": empty.number if empty and not readonly else None,
+        "empty_confirmation_count": sum(
+            s.status is SlideStatus.BLANK and not s.owner_decided for s in empty.slides
+        )
+        if empty
+        else 0,
         "held_tray": held,
         "auto_status": (
             f"Automatic export: {finished} finished, {active} in progress, "

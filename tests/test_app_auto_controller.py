@@ -692,3 +692,23 @@ def test_orientation_release_between_snapshot_and_store_commit_is_refused(
     wait_until(c, lambda: c.state().banner is not None)
     assert "cannot change" in c.state().banner.message
     assert store.snapshot().defaults.rotation == 0
+
+
+def test_raw_inventory_glob_does_not_hold_controller_lock(sweep600_dir, tmp_path, monkeypatch):
+    c = make_controller(sweep600_dir)
+    try:
+        open_new(c, tmp_path / "batch")
+        original = c._raw_pending
+        checked = threading.Event()
+
+        def raw_pending(session, manifest):
+            assert c._lock.acquire(timeout=2), "raw inventory ran under state lock"
+            c._lock.release()
+            checked.set()
+            return original(session, manifest)
+
+        monkeypatch.setattr(c, "_raw_pending", raw_pending)
+        c._rebuild()
+        assert checked.is_set()
+    finally:
+        c.shutdown()
