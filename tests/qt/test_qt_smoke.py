@@ -57,8 +57,9 @@ def _drain_deferred_deletes():
 
 
 @pytest.fixture
-def loaded(qapp, sweep600_dir):
+def loaded(qapp, sweep600_dir, monkeypatch):
     """The bridge, the QML engine with the window loaded, and its collected warnings."""
+    monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
     controller = Controller(scanner_factory(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
@@ -283,7 +284,7 @@ def test_holder_buttons_follow_the_flags_on_a_ready_scanner(loaded, tmp_path):
     _wait(bridge, lambda: bridge.hasBatch and bridge.canScan)
     root = engine.rootObjects()[0]
     _wait(bridge, lambda: _prop(root, "ejectButton", "enabled") is True)
-    assert bridge.canEject and not bridge.canLoadNext and not bridge.nextStripEnabled
+    assert bridge.canEject and not bridge.canLoadNext and bridge.nextStripEnabled
     assert _prop(root, "loadNextButton", "enabled") is False
     assert _prop(root, "loadHelpButton", "visible") and not _prop(root, "loadHelpLink", "visible")
     _click(root, "ejectButton")

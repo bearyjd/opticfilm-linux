@@ -16,6 +16,7 @@ from opticfilm_linux.batch.model import (
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.scanner.select import next_strip_enabled
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ class AppState:
     can_first_load: bool = False
     can_eject: bool = False
     can_load_next: bool = False
-    next_strip_enabled: bool = False  # the experimental non-interactive load is switched on
+    next_strip_enabled: bool = True  # non-interactive load is enabled unless switched off
     holder_busy: bool = False  # an eject or load is queued or running
     can_confirm_scanner: bool = False  # a command was cut off; the owner may confirm a reset
     export_dir: str = ""
@@ -211,12 +212,14 @@ def build_state(
     free_space: FreeSpaceView | None,
     holder_control: bool = False,
     holder_busy: bool = False,
-    next_strip: bool = False,
+    next_strip: bool | None = None,
     jobs_running: bool = False,
     batch_session: int = 0,
     runner_busy: bool = False,
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
 ) -> AppState:
+    if next_strip is None:
+        next_strip = next_strip_enabled()
     busy = holder_busy or scan_pending or readonly or jobs_running
     idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return AppState(

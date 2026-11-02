@@ -99,7 +99,7 @@ Kirigami.Dialog {
             QQC2.Label {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                text: qsTr("Between trays: press Eject holder, swap the holder, push it in, then press Load next holder (experimental), or repeat the steps above.")
+                text: qsTr("Between trays: press Eject holder, swap the holder, push it in, then press Load next holder, or repeat the steps above.")
             }
             QQC2.Label {
                 Layout.fillWidth: true

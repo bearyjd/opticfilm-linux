@@ -32,8 +32,11 @@ This emergency OFF takes priority over diagnostic capture.
    dialog can be opened beforehand to copy the command.
 
 Between trays, use **Eject holder**, confirm physical release, then swap holders. **Load next
-holder** uses hardware-unproven `load --next-strip` and remains disabled unless explicitly
-enabled; see [ENV.md](ENV.md). Do not infer that it is a proven replacement for first load.
+holder** uses `load --next-strip` and is enabled by default; set `OPTICFILM_NEXT_STRIP=0`
+to disable it (see [ENV.md](ENV.md)). The first load after power-on still requires the interactive
+terminal command above.
+
+On 2026-11-01, a supervised five-swap holder series and a full tray at 7200 dpi passed on one unit with one operator. This is a solid series, not a reliability figure.
 
 ## Watcher operations and checks
 
@@ -128,7 +131,8 @@ These are **fake-driver rehearsals**, not real scan timings. The 2026-10-29 prof
 
 Script totals include standalone one-slide work; real scanner time is set by the hardware.
 A busier 7200 dpi repeat took 233 s total and 68 s batch enhancement. A full real tray at
-7200 dpi remains untested. See [performance measurements](performance.md) for stage definitions.
+7200 dpi passed on 2026-11-01 (one unit, one operator). See
+[performance measurements](performance.md) for stage definitions.
 
 Raw sweeps occupy about 0.87 GB per tray at 3600 dpi and 3.5 GB at 7200; four exported TIFFs
 were about 0.45 GB and 1.8 GB respectively in the 2026-10-22 rehearsal. Measured folder disk
