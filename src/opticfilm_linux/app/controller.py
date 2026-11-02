@@ -309,10 +309,15 @@ class Controller(HolderCommands):
     # -- review --------------------------------------------------------------------------
 
     def set_status(self, number: int, position: int, status: SlideStatus) -> None:
-        self._run_writer(
-            lambda runner: runner.set_slide_status(number, position, status),
-            f"Could not change slide {position} of tray {number}",
-        )
+        def job(runner: BatchRunner) -> None:
+            runner.set_slide_status(number, position, status)
+            session = self._session
+            if session is not None:
+                with self._lock:
+                    self._auto_due.add(number)
+                self._submit_auto_due()
+
+        self._run_writer(job, f"Could not change slide {position} of tray {number}")
 
     def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
         self._run_writer(
@@ -470,7 +475,7 @@ class Controller(HolderCommands):
             view = self._free_space
             if view is None or not view.trays:
                 raise BatchError("check which trays can be freed before removing anything")
-            if view.running or view.freed is not None:
+            if view.running or view.freed is not None or view.message:
                 return  # a second click: already running or done
             session = self._session
             try:
@@ -479,7 +484,7 @@ class Controller(HolderCommands):
                     self._cancel_free,
                     lambda update: self._set(_free_space=update),
                     tuple(number for number, _ in view.trays),
-                    release_first=True,
+                    release_first=False,
                 )
             finally:
                 if session is not None:

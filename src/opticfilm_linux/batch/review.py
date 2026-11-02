@@ -129,7 +129,7 @@ def accept_all(store: BatchStore) -> None:
 
 
 def accept_tray(store: BatchStore, number: int, *, automatic: bool = False) -> None:
-    """Accept every position for automatic export, preserving flags and owner choices."""
+    """Accept a tray, preserving owner choices and automatic review classifications."""
 
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, _ = _find(manifest, number)
@@ -139,6 +139,7 @@ def accept_tray(store: BatchStore, number: int, *, automatic: bool = False) -> N
         slides = tuple(
             s
             if s.owner_decided
+            or (automatic and s.status in (SlideStatus.BLANK, SlideStatus.NEEDS_LOOK))
             else dataclasses.replace(
                 s, status=SlideStatus.ACCEPTED, owner_decided=not automatic, auto_accepted=automatic
             )

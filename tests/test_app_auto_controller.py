@@ -199,6 +199,7 @@ def test_releasing_first_tray_schedules_verified_held_backlog(sweep600_dir, tmp_
             store.update(lambda m: dataclasses.replace(m, first_tray_released=True))
 
     monkeypatch.setattr(auto, "verify_tray_export", verify)
+    monkeypatch.setattr(auto, "release_first_tray", _record_test_release)
     monkeypatch.setattr(auto, "cleanup_raw", cleanup)
     c = make_controller(sweep600_dir)
     try:
@@ -254,7 +255,7 @@ def test_stale_auto_callback_cannot_clear_reopened_session_reservation(
         c.shutdown()
 
 
-def test_manual_first_hold_release_resumes_backlog(sweep600_dir, tmp_path, monkeypatch):
+def test_manual_free_space_does_not_release_automatic_backlog(sweep600_dir, tmp_path, monkeypatch):
     c = make_controller(sweep600_dir)
     calls = []
 
@@ -300,7 +301,7 @@ def test_manual_first_hold_release_resumes_backlog(sweep600_dir, tmp_path, monke
             lambda: c.state().free_space is not None and c.state().free_space.freed == 10,
             timeout=2,
         )
-        wait_until(c, lambda: calls == [2], timeout=0.5)
+        assert calls == [] and not c._session.store.snapshot().first_tray_released
     finally:
         c.shutdown()
 
@@ -527,11 +528,10 @@ def test_invalid_destination_settings_leave_missing_destination_failure(sweep600
 
 
 def _confirmed_first_cleanup(store, cancel, publish, numbers, *, release_first=False):
-    assert release_first
+    assert not release_first
     store.update(
         lambda m: dataclasses.replace(
             m,
-            first_tray_released=True,
             trays=(dataclasses.replace(m.trays[0], auto="freed", raw_removed=True), m.trays[1]),
         )
     )
@@ -574,3 +574,37 @@ def test_disabled_auto_still_dispatches_committed_cleanup(sweep600_dir, tmp_path
         assert called.wait(3)
     finally:
         c.shutdown()
+
+
+def _record_test_release(store, number):
+    store.update(
+        lambda m: dataclasses.replace(
+            m,
+            first_tray_released=True,
+            released_render=dataclasses.replace(m.defaults, auto_export=False, keep_raw=False),
+        )
+    )
+
+
+def test_manual_free_cancel_does_not_cancel_automatic_job(auto_controller):
+    c, calls, started, release = auto_controller
+    c._session.runner.events.put(TrayStageChanged(1, TrayStage.REVIEW))
+    c._drain_events()
+    assert started.wait(2)
+    c.cancel_free_space()
+    assert c._cancel_free.is_set()
+    assert not calls[0][2].is_set()
+    release.set()
+
+
+def test_owner_decision_requeues_automatic_tray(auto_controller):
+    from opticfilm_linux.batch.model import SlideRecord, SlideStatus
+
+    c, calls, started, release = auto_controller
+    c._session.store.update_tray(
+        1, auto="blocked", slides=(SlideRecord(1, status=SlideStatus.NEEDS_LOOK),)
+    )
+    c.set_status(1, 1, SlideStatus.ACCEPTED)
+    assert started.wait(2), "owner decision did not queue the blocked automatic tray"
+    assert calls[0][0] == 1
+    release.set()

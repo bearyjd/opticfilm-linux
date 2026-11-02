@@ -120,7 +120,8 @@ def test_accept_all_skips_blank_and_non_review_trays(store):
 
 
 @pytest.mark.parametrize("status", [SlideStatus.NEEDS_LOOK, SlideStatus.PENDING, SlideStatus.BLANK])
-def test_accept_tray_preserves_owner_nonaccepted_choice(tmp_path, status):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_accept_tray_preserves_owner_nonaccepted_choice(tmp_path, status, automatic):
     owner_slide = SlideRecord(
         position=1,
         status=status,
@@ -128,7 +129,7 @@ def test_accept_tray_preserves_owner_nonaccepted_choice(tmp_path, status):
         flags=(Flag.TOO_DARK,),
         settings=SlideSettings(brightness_ev=0.5),
     )
-    automatic_slide = SlideRecord(position=2, status=SlideStatus.NEEDS_LOOK)
+    automatic_slide = SlideRecord(position=2, status=SlideStatus.PENDING)
     with BatchStore.create(tmp_path / "batch", name="T") as store:
         store.update(
             lambda manifest: dataclasses.replace(
@@ -136,10 +137,28 @@ def test_accept_tray_preserves_owner_nonaccepted_choice(tmp_path, status):
                 trays=(TrayRecord(1, TrayStage.REVIEW, slides=(owner_slide, automatic_slide)),),
             )
         )
-        accept_tray(store, 1)
+        accept_tray(store, 1, automatic=automatic)
         assert store.snapshot().trays[0].slides[0] == owner_slide
         accepted = store.snapshot().trays[0].slides[1]
-        assert accepted.status is SlideStatus.ACCEPTED and accepted.owner_decided
+        assert accepted.status is SlideStatus.ACCEPTED
+        assert accepted.owner_decided is not automatic
+        assert accepted.auto_accepted is automatic
+
+
+@pytest.mark.parametrize("status", [SlideStatus.BLANK, SlideStatus.NEEDS_LOOK])
+@pytest.mark.parametrize("automatic", [False, True])
+def test_tray_acceptance_preserves_automatic_review_classifications(tmp_path, status, automatic):
+    slide = SlideRecord(position=1, status=status, flags=(Flag.DUST,))
+    tray = TrayRecord(1, TrayStage.REVIEW, slides=(slide,))
+    with BatchStore.create(tmp_path / "batch", name="T") as store:
+        store.update(lambda manifest: dataclasses.replace(manifest, trays=(tray,)))
+        accept_tray(store, 1, automatic=automatic)
+        actual = store.snapshot().trays[0].slides[0]
+        if automatic:
+            assert actual == slide
+        else:
+            assert actual.status is SlideStatus.ACCEPTED
+            assert actual.owner_decided and actual.flags == slide.flags
 
 
 def test_set_tray_mode_changes_the_mode(store):

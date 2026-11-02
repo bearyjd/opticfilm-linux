@@ -66,7 +66,7 @@ def test_owner_change_after_cleanup_commit_is_refused(delivery, monkeypatch, act
     original = export._delete
     observed = []
 
-    def edit_before_delete(opened, tray, folders):
+    def edit_before_delete(opened, before, number, folders, *, release_first):
         committed = opened.snapshot()
         assert committed.trays[0].raw_removed
         assert opened.sweep_dir(1, 1).is_dir()
@@ -74,7 +74,7 @@ def test_owner_change_after_cleanup_commit_is_refused(delivery, monkeypatch, act
             ACTIONS[action](opened)
         assert opened.snapshot() == committed
         observed.append(True)
-        original(opened, tray, folders)
+        original(opened, before, number, folders, release_first=release_first)
 
     monkeypatch.setattr(export, "_delete", edit_before_delete)
     assert export.cleanup_raw(store, 1) > 0
@@ -147,7 +147,7 @@ def test_late_enhancement_cannot_publish_after_cleanup_commit(delivery, monkeypa
     original = export._delete
     published = []
 
-    def merge_before_delete(opened, verified, folders):
+    def merge_before_delete(opened, before_manifest, number, folders, *, release_first):
         committed = opened.snapshot()
         enhance._merge_slide(
             opened,
@@ -161,7 +161,7 @@ def test_late_enhancement_cannot_publish_after_cleanup_commit(delivery, monkeypa
         )
         assert opened.snapshot() == committed
         assert published == []
-        original(opened, verified, folders)
+        original(opened, before_manifest, number, folders, release_first=release_first)
 
     monkeypatch.setattr(export, "_delete", merge_before_delete)
     assert export.cleanup_raw(store, 1) > 0

@@ -866,3 +866,14 @@ def test_section_controls_bind(loaded, tmp_path):
         m = store.snapshot()
         assert (m.collection, m.box, m.section, m.section_size) == ("family", 3, "01", 10)
     assert not warnings
+
+
+def test_unknown_cleanup_failure_is_terminal_and_visible(loaded):
+    from opticfilm_linux.app.state import FreeSpaceView
+
+    bridge, _, _ = loaded
+    message = "Cleanup failed; raw cleanup outcome unknown (could not inspect raw files)"
+    bridge._controller._set(_free_space=FreeSpaceView(((1, 10),), 10, message=message))
+    bridge.poll()
+    assert bridge.freeSpaceText == message
+    assert not bridge.freeSpaceReady

@@ -218,8 +218,12 @@ def test_auto_status_counts_flagged_and_failed_after_acceptance():
     first = replace(
         manifest.trays[0],
         auto="held",
+        stage=TrayStage.EXPORTED,
         auto_flagged=(2, 4),
-        slides=tuple(replace(s, status=SlideStatus.ACCEPTED) for s in manifest.trays[0].slides),
+        slides=tuple(
+            replace(s, status=SlideStatus.ACCEPTED, exported=True, owner_decided=True)
+            for s in manifest.trays[0].slides
+        ),
     )
     second = replace(manifest.trays[1], stage=TrayStage.REVIEW, auto="failed", auto_failed=(1,))
     manifest = replace(
@@ -252,13 +256,13 @@ def test_keep_raw_and_readonly_hide_first_tray_release():
 
 
 @pytest.mark.parametrize("auto", ["off", "failed", "freed", "blocked"])
-def test_first_settings_release_available_without_freeable_first_tray(auto):
+def test_first_settings_release_hidden_without_verified_held_first_tray(auto):
     manifest = _manifest()
     first = replace(manifest.trays[0], auto=auto, raw_removed=auto == "freed")
     manifest = replace(
         manifest, trays=(first,), defaults=replace(manifest.defaults, auto_export=True)
     )
-    assert _build(manifest).held_tray == first.number
+    assert _build(manifest).held_tray is None
     assert (
         _build(
             replace(
@@ -271,7 +275,7 @@ def test_first_settings_release_available_without_freeable_first_tray(auto):
     )
 
 
-def test_changed_render_settings_offer_new_owner_release():
+def test_changed_render_settings_require_verified_first_tray_evidence():
     manifest = _manifest()
     approved = replace(manifest.defaults, auto_export=False, keep_raw=False)
     manifest = replace(
@@ -280,7 +284,7 @@ def test_changed_render_settings_offer_new_owner_release():
         first_tray_released=True,
         released_render=approved,
     )
-    assert _build(manifest).held_tray == manifest.trays[0].number
+    assert _build(manifest).held_tray is None
 
 
 def test_committed_cleanup_waiting_for_completion_is_visible():

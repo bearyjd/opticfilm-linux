@@ -144,19 +144,15 @@ INVALID_POLICY_VALUES = ("false", "true", "", 0, 1, None, [], {})
 
 @pytest.mark.parametrize("key", POLICY_FIELDS)
 @pytest.mark.parametrize("value", INVALID_POLICY_VALUES)
-def test_invalid_policy_value_loads_entire_safe_policy(key, value, caplog):
+def test_invalid_policy_value_is_rejected(key, value):
     data = json.loads(to_json(_manifest()))
     data["defaults"].update(auto_export=True, keep_raw=False)
     data["first_tray_released"] = True
     target = data if key == "first_tray_released" else data["defaults"]
     target[key] = value
 
-    loaded = from_json(json.dumps(data))
-
-    assert loaded.defaults.auto_export is False
-    assert loaded.defaults.keep_raw is True
-    assert loaded.first_tray_released is False
-    assert any(key in record.message and record.levelname == "WARNING" for record in caplog.records)
+    with pytest.raises(ManifestFormatError, match=key):
+        from_json(json.dumps(data))
 
 
 @pytest.mark.parametrize("key", POLICY_FIELDS)
@@ -255,7 +251,5 @@ def test_collection_and_pipeline_receipts_roundtrip_together():
 
     data = json.loads(to_json(manifest))
     data["defaults"]["keep_raw"] = "false"
-    loaded = from_json(json.dumps(data))
-    assert loaded.collection == "family" and loaded.trays == manifest.trays
-    assert loaded.defaults.auto_export is False and loaded.defaults.keep_raw is True
-    assert loaded.first_tray_released is False
+    with pytest.raises(ManifestFormatError, match="keep_raw"):
+        from_json(json.dumps(data))

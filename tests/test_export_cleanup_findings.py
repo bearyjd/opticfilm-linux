@@ -125,7 +125,7 @@ def test_cleanup_never_picks_up_new_sweep_at_commit(delivery, monkeypatch, timin
     assert not store.snapshot().trays[0].raw_removed
 
 
-def test_partial_current_sweep_removal_is_recoverable(delivery, monkeypatch):
+def test_partial_current_sweep_removal_requires_reverification(delivery, monkeypatch):
     store, _ = _delivered(delivery)
     original = export.shutil.rmtree
 
@@ -138,8 +138,10 @@ def test_partial_current_sweep_removal_is_recoverable(delivery, monkeypatch):
         export.cleanup_raw(store, 1)
     assert store.snapshot().trays[0].raw_removed
     monkeypatch.setattr(export.shutil, "rmtree", original)
-    export.cleanup_raw(store, 1)
-    assert not store.sweep_dir(1, 1).exists()
+    monkeypatch.setattr(export, "load_sweep", lambda p: (p / "scan").read_bytes())
+    with pytest.raises(export.CleanupRefused, match="raw verification failed"):
+        export.cleanup_raw(store, 1)
+    assert store.sweep_dir(1, 1).exists()
 
 
 def test_new_sweep_on_interrupted_cleanup_is_refused(delivery, monkeypatch):
@@ -222,10 +224,12 @@ def test_auto_flagged_tray_requires_real_owner_decision(delivery):
 
 def test_reduced_delivery_cannot_be_freed_by_reverting_to_released_full(delivery):
     store, directory = delivery
+    export.export_batch(store, directory, "jpeg")
     _automatic_release(store)
     store.update(
         lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, jpeg_size="3600"))
     )
+    export.clear_exported(store)
     export.export_batch(store, directory, "jpeg", jpeg_size="3600")
     store.update(
         lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, jpeg_size="full"))
@@ -242,6 +246,7 @@ def test_delivery_elsewhere_cannot_be_freed_by_reverting_destination(delivery):
             m, defaults=dataclasses.replace(m.defaults, export_dir=str(directory))
         )
     )
+    export.export_batch(store, directory, "jpeg")
     _automatic_release(store)
     other = directory.with_name("other-album")
     store.update(
@@ -249,6 +254,7 @@ def test_delivery_elsewhere_cannot_be_freed_by_reverting_destination(delivery):
             m, defaults=dataclasses.replace(m.defaults, export_dir=str(other))
         )
     )
+    export.clear_exported(store)
     export.export_batch(store, other, "jpeg")
     store.update(
         lambda m: dataclasses.replace(
@@ -263,9 +269,9 @@ def test_delivery_elsewhere_cannot_be_freed_by_reverting_destination(delivery):
 def test_automatic_cleanup_of_receipt_without_settings_requires_reexport(delivery):
     store, _ = _delivered(delivery)
     slide = store.snapshot().trays[0].slides[0]
+    _automatic_release(store)
     receipt = dataclasses.replace(slide.exports[-1], render_signature="")
     store.update_tray(1, slides=(dataclasses.replace(slide, exports=(receipt,)),))
-    _automatic_release(store)
     with pytest.raises(export.CleanupRefused, match="settings receipt; re-export"):
         export.cleanup_raw(store, 1)
     _assert_raw_kept(store)

@@ -136,14 +136,16 @@ def test_failed_manual_cleanup_uses_current_flag_and_folders(tmp_path, monkeypat
             jobs.run_free_space(store, threading.Event(), views.append, (1,))
         message = views[-1].message.lower()
         assert "raw data kept" not in message
-        expected = "raw data removed" if state in ("gone", "absent") else "cleanup incomplete"
+        expected = {"gone": "raw data removed", "absent": "no raw files were present"}.get(
+            state, "cleanup incomplete"
+        )
         assert expected in message
-        if state in ("gone", "absent"):
+        if state == "gone":
             assert (
                 "manifest still marks the raw scans as available but sweep folders are absent"
                 in message
             )
-        else:
+        elif state != "absent":
             assert "manifest marks the raw scans as freed but sweep folders remain" in message
         assert views[-1].freed == (5 if state in ("empty", "gone") else 0)
 
@@ -613,3 +615,15 @@ def test_cleanup_inventory_failure_preserves_original_exception(tmp_path, monkey
             jobs.run_free_space(store, threading.Event(), views.append, (1,))
         assert "outcome unknown" in views[-1].message
         assert "original cleanup failure" in views[-1].message
+
+
+@pytest.mark.parametrize("had_raw", [False, True])
+def test_cleanup_failure_reporting_does_not_invent_manifest_save_failure(had_raw):
+    from pathlib import Path
+
+    from opticfilm_linux.app.raw import _tray_failure
+
+    before = {Path("raw"): 12} if had_raw else {}
+    message = _tray_failure(before, {}, removed=had_raw, folders=False)
+    assert "could not save" not in message
+    assert ("cleanup completion saved" if had_raw else "no raw files were present") in message

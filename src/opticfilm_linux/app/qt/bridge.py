@@ -292,6 +292,7 @@ class Bridge(QObject):
             and s.free_space.trays
             and not s.free_space.running
             and s.free_space.freed is None
+            and not s.free_space.message
         ),
     )
     hasFreeSpace = _p(bool, changed, lambda s, _: s.free_space is not None)  # noqa: N815
@@ -647,6 +648,8 @@ def _free_text(state: AppState) -> str:
     view = state.free_space
     if view is None:
         return ""
+    if view.message and view.freed is None:
+        return view.message
     if view.freed is not None:
         result = f"Freed {bytes_text(view.freed)}."
         return f"{view.message} {result}" if view.message else result

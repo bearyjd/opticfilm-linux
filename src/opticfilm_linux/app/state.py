@@ -326,8 +326,19 @@ def _auto_fields(manifest: BatchManifest | None, readonly: bool) -> dict:
     held = (
         first.number
         if first is not None
-        and first.stage in (TrayStage.REVIEW, TrayStage.EXPORTED)
-        and first.auto not in ("pending", "exported", "verified")
+        and first.stage is TrayStage.EXPORTED
+        and first.auto == "held"
+        and not first.raw_removed
+        and not any(s.preview_stale for s in first.slides)
+        and any(s.exported and s.status is SlideStatus.ACCEPTED for s in first.slides)
+        and all(
+            s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+            for s in first.slides
+        )
+        and not any(
+            (s.flags or s.position in first.auto_flagged) and not s.owner_decided
+            for s in first.slides
+        )
         and _release_needed(manifest)
         and manifest.defaults.auto_export
         and not manifest.defaults.keep_raw

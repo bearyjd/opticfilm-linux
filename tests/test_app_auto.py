@@ -162,12 +162,12 @@ def test_auto_never_free_verification_failure(store, monkeypatch, damage):
         store.update_tray(1, slides=(dataclasses.replace(slide, exported=False), *tray.slides[1:]))
     auto.confirm_free_held(1)
     assert not store.snapshot().trays[0].raw_removed
-    assert store.snapshot().first_tray_released
+    assert not store.snapshot().first_tray_released
     assert store.snapshot().trays[0].auto == "failed"
     assert store.snapshot().trays[0].auto_failed == (1,)
 
 
-def test_auto_flagged_slides_exported_and_listed(store):
+def test_auto_detector_classifications_preserved_and_listed(store):
     tray = store.snapshot().trays[0]
     store.update_tray(
         1,
@@ -182,7 +182,10 @@ def test_auto_flagged_slides_exported_and_listed(store):
     auto.run(1)
     tray = store.snapshot().trays[0]
     assert tray.auto_flagged == (1, 2, 3)
-    assert all(s.exported for s in tray.slides)
+    assert tray.slides[0].status is SlideStatus.BLANK
+    assert tray.slides[1].status is SlideStatus.NEEDS_LOOK
+    assert not any(s.exported for s in tray.slides)
+    assert tray.auto == "blocked"
 
 
 def test_auto_never_free_one_failed_slide_but_exports_others(store, monkeypatch):
@@ -417,7 +420,7 @@ def test_auto_cleanup_crash_reopen_reverifies_before_deleting_remaining_raw(
     auto.run(1)
     real = exports._delete
 
-    def crash_before_delete(*_args):
+    def crash_before_delete(*_args, **_kwargs):
         raise KeyboardInterrupt("power loss after removed mark")
 
     monkeypatch.setattr(exports, "_delete", crash_before_delete)
@@ -569,7 +572,7 @@ def test_auto_manifest_directory_fsync_failure_keeps_raw(store, monkeypatch):
     [
         ("intact", "raw data kept"),
         ("partial", "raw data partly removed"),
-        ("complete", "raw data removed; could not save cleanup completion"),
+        ("complete", "raw data removed; cleanup completion saved"),
     ],
 )
 def test_auto_cleanup_failure_reports_actual_raw_state(store, monkeypatch, fault, expected):
@@ -665,12 +668,15 @@ def test_auto_cleanup_failure_uses_current_flag_and_folders(store, monkeypatch, 
     auto.confirm_free_held(number) if held else auto.run(number)
     error = auto._tray(number).auto_error.lower()
     assert "raw data kept" not in error
-    assert ("raw data removed" if state in ("gone", "absent") else "cleanup incomplete") in error
-    if state in ("gone", "absent"):
+    expected = {"gone": "raw data removed", "absent": "no raw files were present"}.get(
+        state, "cleanup incomplete"
+    )
+    assert expected in error
+    if state == "gone":
         assert (
             "manifest still marks the raw scans as available but sweep folders are absent" in error
         )
-    else:
+    elif state != "absent":
         assert "manifest marks the raw scans as freed but sweep folders remain" in error
     if state == "committed":
         assert "removal pending; raw still present" in error
@@ -748,8 +754,10 @@ def test_auto_flags_hold_cleanup_until_owner_review(store):
     store.update_tray(
         2, slides=(dataclasses.replace(tray.slides[0], flags=(Flag.DUST,)), *tray.slides[1:])
     )
-    exports.release_first_tray(store, 1)
     auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    exports.release_first_tray(store, 1)
     auto.arm(2)
     auto.run(2)
     assert auto._tray(2).auto == "held"
@@ -783,7 +791,7 @@ def test_auto_disabled_recovers_committed_cleanup(store, keep_raw, folders):
     assert not store.sweep_dir(1, 1).exists()
 
 
-def test_first_release_does_not_require_freeable_first_tray(store):
+def test_first_release_requires_reviewed_first_tray(store):
     auto = pipeline(store)
     auto.arm(1)
     review.set_slide_status(store, 1, 1, SlideStatus.NEEDS_LOOK)
@@ -792,11 +800,11 @@ def test_first_release_does_not_require_freeable_first_tray(store):
     auto.arm(2)
     auto.run(2)
     auto.confirm_free_held(1)
-    assert store.snapshot().first_tray_released
+    assert not store.snapshot().first_tray_released
     assert not auto._tray(1).raw_removed
-    assert 2 in auto.resume()
+    assert 2 not in auto.resume()
     auto.run(2)
-    assert auto._tray(2).raw_removed
+    assert not auto._tray(2).raw_removed
 
 
 def test_owner_held_auto_slide_is_blocked_without_export_failure(store):
@@ -806,7 +814,7 @@ def test_owner_held_auto_slide_is_blocked_without_export_failure(store):
     auto.run(2)
     tray = auto._tray(2)
     assert tray.auto == "blocked" and tray.auto_failed == ()
-    assert "owner review" in tray.auto_error
+    assert "Owner excluded slides 2" in tray.auto_error
     assert not any(s.exported for s in tray.slides)
 
 
@@ -816,8 +824,10 @@ def test_keep_raw_held_tray_resumes_after_setting_change(store):
             m, first_tray_released=True, defaults=dataclasses.replace(m.defaults, keep_raw=True)
         )
     )
-    exports.release_first_tray(store, 1)
     auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    exports.release_first_tray(store, 1)
     auto.arm(2)
     auto.run(2)
     assert auto._tray(2).auto == "held"
@@ -888,3 +898,84 @@ def test_verified_tray_waits_for_preview_updates(store):
     auto.run(2)
     assert auto._tray(2).auto == "held"
     assert auto._tray(2).auto_failed == ()
+
+
+@pytest.mark.parametrize("phase", ["", "off", "pending", "exported", "failed", "blocked"])
+def test_release_requires_verified_held_first_tray(store, phase):
+    auto = pipeline(store)
+    store.update_tray(1, auto=phase)
+    auto.confirm_free_held(1)
+    assert not store.snapshot().first_tray_released
+    assert not auto._tray(1).raw_removed
+
+
+def test_release_refuses_corrupt_first_tray_jpeg(store):
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    Path(auto._tray(1).slides[0].export_path).write_bytes(b"corrupt")
+    auto.confirm_free_held(1)
+    assert not store.snapshot().first_tray_released
+    assert store.sweep_dir(1, 1).exists()
+
+
+def test_freed_first_tray_cannot_release_changed_render(store):
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    auto.confirm_free_held(1)
+    prior = store.snapshot().released_render
+    store.update(
+        lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, jpeg_size="3600"))
+    )
+    auto.confirm_free_held(1)
+    assert store.snapshot().released_render == prior
+    assert store.snapshot().released_render != exports._release_defaults(store.snapshot().defaults)
+    from opticfilm_linux.app.state import _auto_fields
+
+    assert _auto_fields(store.snapshot(), False)["held_tray"] is None
+
+
+def test_owner_rejection_resumes_blocked_auto_export(store):
+    auto = pipeline(store)
+    tray = auto._tray(2)
+    store.update_tray(
+        2,
+        slides=(
+            tray.slides[0],
+            dataclasses.replace(tray.slides[1], status=SlideStatus.NEEDS_LOOK),
+            tray.slides[2],
+        ),
+    )
+    auto.arm(2)
+    auto.run(2)
+    assert auto._tray(2).auto == "blocked"
+    review.set_slide_status(store, 2, 2, SlideStatus.NEEDS_LOOK)
+    assert 2 in auto.resume()
+    auto.run(2)
+    tray = auto._tray(2)
+    assert tray.auto == "blocked"
+    assert not tray.slides[1].exported
+    assert "Owner excluded slides 2" in tray.auto_error
+    assert "Waiting for owner" not in tray.auto_error
+
+
+def test_live_flags_hold_automatic_cleanup(store):
+    auto = pipeline(store)
+    auto.arm(1)
+    auto.run(1)
+    first = auto._tray(1)
+    store.update_tray(
+        1, slides=(dataclasses.replace(first.slides[0], flags=(Flag.DUST,)), *first.slides[1:])
+    )
+    auto.confirm_free_held(1)
+    assert not store.snapshot().first_tray_released
+    assert store.sweep_dir(1, 1).exists()
+
+
+@pytest.mark.parametrize("phase", ["", "off", "failed", "blocked", "freed"])
+def test_release_button_only_for_verified_held_first_tray(store, phase):
+    from opticfilm_linux.app.state import _auto_fields
+
+    store.update_tray(1, auto=phase)
+    assert _auto_fields(store.snapshot(), False)["held_tray"] is None

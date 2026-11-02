@@ -97,7 +97,7 @@ class AutoPipeline:
             # folders behind. Only this verified cleanup state may finish after recovery.
             return tray.auto == "verified"
         if tray.auto == "blocked":
-            return all(s.status in (SlideStatus.ACCEPTED, SlideStatus.BLANK) for s in tray.slides)
+            return not self._awaiting_review(tray)
         if tray.auto in INCOMPLETE:
             return True
         manifest = self.store.snapshot()
@@ -212,16 +212,36 @@ class AutoPipeline:
         self._update(number, auto="failed", auto_error=f"{outcome}. {exc}", auto_failed=positions)
 
     def _unreviewed_flags(self, tray) -> bool:
-        return any(s.position in tray.auto_flagged and not s.owner_decided for s in tray.slides)
+        return any(
+            (s.position in tray.auto_flagged or s.flags) and not s.owner_decided
+            for s in tray.slides
+        )
+
+    def _awaiting_review(self, tray) -> tuple[int, ...]:
+        return tuple(
+            s.position
+            for s in tray.slides
+            if s.status not in (SlideStatus.ACCEPTED, SlideStatus.BLANK) and not s.owner_decided
+        )
 
     def _blocked(self, number: int) -> bool:
-        held = tuple(
-            s.position
-            for s in self._tray(number).slides
-            if s.status not in (SlideStatus.ACCEPTED, SlideStatus.BLANK)
-        )
+        held = self._awaiting_review(self._tray(number))
         if not held:
-            return False
+            excluded = tuple(
+                s.position
+                for s in self._tray(number).slides
+                if s.owner_decided and s.status is SlideStatus.NEEDS_LOOK
+            )
+            if excluded:
+                self._update(
+                    number,
+                    auto="blocked",
+                    auto_failed=(),
+                    auto_error="Owner excluded slides "
+                    + ", ".join(map(str, excluded))
+                    + "; raw scans kept",
+                )
+            return bool(excluded)
         self._update(
             number,
             auto="blocked",
@@ -261,13 +281,20 @@ class AutoPipeline:
 
     def confirm_free_held(self, number: int) -> None:
         manifest = self.store.snapshot()
-        if number != min(t.number for t in manifest.trays) or self._tray(number).stage not in READY:
+        tray = self._tray(number)
+        if (
+            number != min(t.number for t in manifest.trays)
+            or tray.stage not in READY
+            or tray.auto != "held"
+            or tray.raw_removed
+        ):
             return
         before = raw_inventory(self.store, (number,))
         try:
-            release_first_tray(self.store, number)
-            if self._blocked(number):
+            if self._blocked(number) or self._unreviewed_flags(self._tray(number)):
                 return
+            verify_tray_export(self.store, number)
+            release_first_tray(self.store, number)
             self._verify_and_finish(number, release=True)
         except Exception as exc:
             self._failed(number, exc, before=before)

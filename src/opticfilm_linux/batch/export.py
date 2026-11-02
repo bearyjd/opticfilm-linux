@@ -44,6 +44,8 @@ from opticfilm_linux.pipeline.split import split_slides
 from opticfilm_linux.provenance import jpeg_metadata, raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
 
+_CLEANUP_LOCK = threading.Lock()
+
 
 class CleanupRefused(BatchError):
     """Raw scans were not removed: the tray is not exported, or a path looked unsafe."""
@@ -503,7 +505,8 @@ def _verify_raw(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) 
     if tray.raw_removed and tray.cleanup_sweeps:
         if any(int(p.name.removeprefix("sweep-")) not in tray.cleanup_sweeps for p in folders):
             raise CleanupRefused("unverified raw sweep appeared during interrupted removal")
-        return  # persisted proof from the pre-deletion verification; raw may be partly removed
+        if current not in folders:
+            return  # the receipt-bound current sweep was already fully removed
     if current not in folders:
         if tray.raw_removed and not folders:
             return
@@ -529,12 +532,44 @@ def _checked_snapshot(store: BatchStore, tray: TrayRecord, folders: tuple[Path, 
     _verify_raw(store, tray, folders)
 
 
-def _delete(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) -> None:
+def _rollback_cleanup(
+    store: BatchStore, before: BatchManifest, number: int, *, release_first: bool
+) -> None:
+    tray = _tray(before, number)
+    if tray.raw_removed:
+        return
+
+    def reset(manifest: BatchManifest) -> BatchManifest:
+        current = _tray(manifest, number)
+        restored = dataclasses.replace(current, raw_removed=False, cleanup_sweeps=())
+        own_release = release_first and manifest.released_render == _release_defaults(
+            before.defaults
+        )
+        return dataclasses.replace(
+            manifest,
+            first_tray_released=before.first_tray_released
+            if own_release
+            else manifest.first_tray_released,
+            released_render=before.released_render if own_release else manifest.released_render,
+            trays=tuple(restored if t.number == number else t for t in manifest.trays),
+        )
+
+    store.update(reset)
+
+
+def _delete(
+    store: BatchStore,
+    before: BatchManifest,
+    number: int,
+    folders: tuple[Path, ...],
+    *,
+    release_first: bool,
+) -> None:
+    tray = _tray(before, number)
     try:
         _checked_snapshot(store, tray, folders)
     except Exception:
-        if not tray.raw_removed:
-            store.update_tray(tray.number, raw_removed=False, cleanup_sweeps=())
+        _rollback_cleanup(store, before, number, release_first=release_first)
         raise
     # Preserve the receipt-bound current version until all older folders have gone. A retry
     # can therefore still prove the receipt belongs to raw that has not yet been removed.
@@ -588,19 +623,39 @@ def _check_render_receipts(manifest: BatchManifest, tray: TrayRecord) -> None:
             )
 
 
+def _verify_release_evidence(manifest: BatchManifest, tray: TrayRecord) -> None:
+    if tray.raw_removed:
+        raise CleanupRefused("a freed first tray cannot release new settings")
+    if _unreviewed_flags(tray):
+        raise CleanupRefused("flagged slides require owner review before releasing settings")
+    _verify_export(tray, jpeg_only=True)
+    if not any(s.status is SlideStatus.ACCEPTED for s in tray.slides):
+        raise CleanupRefused("first tray has no verified JPEGs to approve settings")
+    _check_render_receipts(manifest, tray)
+
+
 def release_first_tray(store: BatchStore, number: int) -> None:
-    """Record the owner's settings release even if the first tray cannot be cleaned."""
+    """Release only settings backed by the first tray's verified current JPEGs."""
 
     def release(manifest: BatchManifest) -> BatchManifest:
         if number != min(t.number for t in manifest.trays):
             raise CleanupRefused("only the first tray can release automatic cleanup")
+        _verify_release_evidence(manifest, _tray(manifest, number))
         return dataclasses.replace(
             manifest,
             first_tray_released=True,
             released_render=_release_defaults(manifest.defaults),
         )
 
-    store.update(release)
+    with _CLEANUP_LOCK:
+        store.update(release)
+
+
+def _unreviewed_flags(tray: TrayRecord) -> bool:
+    return any(
+        not slide.owner_decided and (slide.position in tray.auto_flagged or slide.flags)
+        for slide in tray.slides
+    )
 
 
 def _cleanup_policy(manifest: BatchManifest, number: int, *, release_first: bool) -> None:
@@ -609,8 +664,7 @@ def _cleanup_policy(manifest: BatchManifest, number: int, *, release_first: bool
     if manifest.defaults.keep_raw:
         raise CleanupRefused("keep raw is enabled; raw scans must be kept")
     tray = _tray(manifest, number)
-    unresolved = set(tray.auto_flagged) - {s.position for s in tray.slides if s.owner_decided}
-    if unresolved:
+    if _unreviewed_flags(tray):
         raise CleanupRefused("flagged slides require owner review before freeing raw")
     automatic = manifest.defaults.auto_export or any(
         t.auto not in ("", "off") for t in manifest.trays
@@ -648,46 +702,62 @@ def check_cleanup_allowed(
 
 
 def cleanup_raw(store: BatchStore, number: int, *, release_first: bool = False) -> int:
-    """Delete an exported tray's raw sweeps (all versions). Returns the bytes freed.
+    """Delete exported raw sweeps; serialize verification, commit, deletion and reporting."""
+    with _CLEANUP_LOCK:
+        return _cleanup_raw(store, number, release_first=release_first)
 
-    A cleanup that failed after marking the tray removed is finished by calling this again.
-    """
+
+def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
     tray = check_cleanup_allowed(store, number, release_first=release_first)
     folders = tuple(_checked_sweep_folders(store, number))
     _checked_snapshot(store, tray, folders)
     freed = sum(_folder_size(path) for path in folders)
+    before = _commit_cleanup(store, tray, folders, release_first=release_first)
+    _delete(store, before, number, folders, release_first=release_first)
+    if tray.auto:
+        store.update_tray(number, auto="freed", auto_error="", auto_failed=())
+    return freed
 
-    half_cleaned = _half_cleaned(store, tray)  # lock-free filesystem inspection, before update
 
-    # Commit first, under the store's lock: once marked removed, nothing (a new batch
-    # orientation, an edit) can send the tray back to review while its raw scans go.
+def _commit_cleanup(
+    store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...], *, release_first: bool
+) -> BatchManifest:
+    half_cleaned = _half_cleaned(store, tray)
+    before = []
+
     def commit(manifest: BatchManifest) -> BatchManifest:
-        _cleanup_policy(manifest, number, release_first=release_first)
-        current = _tray(manifest, number)
+        _cleanup_policy(manifest, tray.number, release_first=release_first)
+        current = _tray(manifest, tray.number)
         if current != tray or not (
             _still_freeable(current) or half_cleaned or (current.raw_removed and not folders)
         ):
-            raise CleanupRefused(f"tray {number} changed meanwhile; it is no longer fully exported")
-        released = release_first and number == min(t.number for t in manifest.trays)
+            raise CleanupRefused(
+                f"tray {tray.number} changed meanwhile; it is no longer fully exported"
+            )
+        released = (
+            release_first
+            and not current.raw_removed
+            and tray.number == min(t.number for t in manifest.trays)
+        )
+        if released:
+            _verify_release_evidence(manifest, current)
         updated = dataclasses.replace(
             current,
             raw_removed=True,
             cleanup_sweeps=tuple(int(p.name.removeprefix("sweep-")) for p in folders),
         )
+        before.append(manifest)
         return dataclasses.replace(
             manifest,
             first_tray_released=manifest.first_tray_released or released,
             released_render=_release_defaults(manifest.defaults)
             if released
             else manifest.released_render,
-            trays=tuple(updated if t.number == number else t for t in manifest.trays),
+            trays=tuple(updated if t.number == tray.number else t for t in manifest.trays),
         )
 
     store.update(commit)
-    _delete(store, tray, folders)
-    if tray.auto:
-        store.update_tray(number, auto="freed", auto_error="", auto_failed=())
-    return freed
+    return before[0]
 
 
 def _still_freeable(tray: TrayRecord) -> bool:

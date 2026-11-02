@@ -41,12 +41,18 @@ def raw_failure(
 
 def _tray_failure(before: RawInventory, after: RawInventory, removed: bool, folders: bool) -> str:
     if not folders:
-        outcome = "raw data removed; could not save cleanup completion"
-        if not removed:
-            outcome += (
-                "; manifest still marks the raw scans as available but sweep folders are absent"
+        if not before:
+            return (
+                "raw data removed before this job; cleanup completion saved"
+                if removed
+                else "no raw files were present before cleanup; sweep folders are absent"
             )
-        return outcome
+        if removed:
+            return "raw data removed; cleanup completion saved"
+        return (
+            "raw data removed; could not save cleanup completion; "
+            "manifest still marks the raw scans as available but sweep folders are absent"
+        )
     if removed:
         outcome = (
             "raw cleanup incomplete; removal pending; raw still present; "
