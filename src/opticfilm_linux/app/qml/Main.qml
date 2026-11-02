@@ -6,6 +6,7 @@ Kirigami.ApplicationWindow {
     id: root
 
     property bool closeWhenIdle: false
+    property bool firstLoadQuitConfirmed: false
 
     title: bridge.hasBatch ? bridge.batchName + " — OpticFilm Linux" : "OpticFilm Linux"
     width: 1220
@@ -72,9 +73,24 @@ Kirigami.ApplicationWindow {
     }
 
     onClosing: function (close) {
-        if (bridge.closeRequested() === "scan_running") {
+        const decision = bridge.closeRequested();
+        if (decision === "first_load_running" && !root.firstLoadQuitConfirmed) {
+            close.accepted = false;
+            firstLoadQuitDialog.open();
+        } else if (decision === "scan_running") {
             close.accepted = false;
             waitDialog.open();
+        }
+    }
+
+    ConfirmDialog {
+        id: firstLoadQuitDialog
+        objectName: "firstLoadQuitDialog"
+        title: qsTr("Quit during first load?")
+        subtitle: qsTr("Cancelling needs a power cycle afterwards. Switch the scanner off until the lights go out, then switch it on before loading again.")
+        onConfirmed: {
+            root.firstLoadQuitConfirmed = true;
+            root.close();
         }
     }
 

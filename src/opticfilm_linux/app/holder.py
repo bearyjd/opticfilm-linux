@@ -33,7 +33,7 @@ SCANNER_INTERRUPTED = (
 )
 REFUSED = "The scanner command was refused before it started; nothing moved. See Details."
 NEXT_STRIP_OFF = (
-    "Load next holder is switched off: it is not proven on this scanner yet. "
+    "Load next holder is switched off by OPTICFILM_NEXT_STRIP. "
     'Follow "How to load the scanner" instead.'
 )
 

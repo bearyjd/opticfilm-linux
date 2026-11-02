@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.batch.model import (
@@ -15,6 +16,7 @@ from opticfilm_linux.batch.model import (
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.scanner.select import next_strip_enabled
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,9 @@ class FreeSpaceView:
     message: str = ""
 
 
+LoadPhase = Literal["idle", "jogging", "await_reinsert", "loading", "done", "failed"]
+
+
 @dataclass(frozen=True)
 class AppState:
     batch_name: str | None
@@ -92,9 +97,12 @@ class AppState:
     free_space: FreeSpaceView | None
     default_rotation: int = 0  # the batch's orientation, applied to every slide
     default_mirror: bool = False
+    load_phase: LoadPhase = "idle"
+    load_exit_code: int | None = None
+    can_first_load: bool = False
     can_eject: bool = False
     can_load_next: bool = False
-    next_strip_enabled: bool = False  # the experimental non-interactive load is switched on
+    next_strip_enabled: bool = True  # non-interactive load is enabled unless switched off
     holder_busy: bool = False  # an eject or load is queued or running
     can_confirm_scanner: bool = False  # a command was cut off; the owner may confirm a reset
     export_dir: str = ""
@@ -276,12 +284,13 @@ def build_state(
     free_space: FreeSpaceView | None,
     holder_control: bool = False,
     holder_busy: bool = False,
-    next_strip: bool = False,
+    next_strip: bool | None = None,
     jobs_running: bool = False,
     batch_session: int = 0,
     runner_busy: bool = False,
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
 ) -> AppState:
+    next_strip = next_strip_enabled() if next_strip is None else next_strip
     busy = holder_busy or scan_pending or readonly or jobs_running
     return AppState(
         **_batch_fields(manifest, selected, preview_tokens, updating),

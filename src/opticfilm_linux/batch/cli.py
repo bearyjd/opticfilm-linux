@@ -46,6 +46,46 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     batch = commands.add_parser("batch", help="scan and review many trays in a batch folder")
     sub = batch.add_subparsers(dest="batch_command", required=True)
 
+    _add_new_command(sub)
+
+    status = sub.add_parser("status", help="list the trays")
+    status.add_argument("directory", type=Path)
+
+    scan = sub.add_parser("scan", help="scan trays into the batch")
+    scan.add_argument("directory", type=Path)
+    scan.add_argument("--fake", type=Path, help="replay the stored sweep in this folder")
+    scan.add_argument("--count", type=int, default=1, help="how many trays to scan")
+
+    for name, text in (
+        ("eject", "eject the film holder"),
+        (
+            "load",
+            "load the next holder without a terminal (default on; OPTICFILM_NEXT_STRIP=0 disables)",
+        ),
+    ):
+        holder = sub.add_parser(name, help=text)
+        holder.add_argument("--fake", type=Path, help="use the stored sweep in this folder")
+
+    confirm = sub.add_parser(
+        "confirm-scanner",
+        help="after a cut-off scan or holder move: confirm the scanner was reset",
+    )
+    confirm.add_argument(
+        "--yes",
+        action="store_true",
+        help="I power-cycled the scanner and loaded the holder again",
+    )
+
+    accept = sub.add_parser("accept-all", help="accept every slide in every reviewed tray")
+    accept.add_argument("directory", type=Path)
+
+    export = sub.add_parser("export", help="write the accepted slides to a folder")
+    export.add_argument("directory", type=Path)
+    export.add_argument("--out", type=Path, required=True)
+    export.add_argument("--format", choices=["tiff16", "png8", "jpeg"], default="tiff16")
+
+
+def _add_new_command(sub: argparse._SubParsersAction) -> None:
     new = sub.add_parser("new", help="create a batch folder")
     new.add_argument("directory", type=Path)
     new.add_argument("--name", required=True)
@@ -68,39 +108,6 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
         metavar="SLOT,...",
         help="flip the slide in these holder slots of every tray left-right, after turning it",
     )
-
-    status = sub.add_parser("status", help="list the trays")
-    status.add_argument("directory", type=Path)
-
-    scan = sub.add_parser("scan", help="scan trays into the batch")
-    scan.add_argument("directory", type=Path)
-    scan.add_argument("--fake", type=Path, help="replay the stored sweep in this folder")
-    scan.add_argument("--count", type=int, default=1, help="how many trays to scan")
-
-    for name, text in (
-        ("eject", "eject the film holder"),
-        ("load", "load the next holder without a terminal (needs OPTICFILM_NEXT_STRIP=1)"),
-    ):
-        holder = sub.add_parser(name, help=text)
-        holder.add_argument("--fake", type=Path, help="use the stored sweep in this folder")
-
-    confirm = sub.add_parser(
-        "confirm-scanner",
-        help="after a cut-off scan or holder move: confirm the scanner was reset",
-    )
-    confirm.add_argument(
-        "--yes",
-        action="store_true",
-        help="I power-cycled the scanner and loaded the holder again",
-    )
-
-    accept = sub.add_parser("accept-all", help="accept every slide in every reviewed tray")
-    accept.add_argument("directory", type=Path)
-
-    export = sub.add_parser("export", help="write the accepted slides to a folder")
-    export.add_argument("directory", type=Path)
-    export.add_argument("--out", type=Path, required=True)
-    export.add_argument("--format", choices=["tiff16", "png8", "jpeg"], default="tiff16")
 
 
 def _tray_line(tray: TrayRecord) -> str:
@@ -170,8 +177,8 @@ def _holder(args: argparse.Namespace) -> int:
     command = args.batch_command
     if command == "load" and not next_strip_enabled():
         raise ScanError(
-            "loading the next holder is not proven on this scanner yet; "
-            f"set {NEXT_STRIP_ENV}=1 to allow it, or load the holder by hand"
+            "loading the next holder is switched off; "
+            f"unset {NEXT_STRIP_ENV} to enable it, or use the terminal load instructions"
         )
     try:
         scanner: Scanner = FakeScanner(args.fake) if args.fake is not None else real_scanner()

@@ -20,6 +20,7 @@ from typing import Literal
 
 from opticfilm_linux.app.auto import MISSING_DESTINATION, AutoPipeline
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
+from opticfilm_linux.app.first_load import FirstLoadCommands
 from opticfilm_linux.app.holder import WAIT_BATCH, HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
 from opticfilm_linux.app.messages import failure_text
@@ -48,6 +49,7 @@ from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.scanner.select import next_strip_enabled
 from opticfilm_linux.worker import lower_worker_priority
 
 SLIDES_PER_TRAY = 4
@@ -72,31 +74,21 @@ class _Session:
     auto_export: bool = False  # batch setting is immutable throughout this session
 
 
-class Controller(HolderCommands):
+class Controller(FirstLoadCommands, HolderCommands):
     def __init__(
         self,
         scanner_factory: Callable[[int], Scanner],
         clock: Callable[[], float] = time.monotonic,
-        next_strip: bool = False,
+        next_strip: bool | None = None,
         eject_button: bool = True,
         eject_watch: EjectWatch | None = None,
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
-        self._next_strip = next_strip  # the experimental non-interactive load is allowed
+        self._next_strip = next_strip_enabled() if next_strip is None else next_strip
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
-        self._holder_busy = False  # an eject or load is queued or running
-        self._lifecycle_pending = 0  # accepted batch changes exclude new holder movements
-        self._holder_latch = HolderLatch.UNKNOWN
-        self._latch_address: tuple[int, int] | None = None
-        self._latch_invalidated = False
-        self._latch_sequence = 0
-        self._latch_applied = 0
-        self._latch_loss = None
-        self._latch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-latch")
-        self._holder_future: Future | None = None  # that eject or load, while it may not start
-        self._holder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-holder")
+        self._init_holder_workers()
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
         self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker
         self._clock = clock
@@ -130,6 +122,20 @@ class Controller(HolderCommands):
         self._jobs = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
         )
+
+    def _init_holder_workers(self) -> None:
+        self._init_first_load()
+        self._holder_busy = False  # an eject or load is queued or running
+        self._lifecycle_pending = 0  # accepted batch changes exclude new holder movements
+        self._holder_latch = HolderLatch.UNKNOWN
+        self._latch_address: tuple[int, int] | None = None
+        self._latch_invalidated = False
+        self._latch_sequence = 0
+        self._latch_applied = 0
+        self._latch_loss = None
+        self._latch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-latch")
+        self._holder_future: Future | None = None  # that eject or load, while it may not start
+        self._holder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-holder")
 
     # -- what the UI thread uses (never blocks) ------------------------------------------
 
@@ -531,8 +537,11 @@ class Controller(HolderCommands):
 
     # -- closing the window --------------------------------------------------------------
 
-    def shutdown_decision(self) -> Literal["ok", "scan_running"]:
-        session = self._session
+    def shutdown_decision(self) -> Literal["ok", "scan_running", "first_load_running"]:
+        with self._lock:
+            if self._holder_busy and self._load_phase in ("jogging", "await_reinsert", "loading"):
+                return "first_load_running"
+            session = self._session
         if session is not None and session.runner is not None and session.runner.scan_pending():
             return "scan_running"
         return "ok"
@@ -540,6 +549,7 @@ class Controller(HolderCommands):
     def shutdown(self) -> None:
         """Cancel an export, finish the job running now, drop queued work, release the batch."""
         self._closing.set()
+        self._load_cancel.set()
         self._cancel_export.set()
         self._cancel_free.set()
         self._cancel_auto.set()
@@ -701,6 +711,7 @@ class Controller(HolderCommands):
             self._latch_applied = self._latch_sequence
             self._session = session
             self._batch_session += 1
+            self._reset_load_phase()
             self._holder_latch = HolderLatch.UNKNOWN
             self._latch_address = None
             self._latch_loss = None
@@ -736,6 +747,7 @@ class Controller(HolderCommands):
             self._remember_holder_latch(HolderLatch.UNKNOWN)
         with self._lock:
             session, self._session = self._session, None
+            self._reset_load_phase()
         if session is not None:
             if session.poller is not None:
                 self._watch_poller = session.poller  # a read-only session keeps the earlier one
@@ -797,6 +809,10 @@ class Controller(HolderCommands):
     # -- events and refresh --------------------------------------------------------------
 
     def _drain_events(self, session: _Session | None = None) -> None:
+        while not self._load_events.empty():
+            event = self._load_events.get_nowait()
+            with self._lock:
+                self._apply_load_event(event)
         session = session or self._session
         if session is None or session.runner is None:
             return
@@ -937,33 +953,35 @@ class Controller(HolderCommands):
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do
             self._update_holder_status(session, status, sequence)
-            self._state = build_state(
-                manifest,
-                preview_tokens=tokens,
-                scanner=status,
-                scan_pending=bool(
-                    self._scans_queued
-                    or (session and session.runner and session.runner.scan_pending())
-                ),
-                readonly=bool(session and session.runner is None),
-                selected=selected,
-                updating=self._updating,
-                progress=self._progress,
-                scan_started=self._scan_started,
-                now=self._clock(),
-                banner=self._banner,
-                export=self._export,
-                free_space=self._free_space,
-                holder_control=session is not None and session.holder is not None,
-                holder_busy=self._holder_busy,
-                next_strip=self._next_strip,
-                jobs_running=bool(self._long_jobs or self._job_futures),
-                batch_session=self._batch_session if session else 0,
-                runner_busy=bool(
-                    self._lifecycle_pending
-                    or (session and session.runner and session.runner.work_pending())
-                ),
-                holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
+            self._state = self._with_first_load(
+                build_state(
+                    manifest,
+                    preview_tokens=tokens,
+                    scanner=status,
+                    scan_pending=bool(
+                        self._scans_queued
+                        or (session and session.runner and session.runner.scan_pending())
+                    ),
+                    readonly=bool(session and session.runner is None),
+                    selected=selected,
+                    updating=self._updating,
+                    progress=self._progress,
+                    scan_started=self._scan_started,
+                    now=self._clock(),
+                    banner=self._banner,
+                    export=self._export,
+                    free_space=self._free_space,
+                    holder_control=session is not None and session.holder is not None,
+                    holder_busy=self._holder_busy,
+                    next_strip=self._next_strip,
+                    jobs_running=bool(self._long_jobs or self._job_futures),
+                    batch_session=self._batch_session if session else 0,
+                    runner_busy=bool(
+                        self._lifecycle_pending
+                        or (session and session.runner and session.runner.work_pending())
+                    ),
+                    holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
+                )
             )
 
     def _update_holder_status(self, session, status: ScannerStatus, sequence: int) -> None:

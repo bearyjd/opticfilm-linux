@@ -257,6 +257,11 @@ class Bridge(QObject):
     canConfirmHolderLatched = _p(bool, changed, lambda s, _: s.can_confirm_holder_latched)  # noqa: N815
     canScan = _p(bool, changed, lambda s, _: s.can_scan)  # noqa: N815
     canEject = _p(bool, changed, lambda s, _: s.can_eject)  # noqa: N815
+    canFirstLoad = _p(bool, changed, lambda s, _: s.can_first_load)  # noqa: N815
+    loadPhase = _p(str, changed, lambda s, _: s.load_phase)  # noqa: N815
+    loadExitCode = _p(
+        str, changed, lambda s, _: "" if s.load_exit_code is None else str(s.load_exit_code)
+    )  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
     holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
     canConfirmScanner = _p(bool, changed, lambda s, _: s.can_confirm_scanner)  # noqa: N815
@@ -517,6 +522,18 @@ class Bridge(QObject):
     @Slot()
     def ejectHolder(self) -> None:  # noqa: N802
         self._controller.eject_holder()
+
+    @Slot()
+    def firstLoad(self) -> None:  # noqa: N802
+        self._controller.first_load()
+
+    @Slot()
+    def firstLoadDone(self) -> None:  # noqa: N802
+        self._controller.first_load_done()
+
+    @Slot()
+    def firstLoadCancel(self) -> None:  # noqa: N802
+        self._controller.first_load_cancel()
 
     @Slot()
     def loadNextHolder(self) -> None:  # noqa: N802

@@ -291,3 +291,9 @@ def test_committed_cleanup_waiting_for_completion_is_visible():
     manifest = _manifest()
     tray = replace(manifest.trays[0], raw_removed=True, auto="verified", cleanup_sweeps=(1,))
     assert _build(replace(manifest, trays=(tray,))).trays[0].stage_text == "Raw removal pending"
+
+
+def test_load_next_is_available_by_default_with_env_unset(monkeypatch):
+    monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
+    state = _build(scanner=ScannerStatus.NOT_READY, holder_control=True)
+    assert state.can_load_next and state.next_strip_enabled

@@ -5,6 +5,14 @@ interrupt endpoint. That is either the driver's `of135i watch` command or the ru
 optional systemd **user** unit keeps `of135i watch` running, so the button works whenever the
 scanner is on, without the app open and without typing a command.
 
+Between trays, eject, confirm physical release, swap holders, push the new holder in, then
+use **Load next holder** (or `ofscan batch load`). Next-strip loading is enabled by default;
+`OPTICFILM_NEXT_STRIP=0` disables it (also `false`, `no`, or `off`, case-insensitive).
+The first load after each power-on still requires the interactive terminal command in
+[RUNBOOK.md](RUNBOOK.md).
+
+On 2026-11-01, a supervised five-swap holder series and a full tray at 7200 dpi passed on one unit with one operator. This is a solid series, not a reliability figure.
+
 It runs `of135i watch` in one of two ways, chosen by the installer (`--runner`):
 
 - **Host (bare metal, no container; the default when it works).** The unit
