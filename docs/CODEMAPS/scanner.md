@@ -14,7 +14,7 @@ scanner/fake.py           FakeScanner: load stored sweep, replay statuses; same 
 scanner/interrupted.py    durable "a command may not have finished" mark -> ScannerInterrupted
 scanner/driver.py         confirm_scanner_reset() -> bool: lock + driver-group check before clearing mark
 scanner/select.py        real_scanner() -> DriverScanner; installs signal cleanup
-  next_strip_enabled() -> bool: OPTICFILM_NEXT_STRIP=1 gates hardware-unproven next-strip load
+  next_strip_enabled() -> bool: next-strip load defaults on; exact case-insensitive OPTICFILM_NEXT_STRIP=0/false/no/off disables
   eject_button_enabled() -> bool: OPTICFILM_EJECT_BUTTON=0/false/no/off disables front-panel handling
 scanner/usb.py           find_devices(sysfs_root: Path = SYSFS_USB_DEVICES) -> list[DeviceInfo]
   read-only sysfs detection of 07b3:1436 (`ofscan devices`)

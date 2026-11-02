@@ -183,3 +183,9 @@ def test_can_scan_respects_holder_latch(latch, allowed):
     state = _build(holder_latch=HolderLatch[latch], holder_control=True)
     assert state.can_scan is allowed
     assert state.can_confirm_holder_latched is (latch == "RELEASED")
+
+
+def test_load_next_is_available_by_default_with_env_unset(monkeypatch):
+    monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
+    state = _build(scanner=ScannerStatus.NOT_READY, holder_control=True)
+    assert state.can_load_next and state.next_strip_enabled
