@@ -21,9 +21,11 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from opticfilm_linux.batch import review
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
 from opticfilm_linux.batch.events import BatchEvent, SlideUpdated, TrayFailed, TrayStageChanged
+from opticfilm_linux.batch.layout import allocate_location, location_is_active
 from opticfilm_linux.batch.model import (
     BatchManifest,
     Mode,
+    SlideRecord,
     SlideSettings,
     SlideStatus,
     TrayRecord,
@@ -35,6 +37,7 @@ from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import Scanner, ScannerNotReady, ScannerStatus
 from opticfilm_linux.scanner.interrupted import ScanInterrupted
 from opticfilm_linux.sweepstore import save_sweep
+from opticfilm_linux.worker import lower_worker_priority
 
 RESCANNABLE = (TrayStage.REVIEW, TrayStage.FAILED)
 IN_FLIGHT = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
@@ -48,7 +51,9 @@ class BatchRunner:
         self._scanner = scanner
         self.events: queue.Queue[BatchEvent] = queue.Queue()
         self._scan_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan")
-        self._enhance_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="enhance")
+        self._enhance_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="enhance", initializer=lower_worker_priority
+        )
         self._pending: set[Future] = set()
         self._scans: set[Future] = set()
         self._lock = threading.Lock()
@@ -68,7 +73,10 @@ class BatchRunner:
 
         def add(manifest: BatchManifest) -> BatchManifest:
             tray = TrayRecord(
-                number=len(manifest.trays) + 1, stage=TrayStage.SCANNING, mode=defaults.mode
+                number=len(manifest.trays) + 1,
+                stage=TrayStage.SCANNING,
+                mode=defaults.mode,
+                location=allocate_location(manifest, 4),
             )
             return dataclasses.replace(manifest, trays=manifest.trays + (tray,))
 
@@ -81,7 +89,14 @@ class BatchRunner:
 
     def rescan_tray(self, number: int) -> int:
         """Scan a tray again, keeping the old sweep. The tray must be in review or failed."""
-        tray = self._tray(number)
+        manifest = self._store.snapshot()
+        tray = next((t for t in manifest.trays if t.number == number), None)
+        if tray is None:
+            raise BatchError(f"no tray {number} in this batch")
+        if not location_is_active(manifest, tray):
+            raise BatchError(
+                "This tray belongs to a closed section; scan a fresh tray in the current section."
+            )
         if tray.stage not in RESCANNABLE:
             raise BatchError(
                 f"tray {number} is {tray.stage}; it can only be re-scanned from review"
@@ -89,16 +104,28 @@ class BatchRunner:
         self._require_ready()
         with self._scan_guard:
             self._require_no_scan_pending()
-            started = self._store.update_tray_if(
-                number,
-                lambda t: t.stage in RESCANNABLE and t.sweep_version == tray.sweep_version,
-                stage=TrayStage.SCANNING,
-                sweep_version=tray.sweep_version + 1,
-                slides=(),
-                error=None,
-            )
-            if not started:
-                raise BatchError(f"tray {number} changed meanwhile; try again")
+
+            def restart(manifest: BatchManifest) -> BatchManifest:
+                current = next(t for t in manifest.trays if t.number == number)
+                if not location_is_active(manifest, current):
+                    raise BatchError("This tray belongs to a closed section; scan a fresh tray.")
+                if current.stage not in RESCANNABLE or current.sweep_version != tray.sweep_version:
+                    raise BatchError(f"tray {number} changed meanwhile; try again")
+                updated = dataclasses.replace(
+                    current,
+                    stage=TrayStage.SCANNING,
+                    sweep_version=current.sweep_version + 1,
+                    slides=tuple(
+                        SlideRecord(position=s.position, exports=s.exports) for s in current.slides
+                    ),
+                    error=None,
+                )
+                return dataclasses.replace(
+                    manifest,
+                    trays=tuple(updated if t.number == number else t for t in manifest.trays),
+                )
+
+            self._store.update(restart)
             self._emit(TrayStageChanged(number, TrayStage.SCANNING))
             self._submit(self._scan_pool, self._scan_job, number, scan=True)
         return number
@@ -160,6 +187,11 @@ class BatchRunner:
         with self._lock:
             return bool(self._scans)
 
+    def work_pending(self) -> bool:
+        """Whether scanning or any preview enhancement is queued or running."""
+        with self._lock:
+            return bool(self._pending)
+
     def stop(self) -> None:
         """Stop soon: drop jobs that have not started, finish the one running now.
 
@@ -185,7 +217,8 @@ class BatchRunner:
         tmp = self._store.sweep_tmp_dir(number, tray.sweep_version)
         final = self._store.sweep_dir(number, tray.sweep_version)
         try:
-            save_sweep(self._scanner.scan_holder(settings), tmp)
+            sweep = self._scanner.scan_holder(settings)
+            save_sweep(sweep, tmp)
             os.replace(tmp, final)
         except BaseException as exc:  # a failed scan must end as a visible FAILED tray
             if tmp.is_dir() and not tmp.is_symlink():
@@ -195,7 +228,7 @@ class BatchRunner:
             message = str(exc) if isinstance(exc, ScanInterrupted) else _describe(exc)
             self._fail(number, message, (TrayStage.SCANNING,))
             return
-        self._store.update_tray(number, stage=TrayStage.SCANNED)
+        self._store.update_tray(number, stage=TrayStage.SCANNED, evidence=sweep.evidence)
         self._emit(TrayStageChanged(number, TrayStage.SCANNED))
         self._submit(self._enhance_pool, self._enhance_job, number)
 

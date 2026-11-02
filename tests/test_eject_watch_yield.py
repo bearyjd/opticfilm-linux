@@ -4,6 +4,7 @@ import logging
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from opticfilm_linux.app.eject_watch import (
     WatchStillActive,
     watch_process_running,
 )
-from opticfilm_linux.app.holder import WAIT_HOLDER
+from opticfilm_linux.app.holder import WAIT_BATCH, WAIT_HOLDER
 from opticfilm_linux.app.status import StatusPoller
 from opticfilm_linux.batch.model import BatchDefaults
 from opticfilm_linux.batch.store import BatchStore
@@ -506,14 +507,19 @@ def _commands_done(controller: Controller) -> None:
     controller._command.submit(lambda: None).result(30)
 
 
-def _start_move(sweep600_dir, tmp_path, events):
+def _start_move(sweep600_dir, tmp_path, events, watch=None):
     """A controller with an eject running (held by ``gate``) and its watcher stepped aside."""
     gate = threading.Event()
     scanner = RecordingScanner(sweep600_dir, (ScannerStatus.NOT_READY,), gate=gate)
-    c = Controller(lambda _dpi: scanner, eject_watch=RecordingWatch(events))
-    open_new(c, tmp_path / "b")
-    wait_until(c, lambda: c.state().can_eject)
-    return c, scanner, gate
+    c = Controller(lambda _dpi: scanner, eject_watch=watch or RecordingWatch(events))
+    try:
+        open_new(c, tmp_path / "b")
+        wait_until(c, lambda: c.state().can_eject)
+        return c, scanner, gate
+    except BaseException:
+        gate.set()
+        c.shutdown()
+        raise
 
 
 def _batch_commands(tmp_path):
@@ -548,64 +554,86 @@ def test_a_batch_change_during_a_move_is_refused_and_leaves_the_watcher_stopped(
         c.shutdown()
 
 
-def _move_wins_the_race(sweep600_dir, tmp_path, events, command):
-    """A batch command passes the refusal check, then an eject is accepted before the command
-    thread gets to run it: the one way a holder move can still be running inside a detach."""
-    c, scanner, gate = _start_move(sweep600_dir, tmp_path, events)
+@contextmanager
+def _queued_batch_change(sweep600_dir, tmp_path, events, command, watch=None):
+    """Keep an accepted batch change queued while trying to start an eject."""
+    c, scanner, gate = _start_move(sweep600_dir, tmp_path, events, watch=watch)
     hold = threading.Event()
-    c._command.submit(hold.wait, 30)  # keeps the command thread busy
-    _batch_commands(tmp_path)[command](c)  # no move yet, so it is queued behind it
-    c.eject_holder()
-    wait_until(c, lambda: scanner.calls == ["eject"])
-    hold.set()
-    return c, gate
-
-
-def test_the_watcher_is_not_started_while_the_holder_is_moving(sweep600_dir, tmp_path, monkeypatch):
-    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 30.0)
-    events: list[str] = []
-    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, "close")
     try:
-        time.sleep(0.5)
-        assert "restore" not in events  # the move is still running
-        gate.set()
-        wait_until(c, lambda: "restore" in events)
+        c._command.submit(hold.wait, 30)
+        _batch_commands(tmp_path)[command](c)
+        c.eject_holder()
+        wait_until(c, lambda: c.state().banner is not None, timeout=5.0)
+        assert c.state().banner.message == WAIT_BATCH
+        assert scanner.calls == []
+        assert not c._holder_busy
+        yield c, scanner, hold
     finally:
+        hold.set()
         gate.set()
         c.shutdown()
+
+
+def test_a_queued_close_refuses_eject_and_restarts_the_watcher(sweep600_dir, tmp_path):
+    runner = Systemctl(["active", "inactive"])
+    with _queued_batch_change(sweep600_dir, tmp_path, [], "close", watch=make_watch(runner)) as (
+        c,
+        scanner,
+        hold,
+    ):
+        assert runner.verbs() == ["is-active", "stop", "is-active"]
+        assert runner.calls[1] == ("--user", "stop", UNIT)
+        hold.set()
+        _commands_done(c)
+        c.tick()
+        assert scanner.calls == []
+        assert c._session is None
+        assert runner.verbs().count("start") == 1
+        assert runner.calls[-1] == ("--user", "start", UNIT)
 
 
 @pytest.mark.parametrize("command", ["close", "open_readonly", "open_unreadable"])
-def test_a_move_that_wins_the_race_never_sees_the_watcher_start(
-    sweep600_dir, tmp_path, monkeypatch, command
+def test_a_queued_batch_change_refuses_eject_and_restores_the_watcher(
+    sweep600_dir, tmp_path, command
 ):
-    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
     events: list[str] = []
-    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, command)
-    try:
-        _commands_done(c)  # the command ran, its bounded wait ran out, the move still runs
-        assert "restore" not in events
-        gate.set()  # the move ends: the normal path may start the watcher
-        wait_until(c, lambda: not c._holder_busy)
-        c.open_batch(_batch(tmp_path, "ro2"), readonly=True)
-        wait_until(c, lambda: "restore" in events)
-        assert events.count("restore") == 1
-    finally:
-        gate.set()
-        c.shutdown()
+    with _queued_batch_change(sweep600_dir, tmp_path, events, command) as (c, scanner, hold):
+        assert events == ["yield"]  # the queued command still owns the scanner
+        hold.set()
+        _commands_done(c)
+        c.tick()
+        assert scanner.calls == []
+        assert events == ["yield", "restore"]
+        assert c._lifecycle_pending == 0
+        if command == "open_readonly":
+            wait_until(c, lambda: c.state().readonly, timeout=5.0)
+        else:
+            assert c._session is None
+        if command == "open_unreadable":
+            wait_until(
+                c,
+                lambda: (
+                    c.state().banner is not None
+                    and c.state().banner.message.startswith("Could not open the batch")
+                ),
+                timeout=5.0,
+            )
 
 
-def test_a_close_that_lost_the_race_leaves_a_banner_with_the_start_command(
+def test_a_close_with_a_status_request_out_leaves_a_banner_with_the_start_command(
     sweep600_dir, tmp_path, monkeypatch
 ):
     monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
     events: list[str] = []
-    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, "close")
+    c, blocked = _blocked_status_controller(sweep600_dir, tmp_path, events)
     try:
-        wait_until(c, lambda: c.state().banner is not None)
+        c.close_batch()
+        _commands_done(c)
+        c.tick()
         assert "stopped" in c.state().banner.message and UNIT in c.state().banner.message
+        assert "restore" not in events
     finally:
-        gate.set()
+        blocked.release.set()
         c.shutdown()
 
 
@@ -615,8 +643,10 @@ def test_a_close_that_lost_the_race_leaves_a_banner_with_the_start_command(
 class _BlockedStatus:
     def __init__(self) -> None:
         self.release = threading.Event()
+        self.entered = threading.Event()
 
     def status(self):
+        self.entered.set()
         self.release.wait(30)
         return ScannerStatus.READY
 
@@ -661,9 +691,15 @@ def _blocked_status_controller(sweep600_dir, tmp_path, events):
     scanner = FakeScanner(sweep600_dir)
     scanner.status = blocked.status  # a status request that stays out
     c = Controller(lambda _dpi: scanner, eject_watch=RecordingWatch(events))
-    open_new(c, tmp_path / "b")
-    c.tick()  # sends the status request
-    return c, blocked
+    try:
+        open_new(c, tmp_path / "b")
+        c.tick()  # sends the status request
+        assert blocked.entered.wait(5.0)
+        return c, blocked
+    except BaseException:
+        blocked.release.set()
+        c.shutdown()
+        raise
 
 
 def test_a_status_request_still_out_keeps_the_watcher_stopped(sweep600_dir, tmp_path, monkeypatch):
@@ -707,12 +743,13 @@ def test_the_wait_for_an_idle_scanner_ends_when_the_window_is_closing(
 ):
     monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 60.0)
     events: list[str] = []
-    c, gate = _move_wins_the_race(sweep600_dir, tmp_path, events, "close")
+    c, blocked = _blocked_status_controller(sweep600_dir, tmp_path, events)
     try:
+        c.close_batch()
         wait_until(c, lambda: c._session is None)  # the close command is in its wait
         c._closing.set()
         _commands_done(c)  # returns at once instead of after the 60 s bound
         assert "restore" not in events
     finally:
-        gate.set()
+        blocked.release.set()
         c.shutdown()

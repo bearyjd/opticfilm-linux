@@ -8,6 +8,9 @@ replaced, never changed.
 
 import dataclasses
 import logging
+import os
+import stat
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -16,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
-from opticfilm_linux.app.holder import HolderCommands
+from opticfilm_linux.app.holder import WAIT_BATCH, HolderCommands
 from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
 from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.state import (
@@ -30,6 +33,7 @@ from opticfilm_linux.app.state import (
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.export import clear_exported
+from opticfilm_linux.batch.layout import advance_section
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     BatchDefaults,
@@ -40,9 +44,10 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
-from opticfilm_linux.output import Format
+from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.worker import lower_worker_priority
 
 SLIDES_PER_TRAY = 4
 STATUS_TIMEOUT_S = 5.0  # a scanner that has not answered for this long is shown as an error
@@ -80,6 +85,7 @@ class Controller(HolderCommands):
         self._next_strip = next_strip  # the experimental non-interactive load is allowed
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
         self._holder_busy = False  # an eject or load is queued or running
+        self._lifecycle_pending = 0  # accepted batch changes exclude new holder movements
         self._holder_latch = HolderLatch.UNKNOWN
         self._latch_address: tuple[int, int] | None = None
         self._latch_invalidated = False
@@ -97,6 +103,7 @@ class Controller(HolderCommands):
         self._refresher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-status")
         self._refreshing = False
         self._session: _Session | None = None
+        self._batch_session = 0
         self._closing = threading.Event()
         self._job_futures: set[Future] = set()
         self._jobs_idle = threading.Condition(self._lock)
@@ -110,7 +117,9 @@ class Controller(HolderCommands):
         self._free_space: FreeSpaceView | None = None
         self._cancel_export = threading.Event()
         self._cancel_free = threading.Event()
-        self._jobs = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-jobs")
+        self._jobs = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
+        )
         self._state = EMPTY_STATE
         self._reported = EMPTY_STATE
 
@@ -138,8 +147,13 @@ class Controller(HolderCommands):
         return changed
 
     def _act_on_eject_button(self, poller: StatusPoller) -> None:
-        # A press is always taken, so one the app cannot act on now is dropped, never queued.
+        # A press is always taken and handled now, never queued behind a scan.
         if not poller.take_eject_press() or not self._eject_button:
+            return
+        with self._lock:
+            refusal = self._holder_refusal()
+        if refusal is not None:
+            self._set(_banner=Banner(refusal))
             return
         # ``state()`` is a poll behind: also ask the poller's own answer, so a scanner that has just
         # gone to an error or interrupted state is not moved.
@@ -168,27 +182,51 @@ class Controller(HolderCommands):
         rotation: int = 0,
         mirror: bool = False,
         slots: tuple[SlotOrientation, ...] = (),
+        *,
+        export_dir: str = "",
+        export_format: Format = "jpeg",
+        jpeg_size: JpegSize = "full",
+        collection: str = "",
+        box: int = 1,
+        section: str = "a",
+        section_size: int = 140,
     ) -> None:
         def job() -> None:
-            defaults = BatchDefaults(dpi=dpi, rotation=rotation, mirror=mirror, slots=slots)
-            self._replace_batch(lambda: BatchStore.create(directory, name, album, date, defaults))
+            if export_dir:
+                _check_export_directory(directory, Path(export_dir))
+            defaults = BatchDefaults(
+                dpi=dpi,
+                rotation=rotation,
+                mirror=mirror,
+                slots=slots,
+                export_dir=export_dir,
+                export_format=export_format,
+                jpeg_size=jpeg_size,
+            )
+            self._replace_batch(
+                lambda: BatchStore.create(
+                    directory,
+                    name,
+                    album,
+                    date,
+                    defaults,
+                    collection=collection,
+                    box=box,
+                    section=section,
+                    section_size=section_size,
+                )
+            )
 
-        if self._holder_move_running():
-            return
-        self._run(job, "Could not create the batch", droppable=True)
+        self._run_lifecycle(job, "Could not create the batch")
 
     def open_batch(self, directory: Path, readonly: bool = False) -> None:
         def job() -> None:
             self._replace_batch(lambda: BatchStore.open(directory, readonly=readonly), readonly)
 
-        if self._holder_move_running():
-            return
-        self._run(job, "Could not open the batch", droppable=True)
+        self._run_lifecycle(job, "Could not open the batch")
 
     def close_batch(self) -> None:
-        if self._holder_move_running():
-            return
-        self._run(self._detach, "Could not close the batch", droppable=True)
+        self._run_lifecycle(self._detach, "Could not close the batch")
 
     # -- scanning ------------------------------------------------------------------------
 
@@ -201,6 +239,59 @@ class Controller(HolderCommands):
             return runner.rescan_tray(number)
 
         self._reserved_scan(job, f"Could not re-scan tray {number}")
+
+    def _section_refusal(self, reserved: bool = False) -> str | None:
+        """Called under the controller lock before reserving the transition."""
+        if self._lifecycle_pending or self._closing.is_set():
+            return WAIT_BATCH
+        session = self._session
+        runner = session.runner if session is not None else None
+        if self._holder_busy:
+            return "Wait for the eject/load to finish"
+        if self._scans_queued > int(reserved) or (runner is not None and runner.scan_pending()):
+            return "Wait for the scan or section change to finish"
+        if self._long_jobs or self._job_futures:
+            return "Wait for the export or disk-space job to finish"
+        if self._updating or self._enhancing or (runner is not None and runner.work_pending()):
+            return "Wait for enhancement to finish"
+        return None
+
+    def finish_box(self, next_box: bool = True) -> None:
+        with self._lock:
+            refusal = self._section_refusal()
+            if refusal is None:
+                self._scans_queued += 1  # reserve while queued, including against holder moves
+        if refusal is not None:
+            self._set(_banner=Banner(refusal))
+            return
+        reserved = True
+
+        def release() -> None:
+            nonlocal reserved
+            with self._lock:
+                if reserved:
+                    self._scans_queued -= 1
+                    reserved = False
+
+        def job(_runner: BatchRunner) -> None:
+            try:
+                with self._lock:
+                    refusal = self._section_refusal(reserved=True)
+                    session = self._session
+                if refusal is not None:
+                    raise BatchError(refusal)
+                if session is None:
+                    raise BatchError("no batch is open")
+                advance_section(session.store, next_box=next_box)
+                self._set(_selected=None)
+            finally:
+                release()
+
+        future = None
+        try:
+            future = self._run_writer(job, "Could not finish the section")
+        finally:
+            self._track(future, release)  # also release when writer validation skips the job
 
     def select_tray(self, number: int) -> None:
         self._set(_selected=number)
@@ -291,7 +382,28 @@ class Controller(HolderCommands):
 
     # -- export and free disk space ------------------------------------------------------
 
-    def export(self, directory: Path, fmt: Format) -> None:
+    def set_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
+        self._run_writer(
+            lambda _runner: self._save_export_settings(directory, fmt, jpeg_size),
+            "Could not save export settings",
+        )
+
+    def _save_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
+        store = self._open_store()
+        _check_export_directory(store.directory, directory)
+        store.update(
+            lambda manifest: dataclasses.replace(
+                manifest,
+                defaults=dataclasses.replace(
+                    manifest.defaults,
+                    export_dir=str(directory),
+                    export_format=fmt,
+                    jpeg_size=jpeg_size,
+                ),
+            )
+        )
+
+    def export(self, directory: Path, fmt: Format, jpeg_size: JpegSize = "full") -> None:
         def job(_runner: BatchRunner) -> None:
             run_export(
                 self._open_store(),
@@ -299,11 +411,16 @@ class Controller(HolderCommands):
                 fmt,
                 self._cancel_export,
                 lambda view: self._set(_export=view),
+                jpeg_size=jpeg_size,
             )
 
         if not self._closing.is_set():
             self._cancel_export.clear()  # at submit: a queued job must not undo a later cancel
-        self._after_pending_commands(job, "Could not export")
+        self._after_pending_commands(
+            job,
+            "Could not export",
+            prepare=lambda _runner: self._save_export_settings(directory, fmt, jpeg_size),
+        )
 
     def reexport_all_accepted(self) -> None:
         """After confirmation, let the next export rewrite accepted slides."""
@@ -346,14 +463,23 @@ class Controller(HolderCommands):
             self._cancel_free.clear()
         self._after_pending_commands(job, "Could not free disk space")
 
-    def _after_pending_commands(self, job: Callable[[BatchRunner], None], message: str) -> None:
+    def _after_pending_commands(
+        self,
+        job: Callable[[BatchRunner], None],
+        message: str,
+        prepare: Callable[[BatchRunner], None] | None = None,
+    ) -> None:
         """Queue a long job behind every command already submitted (an edit made a moment
         ago must be stored before an export reads the slides), then run it on the jobs worker."""
         with self._lock:
-            self._long_jobs += 1  # until it reaches the jobs worker: no holder move meanwhile
-        future = self._run_writer(
-            lambda _runner: self._run_writer(job, message, pool=self._jobs), message
-        )
+            self._long_jobs += 1  # count the job before it reaches the jobs worker
+
+        def handover(runner: BatchRunner) -> None:
+            if prepare is not None:
+                prepare(runner)
+            self._run_writer(job, message, pool=self._jobs)
+
+        future = self._run_writer(handover, message)
         self._track(future, self._long_job_handed_over)
 
     def _long_job_handed_over(self) -> None:
@@ -470,6 +596,24 @@ class Controller(HolderCommands):
         with self._lock:
             self._progress = {k: v for k, v in self._progress.items() if k != number}
 
+    def _run_lifecycle(self, job: Callable[[], None], message: str) -> None:
+        """Reserve batch ownership until the queued change has completely finished."""
+        self._cancel_queued_holder()
+        with self._lock:
+            refused = self._holder_busy
+            if not refused:
+                self._lifecycle_pending += 1
+        if refused:
+            self._set(_banner=Banner("Wait for the eject/load to finish"))
+            return
+        # Draining jobs and opening/closing hardware must run without the state lock.
+        future = self._run(job, message, droppable=True)
+        self._track(future, self._lifecycle_finished)
+
+    def _lifecycle_finished(self) -> None:
+        with self._lock:
+            self._lifecycle_pending -= 1
+
     def _replace_batch(self, make_store: Callable[[], BatchStore], readonly: bool = False) -> None:
         """Close the open batch, open the next; the Eject-button watcher stays stopped between."""
         self._detach(restore_watch=False)  # the next open steps it aside again at once
@@ -512,6 +656,7 @@ class Controller(HolderCommands):
             self._next_latch_sequence()
             self._latch_applied = self._latch_sequence
             self._session = _Session(store, runner, poller, holder, scanner)
+            self._batch_session += 1
             self._holder_latch = HolderLatch.UNKNOWN
             self._latch_address = None
             self._latch_loss = None
@@ -665,29 +810,17 @@ class Controller(HolderCommands):
         with self._lock:
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do
-            if session is not None:
-                self._sync_holder_latch(session.scanner)
-            if (
-                status
-                in (
-                    ScannerStatus.INTERRUPTED,
-                    ScannerStatus.ERROR,
-                    ScannerStatus.NOT_CONNECTED,
-                )
-                and sequence >= self._latch_applied
-                and (self._holder_latch is not HolderLatch.UNKNOWN or not self._latch_invalidated)
-            ):
-                self._latch_applied = sequence
-                self._holder_latch = HolderLatch.UNKNOWN
-                self._latch_invalidated = True
-                self._save_holder_latch()
+            self._update_holder_status(session, status, sequence)
             selected = self._selected
             tokens = self._preview_tokens(session, manifest, selected)
             self._state = build_state(
                 manifest,
                 preview_tokens=tokens,
                 scanner=status,
-                scan_pending=bool(session and session.runner and session.runner.scan_pending()),
+                scan_pending=bool(
+                    self._scans_queued
+                    or (session and session.runner and session.runner.scan_pending())
+                ),
                 readonly=bool(session and session.runner is None),
                 selected=selected,
                 updating=self._updating,
@@ -701,8 +834,27 @@ class Controller(HolderCommands):
                 holder_busy=self._holder_busy,
                 next_strip=self._next_strip,
                 jobs_running=bool(self._long_jobs or self._job_futures),
+                batch_session=self._batch_session if session else 0,
+                runner_busy=bool(
+                    self._lifecycle_pending
+                    or (session and session.runner and session.runner.work_pending())
+                ),
                 holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
             )
+
+    def _update_holder_status(self, session, status: ScannerStatus, sequence: int) -> None:
+        """Apply the scanner status while the controller lock is held."""
+        if session is not None:
+            self._sync_holder_latch(session.scanner)
+        if (
+            status in (ScannerStatus.INTERRUPTED, ScannerStatus.ERROR, ScannerStatus.NOT_CONNECTED)
+            and sequence >= self._latch_applied
+            and (self._holder_latch is not HolderLatch.UNKNOWN or not self._latch_invalidated)
+        ):
+            self._latch_applied = sequence
+            self._holder_latch = HolderLatch.UNKNOWN
+            self._latch_invalidated = True
+            self._save_holder_latch()
 
     @staticmethod
     def _preview_tokens(session, manifest, selected) -> dict[tuple[int, int], int]:
@@ -719,6 +871,42 @@ class Controller(HolderCommands):
             except OSError:
                 continue
         return tokens
+
+
+def _check_export_directory(batch: Path, directory: Path) -> None:
+    try:
+        resolved = directory.resolve()
+        batch = batch.resolve()
+        for component in (directory, *directory.parents):
+            if component.is_symlink() and not component.exists():
+                raise BatchError(f"export folder {directory} contains a broken symbolic link")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
+    if resolved.is_relative_to(batch):
+        raise BatchError(f"export to a folder outside the batch folder, not {directory}")
+
+    # Validate the closest existing parent without creating the user's destination.
+    parent = resolved
+    while True:
+        try:
+            mode = parent.stat().st_mode
+            break
+        except FileNotFoundError:
+            parent = parent.parent
+        except NotADirectoryError as exc:
+            raise BatchError(f"export folder {directory} is not a directory") from exc
+        except (OSError, ValueError) as exc:
+            raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise BatchError(f"export folder {parent} is not a directory")
+    if not mode & 0o222 or not os.access(parent, os.W_OK | os.X_OK):
+        raise BatchError(f"export folder {parent} is not writable")
+    try:
+        with tempfile.TemporaryFile(dir=parent) as probe:
+            probe.write(b"\0")
+            probe.flush()
+    except OSError as exc:
+        raise BatchError(f"export folder {parent} is not writable: {exc}") from exc
 
 
 def _skipped_text(numbers: tuple[int, ...]) -> str:

@@ -7,6 +7,7 @@ import pytest
 
 from controller_helpers import open_new, scan_when_ready, wait_until
 from opticfilm_linux.app.controller import Controller
+from opticfilm_linux.app.holder import WAIT_SCAN
 from opticfilm_linux.app.messages import holder_failed_text
 from opticfilm_linux.app.status import StatusPoller
 from opticfilm_linux.scanner.base import ScanError, ScannerStatus, StatusReading
@@ -167,9 +168,12 @@ def test_a_press_while_a_scan_is_running_is_dropped(build):
         scanner._buttons, scanner._index = [False, True, False], 0
         _settle(c, scanner, scanner.polls + 4)
         assert scanner.ejects == 0
-        assert c.state().banner is None  # not even a "wait for the scan" refusal: it never asked
+        assert c.state().banner.message == WAIT_SCAN
     finally:
         release.set()
+    wait_until(c, lambda: c.state().can_scan)
+    _settle(c, scanner, scanner.polls + 4)
+    assert scanner.ejects == 0  # the refused press must not run after the scan
 
 
 class _StubPoller:
