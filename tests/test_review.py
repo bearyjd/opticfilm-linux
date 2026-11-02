@@ -104,14 +104,14 @@ def test_owner_can_rescue_a_slide_classified_blank(store):
 def test_empty_confirmation_preserves_blank_classification(store):
     from opticfilm_linux.batch.review import confirm_empty_frames
 
-    _mark(store, 1, 2, status=SlideStatus.BLANK, blank_fingerprint="a" * 64)
+    _mark(store, 1, 2, status=SlideStatus.BLANK, blank_fingerprint="a" * 64, owner_decided=True)
     before = _slide(store, 1, 1)
     confirm_empty_frames(
         store, 1, (2,), expected_fingerprints={2: "a" * 64}, expected_sweep_version=1
     )
     assert _slide(store, 1, 2).status is SlideStatus.BLANK
     assert _slide(store, 1, 2).empty_confirmed
-    assert not _slide(store, 1, 2).owner_decided
+    assert _slide(store, 1, 2).owner_decided
     assert _slide(store, 1, 1) == before
 
 

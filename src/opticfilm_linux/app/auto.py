@@ -345,7 +345,7 @@ class AutoPipeline:
         try:
             if tray.raw_removed:
                 cleanup_raw(self.store, number)
-                self._update(number, expected=expected, auto="freed", auto_error="", auto_failed=())
+                self._cleanup_finished(number, expected=expected)
                 return
             if self._blocked(number, expected=expected) or self._hold_empty_frames(
                 number, expected=expected
@@ -384,7 +384,13 @@ class AutoPipeline:
         tray = self._tray(number)
         if not tray.raw_removed or any(self.store.tray_dir(number).glob("sweep-*")):
             cleanup_raw(self.store, number, release_first=release)
-        self._update(number, expected="verified", auto="freed", auto_error="", auto_failed=())
+        self._cleanup_finished(number, expected="verified")
+
+    def _cleanup_finished(self, number: int, *, expected: str) -> None:
+        if self._tray(number).auto == "freed":
+            self.on_update()
+        else:
+            self._update(number, expected=expected, auto="freed", auto_error="", auto_failed=())
 
     def _cleanup_hold_reason(self, manifest, tray) -> str:
         if self._unreviewed_flags(tray):

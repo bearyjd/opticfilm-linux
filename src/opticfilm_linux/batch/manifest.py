@@ -188,6 +188,7 @@ def _integer_list(data: dict[str, Any], key: str, minimum: int = 1) -> tuple[int
 
 def _tray(data: dict[str, Any]) -> TrayRecord:
     _validate_booleans(data, TrayRecord)
+    _receipt_text(data, "auto_error")
     if data.get("auto", "") not in get_args(AutoState):
         raise ManifestFormatError("invalid automatic export state")
     if data.get("auto") == "freed" and data["raw_removed"] is not True:

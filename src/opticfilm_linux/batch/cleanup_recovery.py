@@ -155,7 +155,7 @@ def recover_interrupted_cleanup(store: BatchStore, number: int) -> None:
             ) from exc
 
         def reset(manifest: BatchManifest) -> BatchManifest:
-            export._compare_cleanup_evidence(manifest, evidence)
+            export._compare_cleanup_evidence(manifest, evidence, number)
             _recheck_inventory(store, tray, folders)
             return dataclasses.replace(
                 manifest,
@@ -171,6 +171,39 @@ def recover_interrupted_cleanup(store: BatchStore, number: int) -> None:
 
         store.update(reset)
         export._PENDING_CLEANUP_RESETS.get(store, {}).pop(number, None)
+
+
+def _compare_cleanup_evidence(
+    manifest: BatchManifest, evidence: BatchManifest, number: int, *, release_first: bool = False
+) -> None:
+    from opticfilm_linux.batch import export
+
+    def policy_key(batch: BatchManifest) -> tuple:
+        automatic = batch.defaults.auto_export or any(
+            t.auto not in ("", "off") for t in batch.trays
+        )
+        released = batch.first_tray_released and (
+            batch.released_render == export._release_defaults(batch.defaults)
+        )
+        candidate = (
+            export._release_candidate(batch, number)
+            if (release_first or (automatic and not released))
+            else None
+        )
+        return (
+            batch.defaults,
+            batch.first_tray_released,
+            batch.released_render,
+            export._tray(batch, number),
+            candidate,
+            automatic,
+            tuple(t for t in batch.trays if t.number != number and t.raw_removed),
+        )
+
+    if policy_key(manifest) != policy_key(evidence):
+        raise export.CleanupRetryRequired(
+            "batch changed meanwhile; retry cleanup with current settings"
+        )
 
 
 def _cleanup_listable(store: BatchStore, number: int, *, release_first: bool) -> bool:

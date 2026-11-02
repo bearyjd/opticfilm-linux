@@ -36,10 +36,10 @@ def test_nested_export_sync_includes_root_ancestors(tmp_path, monkeypatch):
         os, "fsync", lambda fd: synced.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
     )
     output._sync_directories(directory, tmp_path)
-    assert synced == [directory, *directory.parents]
+    assert synced == [directory, directory.parent, tmp_path, tmp_path.parent]
 
 
-@pytest.mark.parametrize("error", [errno.EINVAL, errno.ENOTSUP])
+@pytest.mark.parametrize("error", [errno.EINVAL, errno.ENOTSUP, errno.ENOSYS])
 @pytest.mark.parametrize("nested", [False, True])
 def test_unsupported_directory_sync_rejects_receipt(tmp_path, monkeypatch, error, nested):
     real_sync = os.fsync
@@ -86,3 +86,37 @@ def test_directory_sync_failure_remains_required_on_retry(tmp_path, monkeypatch)
     failing = False
     path = output.write_slide(image, spec, on_written=lambda *args: receipts.append(args))
     assert path.is_file() and len(receipts) == 1
+
+
+def test_manual_export_allows_unreadable_root_parent(tmp_path, monkeypatch):
+    root = tmp_path / "album"
+    root.mkdir()
+    original = output._directory_fd
+
+    def directory_fd(path, **kwargs):
+        if path == tmp_path and not kwargs["create"]:
+            raise PermissionError(errno.EACCES, "unreadable directory")
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(output, "_directory_fd", directory_fd)
+    spec = output.OutputSpec(root, "jpeg", export_root=root, require_directory_sync=False)
+    assert output.write_slide(
+        np.zeros((4, 4, 3), dtype=np.uint16), spec, on_written=lambda *_: None
+    ).is_file()
+
+
+def test_strict_sync_retries_all_ancestors(tmp_path, monkeypatch):
+    root = tmp_path / "outer" / "inner"
+    root.mkdir(parents=True)
+    seen = []
+    real_sync = os.fsync
+
+    def sync(fd):
+        if Path(os.readlink(f"/proc/self/fd/{fd}")).is_dir():
+            seen.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
+        return real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    spec = output.OutputSpec(root, "jpeg", export_root=root)
+    output.write_slide(np.zeros((4, 4, 3), dtype=np.uint16), spec, on_written=lambda *_: None)
+    assert seen == [root, *root.parents]

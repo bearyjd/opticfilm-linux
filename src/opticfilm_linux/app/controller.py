@@ -34,6 +34,7 @@ from opticfilm_linux.app.jobs import (
     run_free_space as run_free_space,
 )
 from opticfilm_linux.app.messages import failure_text
+from opticfilm_linux.app.recovery_checks import RecoveryChecks
 from opticfilm_linux.app.state import (
     EMPTY_STATE,
     AppState,
@@ -103,6 +104,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
         self._command = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-command")
         self._refresher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-status")
         self._refreshing = False
+        self._recovery_checks = RecoveryChecks()
         self._session: _Session | None = None
         self._batch_session = 0
         self._closing = threading.Event()
@@ -274,6 +276,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
         self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
         self._detach()
         self._refresher.shutdown(wait=True)
+        self._recovery_checks.close()
         self._latch_pool.shutdown(wait=True)
 
     # -- internals shared with the other controller modules ------------------------------
@@ -595,7 +598,9 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
             selected = self._selected
         tokens = self._preview_tokens(session, manifest, selected)
         raw_pending = self._raw_pending(session, manifest)
-        raw_recoverable = self._raw_recoverable(session, manifest, raw_pending)
+        raw_recoverable = self._recovery_checks.poll(
+            session, manifest, raw_pending, self._raw_recoverable
+        )
         with self._lock:
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do

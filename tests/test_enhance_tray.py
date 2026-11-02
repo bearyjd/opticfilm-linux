@@ -330,3 +330,20 @@ def test_owner_rescue_of_blank_regenerates_preview_and_survives_detection(tmp_pa
     assert store.preview_path(1, 2, "after").is_file()
     assert _tray(store).slides[1].status is SlideStatus.ACCEPTED
     assert not _tray(store).slides[1].preview_stale
+
+
+def test_legacy_blank_can_be_fingerprinted_and_confirmed(tmp_path):
+    from opticfilm_linux.batch.review import confirm_empty_frames
+
+    sweep = make_sweep(dpi=600)
+    store = _store(tmp_path, sweep)
+    enhance_tray(store, 1)
+    _set_slide(store, 1, status=SlideStatus.BLANK, blank_fingerprint="", owner_decided=False)
+    reenhance_slide(store, 1, 1)
+    slide = _tray(store).slides[0]
+    assert slide.status is SlideStatus.BLANK
+    assert slide.blank_fingerprint == raw_region_sha256(split_slides(sweep)[0])
+    confirm_empty_frames(
+        store, 1, (1,), expected_fingerprints={1: slide.blank_fingerprint}, expected_sweep_version=1
+    )
+    assert _tray(store).slides[0].empty_confirmed is not None

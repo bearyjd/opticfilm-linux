@@ -137,7 +137,6 @@ def confirm_empty_frames(
             dataclasses.replace(
                 s,
                 empty_confirmed=EmptyConfirmation(tray.sweep_version, current[s.position]),
-                owner_decided=False,
                 auto_accepted=False,
             )
             if s.status is SlideStatus.BLANK
@@ -342,6 +341,7 @@ def _bulk_skip(tray: TrayRecord, slide: SlideRecord) -> str | None:
 def _bulk_slide(slide: SlideRecord, values: BeforeEdit) -> SlideRecord:
     settings, status, owner_decided = values
     changed = settings != slide.settings
+    entering_blank = status is SlideStatus.BLANK and slide.status is not SlideStatus.BLANK
     return dataclasses.replace(
         slide,
         settings=settings,
@@ -350,7 +350,8 @@ def _bulk_slide(slide: SlideRecord, values: BeforeEdit) -> SlideRecord:
         auto_accepted=False,
         empty_confirmed=None,
         exported=slide.exported and not changed,
-        preview_stale=slide.preview_stale or changed,
+        preview_stale=slide.preview_stale or changed or entering_blank,
+        blank_fingerprint="" if entering_blank else slide.blank_fingerprint,
     )
 
 

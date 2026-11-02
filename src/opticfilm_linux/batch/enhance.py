@@ -146,9 +146,10 @@ def _process_slide(
 ) -> None:
     defaults = store.snapshot().defaults
     position = slide.index + 1
-    blank = (snapshot.owner_decided and snapshot.status is SlideStatus.BLANK) or (
-        defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide)
-    )
+    blank = (
+        snapshot.status is SlideStatus.BLANK
+        and (snapshot.owner_decided or snapshot.preview_stale or not snapshot.blank_fingerprint)
+    ) or (defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide))
     enhanced = (
         slide.rgb
         if blank

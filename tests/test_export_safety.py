@@ -1,4 +1,5 @@
 import dataclasses
+import errno
 import hashlib
 import os
 import stat
@@ -308,3 +309,83 @@ def test_new_destination_parent_fsync_failure_keeps_raw(delivery, monkeypatch, r
         export.export_batch(store, destination, "jpeg")
     assert not store.snapshot().trays[0].slides[0].exported
     _assert_raw_kept(store)
+
+
+def test_sync_directories_stops_at_export_root(tmp_path, monkeypatch):
+    from opticfilm_linux.output import _sync_directories
+
+    root = tmp_path / "root"
+    destination = root / "nested"
+    destination.mkdir(parents=True)
+    synced = []
+    monkeypatch.setattr(
+        "opticfilm_linux.output._sync_directory",
+        lambda fd, required=True: synced.append(os.readlink(f"/proc/self/fd/{fd}")),
+    )
+    _sync_directories(destination, root)
+    assert synced == [str(destination), str(root), str(root.parent)]
+
+
+@pytest.mark.parametrize("fmt", ["jpeg", "tiff16"])
+@pytest.mark.parametrize("error", [errno.EINVAL, errno.ENOTSUP, errno.ENOSYS])
+def test_manual_export_allows_unsupported_directory_sync_but_cleanup_refuses(
+    delivery, monkeypatch, fmt, error
+):
+    store, directory = delivery
+    real_sync = os.fsync
+
+    def sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(error, "unsupported")
+        return real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", sync)
+
+    # The manifest store needs directory sync too; fail only for delivery paths.
+    def delivery_sync(fd):
+        path = os.readlink(f"/proc/self/fd/{fd}")
+        if path.startswith(str(directory)) or path == str(directory.parent):
+            return sync(fd)
+        return real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", delivery_sync)
+    assert export.export_batch(store, directory, fmt).written
+    with pytest.raises(BatchError, match="Directory sync is unsupported"):
+        export.cleanup_raw(store, 1)
+    _assert_raw_kept(store)
+
+
+def test_automatic_export_refuses_unsupported_directory_sync(delivery, monkeypatch):
+    store, directory = delivery
+    store.update(
+        lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, auto_export=True))
+    )
+    real_sync = os.fsync
+
+    def sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and not os.readlink(f"/proc/self/fd/{fd}").startswith(
+            str(store.directory)
+        ):
+            raise OSError(errno.ENOTSUP, "unsupported")
+        return real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    with pytest.raises(OSError, match="Directory sync is unsupported"):
+        export.export_batch(store, directory, "jpeg")
+    _assert_raw_kept(store)
+
+
+def test_cleanup_resyncs_export_root_parent(delivery, monkeypatch):
+    store, path = _delivered(delivery)
+    seen = []
+    real_sync = os.fsync
+
+    def sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            seen.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    export.cleanup_raw(store, 1)
+    # The root is the album, and its entry lives in its parent.
+    assert str(delivery[1].parent) in seen

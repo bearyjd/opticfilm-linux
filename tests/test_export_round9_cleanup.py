@@ -277,3 +277,23 @@ def test_invalid_first_release_blocks_later_tray_until_reset_then_allows_new_app
     assert store.snapshot().first_tray_released
     assert store.sweep_dir(1, 1).exists()
     assert not store.sweep_dir(2, 1).exists()
+
+
+def test_cleanup_ignores_unrelated_tray_progress_during_commit(delivery, monkeypatch):
+    store, _ = _delivered(delivery)
+    first = store.snapshot().trays[0]
+    second = dataclasses.replace(first, number=2, stage=TrayStage.REVIEW, auto="off")
+    store.update(lambda m: dataclasses.replace(m, trays=(first, second)))
+    update = store.update
+    changed = False
+
+    def concurrent_progress(change):
+        nonlocal changed
+        if not changed:
+            changed = True
+            store.update_tray(2, error="unrelated progress")
+        return update(change)
+
+    monkeypatch.setattr(store, "update", concurrent_progress)
+    assert export.cleanup_raw(store, 1) > 0
+    assert store.snapshot().trays[1].error == "unrelated progress"

@@ -11,6 +11,7 @@ and nonblank positions must match their current raw hash
 and verified delivery receipt. The durable raw_removed marker records an attempted deletion:
 whenever any sweep folder remains, subsequent invocations verify the delivery and current raw
 again before deleting anything. Recorded sweep membership is not proof of valid remaining raw.
+Automatic export and cleanup require ancestor sync to root; manual exports may lack durability.
 Partially deleted current sweeps therefore require recovery instead of automatic deletion.
 Only a tray with no remaining sweep folders can trust its removal marker without rehashing.
 A live store remembers a failed postcommit verification whose rollback also failed, and must
@@ -34,6 +35,7 @@ from PIL import Image
 
 from opticfilm_linux.batch.cleanup_recovery import (
     _cleanup_listable,
+    _compare_cleanup_evidence,
 )
 from opticfilm_linux.batch.cleanup_recovery import (
     recover_interrupted_cleanup as recover_interrupted_cleanup,
@@ -71,7 +73,7 @@ from opticfilm_linux.output import (
     Format,
     JpegSize,
     OutputSpec,
-    _sync_directory,
+    _sync_directories,
     jpeg_geometry,
     write_slide,
 )
@@ -244,7 +246,11 @@ def _write_export(
         width, height, delivered_dpi = jpeg_geometry(width, height, spec.scan_dpi, spec.jpeg_size)
     _checked_export_parent(spec.directory, root, store)
     receipts: list[tuple[Path, str, int]] = []
-    spec = dataclasses.replace(spec, export_root=root)
+    spec = dataclasses.replace(
+        spec,
+        export_root=root,
+        require_directory_sync=defaults.auto_export or tray.auto not in ("", "off"),
+    )
     path = write_slide(
         image,
         spec,
@@ -375,11 +381,7 @@ def _durable_digest(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
         os.fsync(handle.fileno())
-    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        _sync_directory(descriptor)
-    finally:
-        os.close(descriptor)
+    _sync_directories(path.parent, Path(path.absolute().anchor))
     return digest.hexdigest()
 
 
@@ -451,7 +453,10 @@ def _safe_receipt_paths(store: BatchStore, tray: TrayRecord) -> None:
     root = store.directory.resolve()
     for slide in tray.slides:
         if slide.status is not SlideStatus.BLANK:
-            path, *_ = _export_receipt(slide)
+            try:
+                path, *_ = _export_receipt(slide)
+            except ValueError:
+                continue  # verification reports malformed receipts
             if path.resolve().is_relative_to(root):
                 raise CleanupRefused(
                     "export is inside the batch; move/re-export it before freeing raw"
@@ -503,6 +508,7 @@ def _checked_snapshot(store: BatchStore, tray: TrayRecord, folders: tuple[Path, 
     _checked_sweep_versions(tray, folders)
     if tray.raw_removed and not folders:
         return  # completed removal has no remaining raw to endanger
+    _safe_receipt_paths(store, tray)
     _verify_export(tray, jpeg_only=False)
     _safe_receipt_paths(store, tray)
     _verify_raw(store, tray, folders)
@@ -610,7 +616,7 @@ def release_first_tray(store: BatchStore, number: int) -> None:
         _verify_release_evidence(evidence, _tray(evidence, number))
 
         def release(manifest: BatchManifest) -> BatchManifest:
-            _compare_cleanup_evidence(manifest, evidence)
+            _compare_cleanup_evidence(manifest, evidence, number, release_first=True)
             return dataclasses.replace(
                 manifest,
                 first_tray_released=True,
@@ -618,11 +624,6 @@ def release_first_tray(store: BatchStore, number: int) -> None:
             )
 
         store.update(release)
-
-
-def _compare_cleanup_evidence(manifest: BatchManifest, evidence: BatchManifest) -> None:
-    if manifest != evidence:
-        raise CleanupRetryRequired("batch changed meanwhile; retry cleanup with current settings")
 
 
 def _check_blank_decisions(tray: TrayRecord) -> None:
@@ -710,7 +711,6 @@ def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
     _retry_cleanup_resets(store)
     tray = check_cleanup_allowed(store, number, release_first=release_first)
     folders = tuple(_checked_sweep_folders(store, number))
-    _checked_snapshot(store, tray, folders)
     freed = sum(_folder_size(path) for path in folders)
     before = _commit_cleanup(store, tray, folders, release_first=release_first)
     _delete(store, before, number, folders, release_first=release_first)
@@ -742,7 +742,7 @@ def _commit_cleanup(
         _verify_release_evidence(evidence, current)
 
     def commit(manifest: BatchManifest) -> BatchManifest:
-        _compare_cleanup_evidence(manifest, evidence)
+        _compare_cleanup_evidence(manifest, evidence, tray.number, release_first=release_first)
         updated = dataclasses.replace(
             current,
             raw_removed=True,

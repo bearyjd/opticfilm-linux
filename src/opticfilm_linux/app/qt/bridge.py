@@ -187,6 +187,7 @@ class Bridge(QObject):
 
     @Slot()
     def poll(self) -> None:
+        self._flush_now()  # tick may schedule automatic export and cleanup
         if self._controller.tick():
             self._apply(self._controller.state())
 
@@ -532,10 +533,12 @@ class Bridge(QObject):
 
     @Slot()
     def scan(self) -> None:
+        self._flush_now()
         self._controller.scan()
 
     @Slot(int)
     def rescan(self, number: int) -> None:
+        self._flush_now()
         self._controller.rescan(number)
 
     @Slot()
@@ -576,15 +579,18 @@ class Bridge(QObject):
 
     @Slot(int, int, bool)
     def setAccepted(self, number: int, position: int, accepted: bool) -> None:  # noqa: N802
+        self._flush_now()
         status = SlideStatus.ACCEPTED if accepted else SlideStatus.NEEDS_LOOK
         self._controller.set_status(number, position, status)
 
     @Slot(int, int, int)
     def rotate(self, number: int, position: int, quarter_turns: int) -> None:
+        self._flush_now()
         self._controller.rotate(number, position, quarter_turns)
 
     @Slot(int, int)
     def mirror(self, number: int, position: int) -> None:
+        self._flush_now()
         self._controller.mirror(number, position)
 
     @Slot(int, bool)
@@ -602,10 +608,12 @@ class Bridge(QObject):
     @Slot(int, int)
     def resetSlide(self, number: int, position: int) -> None:  # noqa: N802
         self._pending.pop((number, position), None)
+        self._flush_now()
         self._controller.reset_slide(number, position)
 
     @Slot()
     def acceptAll(self) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.accept_all()
 
     def _flush_now(self) -> None:
@@ -644,14 +652,17 @@ class Bridge(QObject):
 
     @Slot()
     def requestFreeSpace(self) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.request_free_space()
 
     @Slot()
     def confirmFreeSpace(self) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.confirm_free_space()
 
     @Slot(int, int, "QVariantList")
     def confirmEmptyFrames(self, number: int, sweep_version: int, previews: list) -> None:  # noqa: N802
+        self._flush_now()
         positions = tuple(int(item["position"]) for item in previews)
         fingerprints = {int(item["position"]): str(item["fingerprint"]) for item in previews}
         self._controller.confirm_empty_frames(
@@ -663,6 +674,7 @@ class Bridge(QObject):
 
     @Slot(int)
     def confirmFreeHeld(self, number: int) -> None:  # noqa: N802
+        self._flush_now()
         self._controller.confirm_free_held(number)
 
     @Slot(int)

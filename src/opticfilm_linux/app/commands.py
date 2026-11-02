@@ -420,11 +420,20 @@ class ReviewCommands:
             if not due:
                 return
         if not session.auto_export:
-            due &= {
-                t.number
-                for t in session.store.snapshot().trays
-                if t.raw_removed and t.auto == "verified"
-            }
+
+            def filter_due(_runner: BatchRunner) -> None:
+                eligible = {
+                    t.number
+                    for t in session.store.snapshot().trays
+                    if t.raw_removed and t.auto == "verified"
+                }
+                self._schedule_auto(session, due & eligible)
+
+            self._run_writer(filter_due, "Could not check automatic cleanup")
+            return
+        self._schedule_auto(session, due)
+
+    def _schedule_auto(self, session: _Session, due: set[int]) -> None:
         with self._lock:
             if self._session is not session or self._cancel_auto.is_set():
                 return

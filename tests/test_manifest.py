@@ -253,3 +253,11 @@ def test_collection_and_pipeline_receipts_roundtrip_together():
     data["defaults"]["keep_raw"] = "false"
     with pytest.raises(ManifestFormatError, match="keep_raw"):
         from_json(json.dumps(data))
+
+
+@pytest.mark.parametrize("value", [None, 42, [], {}])
+def test_invalid_auto_error_type_rejected(value):
+    data = json.loads(to_json(_manifest()))
+    data["trays"][0]["auto_error"] = value
+    with pytest.raises(ManifestFormatError, match="auto_error"):
+        from_json(json.dumps(data))

@@ -49,6 +49,7 @@ class OutputSpec:
     jpeg_size: JpegSize = field(default="full", kw_only=True)
     metadata: JpegMetadata | None = field(default=None, kw_only=True)
     export_root: Path | None = field(default=None, kw_only=True)
+    require_directory_sync: bool = field(default=True, kw_only=True)
 
     position: int | None = field(default=None, kw_only=True)
     sequence_stride: int = field(default=1, kw_only=True)
@@ -86,26 +87,40 @@ def _next_sequence(directory: int, prefix: str) -> int:
 
 
 @contextmanager
-def _directory_fd(directory: Path, *, create: bool):
-    """Anchor every directory component without following a replaceable symlink."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    descriptor = os.open(os.path.sep, flags)
+def _directory_fd(directory: Path, *, create: bool, require_sync: bool = True):
+    """Anchor each component without following symlinks or reading ancestors."""
+    path_flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    read_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open(os.path.sep, path_flags)
     try:
         for component in Path(os.path.abspath(directory)).parts[1:]:
             try:
-                child = os.open(component, flags, dir_fd=descriptor)
+                child = os.open(component, path_flags, dir_fd=descriptor)
             except FileNotFoundError:
                 if not create:
                     raise
                 try:
                     os.mkdir(component, dir_fd=descriptor)
-                    _sync_directory(descriptor)
+                    try:
+                        sync_fd = os.open(".", read_flags, dir_fd=descriptor)
+                    except PermissionError:
+                        if require_sync:
+                            raise
+                    else:
+                        try:
+                            _sync_directory(sync_fd, require_sync)
+                        finally:
+                            os.close(sync_fd)
                 except FileExistsError:
                     pass
-                child = os.open(component, flags, dir_fd=descriptor)
+                child = os.open(component, path_flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
-        yield descriptor
+        readable = os.open(".", read_flags, dir_fd=descriptor)
+        try:
+            yield readable
+        finally:
+            os.close(readable)
     finally:
         os.close(descriptor)
 
@@ -186,27 +201,36 @@ class _XmpWriter:
         self.handle.flush()
 
 
-def _sync_directory(descriptor: int) -> None:
+def _sync_directory(descriptor: int, required: bool = True) -> None:
     try:
         os.fsync(descriptor)
     except OSError as exc:
-        if exc.errno in (errno.EINVAL, errno.ENOTSUP):
+        if exc.errno in (errno.EINVAL, errno.ENOTSUP, errno.ENOSYS):
+            if not required:
+                return
             raise OSError(
                 exc.errno, "Directory sync is unsupported; cannot guarantee a durable export."
             ) from exc
         raise
 
 
-def _sync_directories(directory: Path, root: Path | None = None) -> None:
-    """Persist every ancestor entry, including directories left by a failed export."""
+def _sync_directories(directory: Path, root: Path | None = None, *, required: bool = True) -> None:
+    """Persist destination entries through the export root, including failed attempts."""
     root = (root or directory).absolute()
     parent = directory.absolute()
     if not parent.is_relative_to(root):
         raise ValueError("Export directory must be inside the export root")
     while True:
         with _directory_fd(parent, create=False) as descriptor:
-            _sync_directory(descriptor)
-        if parent == parent.parent:
+            _sync_directory(descriptor, required)
+        if parent == root:
+            if root != root.parent:
+                try:
+                    with _directory_fd(root.parent, create=False) as descriptor:
+                        _sync_directory(descriptor, required)
+                except PermissionError:
+                    if required:
+                        raise
             return
         parent = parent.parent
 
@@ -247,7 +271,13 @@ def _write_claimed_slide(
         if not _same_file(parent, path.name, opened):
             raise ValueError("Export file changed while writing; retry the export.")
         if on_written is not None:
-            _sync_directories(spec.directory, spec.export_root)
+            _sync_directories(
+                spec.directory,
+                Path(spec.directory.absolute().anchor)
+                if spec.require_directory_sync
+                else spec.export_root,
+                required=spec.require_directory_sync,
+            )
             _check_directory_identity(spec.directory, parent)
             if not _same_file(parent, path.name, opened):
                 raise ValueError("Export file changed while writing; retry the export.")
@@ -271,7 +301,9 @@ def write_slide(
     if spec.fmt == "jpeg" and spec.scan_dpi is not None:
         jpeg_geometry(rgb.shape[1], rgb.shape[0], spec.scan_dpi, spec.jpeg_size)
     prefix = _prefix(spec) if spec.position is None else ""
-    with _directory_fd(spec.directory, create=True) as parent:
+    with _directory_fd(
+        spec.directory, create=True, require_sync=spec.require_directory_sync
+    ) as parent:
         sequence = _next_sequence(parent, prefix) if spec.position is None else spec.position
         while True:
             if spec.position is not None and sequence > 999:
