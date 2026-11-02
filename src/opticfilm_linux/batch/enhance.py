@@ -98,7 +98,7 @@ def _merge_slide(
         if current is not None and current.settings != snapshot.settings:
             return manifest
         base = current or snapshot
-        if blank and _protect_content(base):
+        if blank and _protect_content(base) and base.status is not SlideStatus.BLANK:
             return manifest
         record = _classified_record(base, flags, blank, fingerprint)
         others = tuple(s for s in now.slides if s.position != snapshot.position)
@@ -114,26 +114,20 @@ def _merge_slide(
 
 
 def _protect_content(slide: SlideRecord) -> bool:
-    return (
-        slide.auto_accepted
-        or slide.exported
-        or (slide.owner_decided and slide.status is not SlideStatus.BLANK)
-    )
+    return slide.auto_accepted or slide.exported or slide.owner_decided
 
 
 def _classified_record(
     base: SlideRecord, flags: tuple[Flag, ...], blank: bool, fingerprint: str
 ) -> SlideRecord:
     auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
-    owner_content = base.owner_decided and base.status is not SlideStatus.BLANK
     return dataclasses.replace(
         base,
-        status=SlideStatus.BLANK if blank else base.status if owner_content else auto,
+        status=base.status if base.owner_decided else SlideStatus.BLANK if blank else auto,
         flags=() if blank else flags,
         preview_stale=False,
         blank_fingerprint=fingerprint if blank else "",
         empty_confirmed=None,
-        owner_decided=owner_content,
         auto_accepted=base.auto_accepted and not blank,
     )
 
@@ -152,7 +146,9 @@ def _process_slide(
 ) -> None:
     defaults = store.snapshot().defaults
     position = slide.index + 1
-    blank = defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide)
+    blank = (snapshot.owner_decided and snapshot.status is SlideStatus.BLANK) or (
+        defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide)
+    )
     enhanced = (
         slide.rgb
         if blank

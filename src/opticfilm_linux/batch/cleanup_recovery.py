@@ -1,18 +1,22 @@
 """Explicit owner recovery of intact raw after a committed cleanup was interrupted.
 
 Recovery never deletes scans or trusts the removal marker as evidence. Recorded folder
-membership must match exactly, every sweep must decode and split, and any available current
+membership must be a subset of the recorded cleanup, every remaining sweep must decode and
+split, and any available current
 raw hashes must match. Legacy scans without hashes need their configured infrared plane;
 missing raw cannot be restored by clearing a manifest marker. Delivery files may be missing:
 recovery returns the tray to review and requires fresh exports and release approval.
 """
 
 import dataclasses
+import weakref
 from pathlib import Path
 
 from opticfilm_linux.batch.model import BatchManifest, SlideStatus, TrayRecord, TrayStage
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.provenance import raw_region_sha256
+
+_RECOVERY_CHECKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _recovery_inventory(store: BatchStore, tray: TrayRecord) -> tuple[Path, ...]:
@@ -22,13 +26,43 @@ def _recovery_inventory(store: BatchStore, tray: TrayRecord) -> tuple[Path, ...]
         raise ValueError("no recorded interrupted cleanup inventory")
     folders = tuple(export._checked_sweep_folders(store, tray.number))
     export._checked_sweep_versions(tray, folders)
-    actual = tuple(sorted(int(path.name.removeprefix("sweep-")) for path in folders))
-    if actual != tuple(sorted(tray.cleanup_sweeps)):
-        raise ValueError("recorded raw sweep folders are missing or additional folders appeared")
+    versions = tuple(int(path.name.removeprefix("sweep-")) for path in folders)
+    if len(set(versions)) != len(versions):
+        raise ValueError("additional raw sweep folders have duplicate versions")
+    if tray.sweep_version not in tray.cleanup_sweeps:
+        raise ValueError("current raw sweep is absent from the recorded cleanup inventory")
     for path in folders:
         if any(child.is_symlink() for child in path.rglob("*")):
             raise ValueError("raw sweep contains a symlink")
     return folders
+
+
+def can_recover_interrupted_cleanup(
+    store: BatchStore, manifest: BatchManifest, tray: TrayRecord
+) -> bool:
+    """Check recovery for the window, caching only while raw filesystem evidence is unchanged."""
+    from opticfilm_linux.batch import export
+
+    try:
+        folders = _recovery_inventory(store, tray)
+        members = tuple(sorted(path for folder in folders for path in (folder, *folder.rglob("*"))))
+        stats = tuple(
+            (path, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            for path in members
+            for st in (path.lstat(),)
+        )
+        key = (tray, manifest.defaults, stats)
+        cache = _RECOVERY_CHECKS.setdefault(store, {})
+        if tray.number not in cache or cache[tray.number][0] != key:
+            try:
+                _recovery_raw(store, manifest, tray, folders)
+            except (OSError, ValueError, export.CleanupRefused):
+                cache[tray.number] = (key, False)
+            else:
+                cache[tray.number] = (key, True)
+        return cache[tray.number][1]
+    except (OSError, ValueError, export.CleanupRefused):
+        return False
 
 
 def _recheck_inventory(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) -> None:
@@ -101,7 +135,7 @@ def _recovered_tray(tray: TrayRecord, *, automatic: bool) -> TrayRecord:
 
 
 def recover_interrupted_cleanup(store: BatchStore, number: int) -> None:
-    """Return intact, exactly inventoried raw to review after an explicit owner action."""
+    """Return verified current raw to review after an explicit owner action."""
     from opticfilm_linux.batch import export
 
     with export._CLEANUP_LOCK:
@@ -116,8 +150,8 @@ def recover_interrupted_cleanup(store: BatchStore, number: int) -> None:
                 raise ValueError("raw sweep folders changed meanwhile")
         except (OSError, ValueError, export.CleanupRefused) as exc:
             raise export.CleanupPolicyRefused(
-                f"Cannot recover tray {number}: {exc}; restore all original raw sweep folders "
-                "or rescan this tray."
+                f"Cannot recover tray {number}: {exc}; restore the damaged or missing raw "
+                "sweep folders or rescan this tray."
             ) from exc
 
         def reset(manifest: BatchManifest) -> BatchManifest:

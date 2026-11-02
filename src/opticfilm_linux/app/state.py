@@ -153,6 +153,7 @@ def _tray_row(
     scan_started: Mapping[int, float],
     now: float,
     raw_pending: frozenset[int] = frozenset(),
+    raw_recoverable: frozenset[int] = frozenset(),
 ) -> TrayRow:
     started = scan_started.get(tray.number)
     elapsed = now - started if tray.stage is TrayStage.SCANNING and started is not None else None
@@ -169,9 +170,7 @@ def _tray_row(
         error=tray.error,
         needs_look=sum(1 for s in tray.slides if s.status is SlideStatus.NEEDS_LOOK),
         raw_removed=tray.raw_removed,
-        can_recover_raw=tray.raw_removed
-        and bool(tray.cleanup_sweeps)
-        and tray.number in raw_pending,
+        can_recover_raw=tray.raw_removed and tray.number in raw_recoverable,
         auto=tray.auto,
         auto_failed=tray.auto_failed,
         auto_flagged=tray.auto_flagged,
@@ -279,6 +278,13 @@ def _can_finish_box(
     )
 
 
+def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable):
+    return tuple(
+        _tray_row(t, progress, scan_started, now, raw_pending, raw_recoverable)
+        for t in (manifest.trays if manifest else ())
+    )
+
+
 def build_state(
     manifest: BatchManifest | None,
     *,
@@ -302,6 +308,7 @@ def build_state(
     runner_busy: bool = False,
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
     raw_pending: frozenset[int] = frozenset(),
+    raw_recoverable: frozenset[int] = frozenset(),
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
     return AppState(
@@ -320,9 +327,7 @@ def build_state(
         ),
         batch_session=batch_session,
         readonly=readonly,
-        trays=tuple(_tray_row(t, progress, scan_started, now, raw_pending) for t in manifest.trays)
-        if manifest is not None
-        else (),
+        trays=_tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable),
         banner=banner,
         export=export,
         free_space=free_space,
@@ -449,7 +454,11 @@ def _empty_confirmation_fields(tray, readonly, tokens):
         "empty_confirmation_count": len(blanks),
         "empty_confirmation_sweep_version": tray.sweep_version if tray else 0,
         "empty_confirmation_previews": tuple(
-            (s.position, fingerprints.get(s.position, ""), tokens.get((tray.number, s.position), 0))
+            (
+                s.position,
+                fingerprints.get(s.position, ""),
+                tokens.get((tray.number, s.position, "before"), 0),
+            )
             for s in blanks
         ),
     }

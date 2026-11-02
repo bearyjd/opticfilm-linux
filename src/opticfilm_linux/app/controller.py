@@ -595,6 +595,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
             selected = self._selected
         tokens = self._preview_tokens(session, manifest, selected)
         raw_pending = self._raw_pending(session, manifest)
+        raw_recoverable = self._raw_recoverable(session, manifest, raw_pending)
         with self._lock:
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do
@@ -628,8 +629,22 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
                     ),
                     holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
                     raw_pending=raw_pending,
+                    raw_recoverable=raw_recoverable,
                 )
             )
+
+    @staticmethod
+    def _raw_recoverable(session, manifest, pending) -> frozenset[int]:
+        from opticfilm_linux.batch.cleanup_recovery import can_recover_interrupted_cleanup
+
+        if session is None or manifest is None:
+            return frozenset()
+        return frozenset(
+            tray.number
+            for tray in manifest.trays
+            if tray.number in pending
+            and can_recover_interrupted_cleanup(session.store, manifest, tray)
+        )
 
     @staticmethod
     def _raw_pending(session, manifest) -> frozenset[int]:

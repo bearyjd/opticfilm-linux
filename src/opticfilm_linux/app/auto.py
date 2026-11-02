@@ -28,6 +28,10 @@ INCOMPLETE = ("pending", "exported", "verified")
 MISSING_DESTINATION = "Choose an album folder before automatic export"
 
 
+class _Superseded(Exception):
+    """Another action replaced the automatic progress being processed."""
+
+
 class AutoPipeline:
     def __init__(
         self,
@@ -42,8 +46,10 @@ class AutoPipeline:
     def _tray(self, number):
         return next(t for t in self.store.snapshot().trays if t.number == number)
 
-    def _update(self, number, **changes):
-        self.store.update_tray(number, **changes)
+    def _update(self, number, *, expected, **changes):
+        changed = self.store.update_tray_if(number, lambda t: t.auto == expected, **changes)
+        if not changed:
+            raise _Superseded
         self.on_update()
 
     def arm(self, number: int) -> bool:
@@ -102,7 +108,12 @@ class AutoPipeline:
                 continue
             if any(not s.exported or s.preview_stale for s in accepted):
                 continue
-            self._update(tray.number, auto="exported", auto_failed=(), auto_error="")
+            try:
+                self._update(
+                    tray.number, expected=tray.auto, auto="exported", auto_failed=(), auto_error=""
+                )
+            except _Superseded:
+                continue
             retried.append(tray.number)
         return tuple(retried)
 
@@ -137,19 +148,25 @@ class AutoPipeline:
             return
         if not self.store.snapshot().defaults.auto_export and not tray.raw_removed:
             if tray.auto == "pending":
-                self._update(number, auto="off")
+                try:
+                    self._update(number, expected="pending", auto="off")
+                except _Superseded:
+                    pass
             return
         before = raw_inventory(self.store, (number,))
         try:
             if tray.auto in ("pending", "blocked") and not self._export_pending(
-                number, before=before
+                number, before=before, expected=tray.auto
             ):
                 return
-            self._verify_and_finish(number)
+            expected = "exported" if tray.auto in ("pending", "blocked") else tray.auto
+            self._verify_and_finish(number, expected=expected, before=before)
+        except _Superseded:
+            return
         except Exception as exc:
-            self._failed(number, exc, before=before)
+            self._failed(number, exc, before=before, expected=tray.auto)
 
-    def _accept_pending(self, number: int) -> None:
+    def _accept_pending(self, number: int, *, expected: str) -> None:
         tray = self._tray(number)
         flagged = tuple(
             sorted(
@@ -165,14 +182,14 @@ class AutoPipeline:
             )
         )
         # Remember flags before automatic acceptance changes undecided statuses.
-        self._update(number, auto_flagged=flagged)
+        self._update(number, expected=expected, auto_flagged=flagged)
         accept_tray(self.store, number, automatic=True)
 
-    def _export_pending(self, number: int, *, before) -> bool:
-        self._accept_pending(number)
+    def _export_pending(self, number: int, *, before, expected: str) -> bool:
+        self._accept_pending(number, expected=expected)
         if any(s.preview_stale for s in self._tray(number).slides):
             return False
-        if self._blocked(number):
+        if self._blocked(number, expected=expected):
             return False
         defaults = self.store.snapshot().defaults
         if not defaults.export_dir:
@@ -199,20 +216,32 @@ class AutoPipeline:
             outcome = self._failure_outcome(number, before)
             self._update(
                 number,
+                expected=expected,
                 auto="failed",
                 auto_failed=tuple(failed),
                 auto_error=outcome + ". " + "; ".join(errors),
             )
             return False
-        self._update(number, auto="exported")
+        self._update(number, expected=expected, auto="exported")
         return True
 
-    def _failed(self, number: int, exc: Exception, *, before) -> None:
+    def _failed(self, number: int, exc: Exception, *, before, expected=None) -> None:
+        expected = self._tray(number).auto if expected is None else expected
+        try:
+            self._record_failure(number, exc, before=before, expected=expected)
+        except _Superseded:
+            return
+
+    def _record_failure(self, number, exc, *, before, expected) -> None:
         if isinstance(exc, CleanupRetryRequired):
-            self._update(number, auto="verified", auto_error=str(exc), auto_failed=())
+            self._update(
+                number, expected=expected, auto="verified", auto_error=str(exc), auto_failed=()
+            )
             return
         if isinstance(exc, CleanupPolicyRefused) and not self._tray(number).raw_removed:
-            self._update(number, auto="held", auto_error=str(exc), auto_failed=())
+            self._update(
+                number, expected=expected, auto="held", auto_error=str(exc), auto_failed=()
+            )
             return
         positions = (
             (exc.position,)
@@ -224,7 +253,13 @@ class AutoPipeline:
             )
         )
         outcome = self._failure_outcome(number, before)
-        self._update(number, auto="failed", auto_error=f"{outcome}. {exc}", auto_failed=positions)
+        self._update(
+            number,
+            expected=expected,
+            auto="failed",
+            auto_error=f"{outcome}. {exc}",
+            auto_failed=positions,
+        )
 
     def _failure_outcome(self, number, before) -> str:
         try:
@@ -255,13 +290,16 @@ class AutoPipeline:
             if s.status not in (SlideStatus.ACCEPTED, SlideStatus.BLANK) and not s.owner_decided
         )
 
-    def _blocked(self, number: int) -> bool:
-        held = self._awaiting_review(self._tray(number))
+    def _blocked(self, number: int, *, expected=None) -> bool:
+        tray = self._tray(number)
+        expected = tray.auto if expected is None else expected
+        held = self._awaiting_review(tray)
         if not held:
-            excluded = self._owner_excluded(self._tray(number))
+            excluded = self._owner_excluded(tray)
             if excluded:
                 self._update(
                     number,
+                    expected=expected,
                     auto="blocked",
                     auto_failed=(),
                     auto_error="Owner excluded slides "
@@ -271,53 +309,82 @@ class AutoPipeline:
             return bool(excluded)
         self._update(
             number,
+            expected=expected,
             auto="blocked",
             auto_failed=(),
             auto_error="Waiting for owner review of slides " + ", ".join(map(str, held)),
         )
         return True
 
-    def _hold_empty_frames(self, number: int) -> bool:
+    def _hold_empty_frames(self, number: int, *, expected=None) -> bool:
         tray = self._tray(number)
+        expected = tray.auto if expected is None else expected
         empty = sum(
             s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s) for s in tray.slides
         )
         if empty:
             self._update(
                 number,
+                expected=expected,
                 auto="held",
                 auto_failed=(),
                 auto_error=(f"{empty} frame(s) look empty - confirm they are empty to free raw"),
             )
         return bool(empty)
 
-    def _verify_and_finish(self, number: int, *, release: bool = False) -> None:
+    def _verify_and_finish(
+        self, number: int, *, release: bool = False, expected=None, before=None
+    ) -> None:
         if self.cancel.is_set():
             return
-        if self._tray(number).raw_removed:
-            cleanup_raw(self.store, number)
-            self._update(number, auto="freed", auto_error="", auto_failed=())
+        tray = self._tray(number)
+        expected = tray.auto if expected is None else expected
+        if tray.auto != expected or expected not in (*INCOMPLETE, "held", "blocked"):
             return
-        if self._blocked(number) or self._hold_empty_frames(number):
+        before = raw_inventory(self.store, (number,)) if before is None else before
+        try:
+            if tray.raw_removed:
+                cleanup_raw(self.store, number)
+                self._update(number, expected=expected, auto="freed", auto_error="", auto_failed=())
+                return
+            if self._blocked(number, expected=expected) or self._hold_empty_frames(
+                number, expected=expected
+            ):
+                return
+            if any(s.preview_stale for s in self._tray(number).slides):
+                self._update(
+                    number,
+                    expected=expected,
+                    auto="held",
+                    auto_error="Waiting for updated previews",
+                )
+                return
+            verify_tray_export(self.store, number)
+            self._update(number, expected=expected, auto="verified", auto_error="", auto_failed=())
+            expected = "verified"
+            self._finish_verified(number, release=release)
+        except _Superseded:
             return
-        if any(s.preview_stale for s in self._tray(number).slides):
-            self._update(number, auto="held", auto_error="Waiting for updated previews")
-            return
-        verify_tray_export(self.store, number)
-        self._update(number, auto="verified", auto_error="", auto_failed=())
+        except Exception as exc:
+            self._failed(number, exc, before=before, expected=expected)
+
+    def _finish_verified(self, number: int, *, release: bool) -> None:
         manifest = self.store.snapshot()
         tray = self._tray(number)
-        permitted = self._cleanup_permitted(manifest, tray, release)
-        if not permitted:
+        if tray.auto != "verified":
+            return
+        if not self._cleanup_permitted(manifest, tray, release):
             reason = self._cleanup_hold_reason(manifest, tray)
-            self._update(number, auto="held", auto_error=reason, auto_failed=())
+            self._update(
+                number, expected="verified", auto="held", auto_error=reason, auto_failed=()
+            )
             return
         if self.cancel.is_set():
             return
         tray = self._tray(number)
         if not tray.raw_removed or any(self.store.tray_dir(number).glob("sweep-*")):
             cleanup_raw(self.store, number, release_first=release)
-        self._update(number, auto="freed", auto_error="", auto_failed=())
+        self._update(number, expected="verified", auto="freed", auto_error="", auto_failed=())
 
     def _cleanup_hold_reason(self, manifest, tray) -> str:
         if self._unreviewed_flags(tray):
@@ -382,8 +449,12 @@ class AutoPipeline:
             return
         before = raw_inventory(self.store, (number,))
         try:
-            if self._blocked(number) or self._unreviewed_flags(self._tray(number)):
+            if self._blocked(number, expected=tray.auto) or self._unreviewed_flags(
+                self._tray(number)
+            ):
                 return
-            self._verify_and_finish(number, release=True)
+            self._verify_and_finish(number, release=True, expected=tray.auto, before=before)
+        except _Superseded:
+            return
         except Exception as exc:
-            self._failed(number, exc, before=before)
+            self._failed(number, exc, before=before, expected=tray.auto)

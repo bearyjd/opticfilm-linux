@@ -558,9 +558,9 @@ def _delete(
             shutil.rmtree(path)
     except OSError as exc:
         raise BatchError(
-            f"the raw scans of tray {tray.number} were only partly removed and can no longer be "
-            f"used; removal pending. Retry cleanup only if all remaining raw is intact; otherwise "
-            f"recover this tray after restoring its original raw folders, or rescan it: {exc}"
+            f"the raw scans of tray {tray.number} were only partly removed; removal pending. "
+            "Verify remaining scans before recovery. Restore damaged or missing current raw "
+            f"from its original raw folders, or rescan this tray: {exc}"
         ) from exc
 
 
@@ -574,13 +574,13 @@ def _check_render_receipts(manifest: BatchManifest, tray: TrayRecord) -> None:
                 "export has no settings receipt; re-export before automatic cleanup"
             )
         record = slide.exports[-1]
-        # Manual deliveries can precede a remembered destination. Their relative delivery
-        # path still identifies the root whose settings the owner is now releasing.
-        root = (
-            Path(defaults.export_dir)
-            if defaults.export_dir
-            else (Path(record.export_path).parents[len(Path(record.path).parts) - 1])
-        )
+        # Infer unremembered destinations from the delivery's relative path.
+        try:
+            root = Path(defaults.export_dir)
+            if not defaults.export_dir:
+                root = Path(record.export_path).parents[len(Path(record.path).parts) - 1]
+        except IndexError as exc:
+            raise CleanupPolicyRefused("invalid delivery path; re-export before cleanup") from exc
         expected = _render_signature(defaults, root, "jpeg", defaults.jpeg_size)
         if record.render_signature != expected:
             raise CleanupPolicyRefused(

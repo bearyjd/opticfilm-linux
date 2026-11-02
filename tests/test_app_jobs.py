@@ -182,7 +182,7 @@ def test_failed_multi_tray_cleanup_identifies_committed_remaining_tray(
             jobs.run_free_space(store, threading.Event(), views.append, (1, 2))
         message = views[-1].message.lower()
         assert "cleanup incomplete" in message
-        expected = "remaining scans cannot be used" if partial else "verification"
+        expected = "verify remaining scans" if partial else "verification"
         assert expected in message
         assert "tray 1" in message and "tray 2" in message
         assert views[-1].freed == (5 if partial else 0)

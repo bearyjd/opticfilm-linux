@@ -312,6 +312,17 @@ def test_manual_interrupted_cleanup_shows_raw_removal_pending(auto):
     assert _build(manifest).trays[0].stage_text != "Raw removal pending"
 
 
+def test_recovery_button_requires_verified_recovery_evidence():
+    tray = replace(_manifest().trays[0], raw_removed=True, cleanup_sweeps=(1,))
+    manifest = replace(_manifest(), trays=(tray,))
+    assert not _build(manifest, raw_pending=frozenset({1})).trays[0].can_recover_raw
+    assert (
+        _build(manifest, raw_pending=frozenset({1}), raw_recoverable=frozenset({1}))
+        .trays[0]
+        .can_recover_raw
+    )
+
+
 def test_confirmed_blank_flags_do_not_hide_first_tray_release():
     manifest = _manifest()
     accepted = SlideRecord(1, status=SlideStatus.ACCEPTED, exported=True)
@@ -392,13 +403,17 @@ def test_empty_confirmation_includes_every_blank_with_rendered_fingerprints():
             SlideRecord(2, status=SlideStatus.BLANK, blank_fingerprint="b" * 64),
         ),
     )
-    state = _build(replace(manifest, trays=(first,)))
+    state = _build(
+        replace(manifest, trays=(first,)),
+        preview_tokens={(1, 1): 20, (1, 1, "before"): 10, (1, 2): 30},
+    )
     assert state.empty_confirmation_sweep_version == 3
     assert state.empty_confirmation_count == 2
     assert [(p, digest) for p, digest, _ in state.empty_confirmation_previews] == [
         (1, "a" * 64),
         (2, "b" * 64),
     ]
+    assert [token for _, _, token in state.empty_confirmation_previews] == [10, 0]
 
 
 def test_legacy_owner_blank_still_needs_explicit_confirmation():

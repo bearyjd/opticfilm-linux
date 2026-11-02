@@ -72,20 +72,71 @@ def test_owner_recovery_refuses_partial_current_raw(interrupted, missing):
     assert store.snapshot().trays[0].raw_removed
 
 
-@pytest.mark.parametrize("change", ["missing", "extra", "legacy", "older_partial"])
-def test_owner_recovery_requires_exact_intact_recorded_inventory(interrupted, change):
+@pytest.mark.parametrize("change", ["extra", "legacy", "older_partial", "duplicate_version"])
+def test_owner_recovery_requires_intact_remaining_inventory(interrupted, change):
     store, _ = interrupted
-    if change in ("missing", "older_partial"):
+    if change == "older_partial":
         store.update_tray(1, cleanup_sweeps=(0, 1))
     if change == "older_partial":
         store.sweep_dir(1, 0).mkdir()
     elif change == "extra":
         store.sweep_dir(1, 0).mkdir()
+    elif change == "duplicate_version":
+        shutil.copytree(store.sweep_dir(1, 1), store.tray_dir(1) / "sweep-01")
     elif change == "legacy":
         store.update_tray(1, cleanup_sweeps=())
     with pytest.raises(export.CleanupPolicyRefused, match="tray 1"):
         export.recover_interrupted_cleanup(store, 1)
     assert store.snapshot().trays[0].raw_removed
+
+
+def test_owner_recovery_allows_missing_older_sweeps(interrupted):
+    store, _ = interrupted
+    store.update_tray(1, cleanup_sweeps=(0, 1))
+    export.recover_interrupted_cleanup(store, 1)
+    assert not store.snapshot().trays[0].raw_removed
+    assert not store.sweep_dir(1, 0).exists()
+
+
+@pytest.mark.parametrize("damage", ["none", "missing", "hash", "older_partial", "extra"])
+def test_recovery_availability_matches_recovery_verification(interrupted, damage):
+    from types import SimpleNamespace
+
+    from opticfilm_linux.app.controller import Controller
+
+    store, _ = interrupted
+    store.update_tray(1, cleanup_sweeps=(0, 1))
+    if damage == "missing":
+        (store.sweep_dir(1, 1) / "rgb.npy").unlink()
+    elif damage == "hash":
+        raw = np.load(store.sweep_dir(1, 1) / "rgb.npy", mmap_mode="r+")
+        raw[:] = 10000
+        raw.flush()
+    elif damage == "older_partial":
+        store.sweep_dir(1, 0).mkdir()
+    elif damage == "extra":
+        store.sweep_dir(1, 2).mkdir()
+    available = Controller._raw_recoverable(
+        SimpleNamespace(store=store), store.snapshot(), frozenset({1})
+    )
+    assert available == (frozenset({1}) if damage == "none" else frozenset())
+
+
+def test_recovery_availability_cache_rechecks_changed_raw(interrupted, monkeypatch):
+    from opticfilm_linux.batch import cleanup_recovery
+
+    store, _ = interrupted
+    manifest = store.snapshot()
+    tray = manifest.trays[0]
+    assert cleanup_recovery.can_recover_interrupted_cleanup(store, manifest, tray)
+    verify = cleanup_recovery._recovery_raw
+    monkeypatch.setattr(
+        cleanup_recovery, "_recovery_raw", lambda *_: pytest.fail("unchanged raw rechecked")
+    )
+    assert cleanup_recovery.can_recover_interrupted_cleanup(store, manifest, tray)
+    monkeypatch.setattr(cleanup_recovery, "_recovery_raw", verify)
+    (store.sweep_dir(1, 1) / "rgb.npy").unlink()
+    assert not cleanup_recovery.can_recover_interrupted_cleanup(store, manifest, tray)
 
 
 def test_owner_recovery_checks_every_recorded_sweep(interrupted):
@@ -275,6 +326,22 @@ def test_freeable_list_excludes_mismatched_render_receipts(interrupted):
         )
     )
     assert export.freeable_trays(store, release_first=True) == ()
+
+
+def test_freeable_list_refuses_malformed_receipt_path_without_aborting(interrupted):
+    store, _ = interrupted
+    tray = store.snapshot().trays[0]
+    slide = tray.slides[0]
+    record = dataclasses.replace(slide.exports[-1], path="/".join(["part"] * 100))
+    slides = (dataclasses.replace(slide, exports=(record,)), *tray.slides[1:])
+    store.update_tray(1, raw_removed=False, cleanup_sweeps=(), auto="held", slides=slides)
+    store.update(
+        lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, auto_export=True))
+    )
+    assert export.freeable_trays(store, release_first=True) == ()
+    with pytest.raises(export.CleanupPolicyRefused, match="invalid delivery path"):
+        export.check_cleanup_allowed(store, 1, release_first=True)
+    assert store.sweep_dir(1, 1).is_dir()
 
 
 def test_recovery_compares_sweep_versions_numerically(interrupted):

@@ -125,15 +125,15 @@ def test_rescuing_blank_clears_confirmation(store):
     assert slide.owner_decided and slide.empty_confirmed is None
 
 
-def test_content_reclassification_rescues_even_legacy_owned_blank(store):
+def test_content_reclassification_preserves_owned_blank_and_clears_confirmation(store):
     _confirm(store)
     tray = store.snapshot().trays[0]
     legacy = dataclasses.replace(tray.slides[0], owner_decided=True)
     store.update_tray(1, slides=(legacy,))
     _merge_slide(store, 1, tray, legacy, (), False, store.snapshot().defaults)
     slide = store.snapshot().trays[0].slides[0]
-    assert slide.status is SlideStatus.ACCEPTED
-    assert not slide.owner_decided and slide.empty_confirmed is None
+    assert slide.status is SlideStatus.BLANK
+    assert slide.owner_decided and slide.empty_confirmed is None
     assert not slide.blank_fingerprint
 
 

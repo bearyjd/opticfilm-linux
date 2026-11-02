@@ -24,6 +24,7 @@ from opticfilm_linux.batch.model import (
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.model import HolderKind, RawSweep
 from opticfilm_linux.pipeline.split import split_slides
+from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import save_sweep
 from synthetic import make_sweep, truth_boxes
 
@@ -92,15 +93,23 @@ def test_blank_window_has_raw_inspection_previews(tmp_path):
     assert store.preview_path(1, 3, "after").is_file()
 
 
-def test_owner_decision_and_settings_survive_re_enhancement(tmp_path):
+@pytest.mark.parametrize("status", [SlideStatus.NEEDS_LOOK, SlideStatus.BLANK])
+def test_owner_decision_and_settings_survive_re_enhancement(tmp_path, status, monkeypatch):
     store = _store(tmp_path, make_sweep(dpi=600))
     enhance_tray(store, 1)
     settings = SlideSettings(rotation=90, brightness_ev=0.5)
-    _set_slide(store, 2, status=SlideStatus.NEEDS_LOOK, owner_decided=True, settings=settings)
+    _set_slide(store, 2, status=status, owner_decided=True, settings=settings)
+    store.update(
+        lambda m: dataclasses.replace(m, defaults=dataclasses.replace(m.defaults, skip_blank=False))
+    )
+    if status is SlideStatus.BLANK:
+        monkeypatch.setattr(enhance_module, "is_blank", lambda _: pytest.fail("owner chose blank"))
     enhance_tray(store, 1)
     kept = _tray(store).slides[1]
-    assert kept.status is SlideStatus.NEEDS_LOOK and kept.owner_decided
+    assert kept.status is status and kept.owner_decided
     assert kept.settings == settings
+    if status is SlideStatus.BLANK:
+        assert kept.blank_fingerprint == raw_region_sha256(split_slides(make_sweep(dpi=600))[1])
 
 
 def test_reenhance_slide_applies_rotation_to_the_after_preview(tmp_path):
@@ -224,17 +233,32 @@ def test_settings_changed_during_re_enhancement_are_not_lost(tmp_path, monkeypat
     assert _tray(store).slides[0].settings == newer
 
 
-def test_status_chosen_during_re_enhancement_is_kept(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status", [SlideStatus.NEEDS_LOOK, SlideStatus.BLANK])
+def test_status_chosen_during_re_enhancement_is_kept(tmp_path, monkeypatch, status):
     store = _store(tmp_path, make_sweep(dpi=600))
     enhance_tray(store, 1)
     started, release = _gate_enhance(monkeypatch)
     worker = _run_gated(reenhance_slide, store, 1, 1)
     assert started.wait(60)
-    _set_slide(store, 1, status=SlideStatus.NEEDS_LOOK, owner_decided=True)
+    _set_slide(store, 1, status=status, owner_decided=True)
     release.set()
     worker.join(60)
     kept = _tray(store).slides[0]
-    assert kept.status is SlideStatus.NEEDS_LOOK and kept.owner_decided
+    assert kept.status is status and kept.owner_decided
+
+
+def test_stale_blank_detection_keeps_an_owner_decided_blank(tmp_path):
+    store = _store(tmp_path, make_sweep(dpi=600))
+    enhance_tray(store, 1)
+    snapshot = _tray(store).slides[0]
+    _set_slide(store, 1, status=SlideStatus.BLANK, owner_decided=True, preview_stale=True)
+    before = store.snapshot()
+    enhance_module._merge_slide(
+        store, 1, before.trays[0], snapshot, (), True, before.defaults, fingerprint="a" * 64
+    )
+    kept = _tray(store).slides[0]
+    assert kept.status is SlideStatus.BLANK and kept.owner_decided
+    assert kept.blank_fingerprint == "a" * 64
 
 
 def test_exported_mark_survives_a_stale_re_enhancement(tmp_path, monkeypatch):

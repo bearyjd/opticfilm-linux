@@ -62,7 +62,7 @@ def _tray_failure(before: RawInventory, after: RawInventory, removed: bool, fold
             if before != after:
                 outcome += "; raw data partly removed"
             outcome += (
-                "; remaining scans cannot be used"
+                "; verify remaining scans before recovery"
                 if before != after
                 else "; raw verification and cleanup recovery are required"
             )
@@ -70,7 +70,7 @@ def _tray_failure(before: RawInventory, after: RawInventory, removed: bool, fold
     if not after:
         return "raw cleanup incomplete; sweep folders remain without raw files"
     if before != after:
-        return "raw data partly removed; remaining scans cannot be used"
+        return "raw data partly removed; verify remaining scans before recovery"
     return "raw data kept"
 
 

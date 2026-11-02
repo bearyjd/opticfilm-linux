@@ -267,8 +267,9 @@ def test_a_failed_deletion_keeps_the_tray_marked_removed_and_says_so(store, monk
         raise OSError("disk went away")
 
     monkeypatch.setattr(export_module.shutil, "rmtree", broken)
-    with pytest.raises(BatchError, match="can no longer be used"):
+    with pytest.raises(BatchError, match="Verify remaining scans before recovery") as refused:
         export_module.cleanup_raw(store, 1)
+    assert "can no longer be used" not in str(refused.value)
     assert _tray(store, 1).raw_removed
 
 
