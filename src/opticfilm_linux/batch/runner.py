@@ -55,6 +55,9 @@ class BatchRunner:
         self._scan_guard = threading.Lock()
         self.operation_sequence = 0
         self._operation = threading.local()
+        self._stale_drain_queued = False
+        self._stale_requested = False
+        self._stopping = False
 
     # -- requests from the caller (never block) ------------------------------------------
 
@@ -120,6 +123,15 @@ class BatchRunner:
         review.apply_slide_settings(self._store, number, position, settings)
         self._submit(self._enhance_pool, self._reenhance_job, number, position)
 
+    def edit_many(self, keys, changes) -> review.BulkEditResult:
+        """Apply one atomic bulk edit and queue a yielding preview drain.
+
+        The result contains skipped reasons and the inverse snapshot for undo.
+        """
+        result = review.apply_settings_many(self._store, keys, changes)
+        self._queue_stale_previews()
+        return result
+
     def set_slide_status(self, number: int, position: int, status: SlideStatus) -> None:
         review.set_slide_status(self._store, number, position, status)
         self._emit(SlideUpdated(number, position))
@@ -153,12 +165,15 @@ class BatchRunner:
 
         Trays left half-done are picked up by ``resume()`` the next time the batch is opened.
         """
+        with self._lock:
+            self._stopping = True
         self._scan_pool.shutdown(wait=True, cancel_futures=True)
         self._enhance_pool.shutdown(wait=True, cancel_futures=True)
 
     def close(self) -> None:
         """Finish running work, then stop both workers. Queued enhancement still runs."""
         self._scan_pool.shutdown(wait=True)
+        self.wait_idle()
         self._enhance_pool.shutdown(wait=True)
 
     # -- worker jobs ---------------------------------------------------------------------
@@ -211,13 +226,73 @@ class BatchRunner:
     # -- helpers -------------------------------------------------------------------------
 
     def _queue_stale_previews(self) -> None:
+        with self._lock:
+            if self._stopping:
+                return
+            self._stale_requested = True
+            if self._stale_drain_queued:
+                return
+            self._stale_drain_queued = True
+        self._submit_stale_drain(frozenset())
+
+    def _submit_stale_drain(self, attempted: frozenset) -> None:
+        with self._lock:
+            if self._stopping:
+                self._stale_drain_queued = False
+                return
+        try:
+            self._submit(self._enhance_pool, self._drain_stale_job, 0, attempted)
+        except RuntimeError:
+            with self._lock:
+                self._stale_drain_queued = False
+                stopping = self._stopping
+            if not stopping:
+                raise
+        except BaseException:
+            with self._lock:
+                self._stale_drain_queued = False
+            raise
+
+    def _drain_stale_job(self, _number: int, attempted: frozenset) -> None:
+        try:
+            self._drain_stale_step(attempted)
+        except BaseException:
+            with self._lock:
+                self._stale_drain_queued = False
+            raise
+
+    def _drain_stale_step(self, attempted: frozenset) -> None:
+        """Render once, then yield to tray enhancement already waiting in the pool.
+
+        Failed slides remain stale for resume, but are attempted only once per drain.
+        A request arriving during a render starts a fresh pass, including newer edits.
+        """
+        with self._lock:
+            if self._stale_requested:
+                attempted = frozenset()
+            self._stale_requested = False
+            stopping = self._stopping
+        key = None if stopping else self._next_stale(attempted)
+        if key is not None:
+            self._reenhance_job(*key)
+            self._submit_stale_drain(attempted | {key})
+            return
+        with self._lock:
+            self._stale_drain_queued = False
+            requested = self._stale_requested and not self._stopping
+        if requested:
+            self._queue_stale_previews()
+
+    def _next_stale(self, attempted: frozenset) -> tuple[int, int] | None:
         for tray in self._store.snapshot().trays:
-            if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED) and not tray.raw_removed:
-                for slide in tray.slides:
-                    if slide.preview_stale:
-                        self._submit(
-                            self._enhance_pool, self._reenhance_job, tray.number, slide.position
-                        )
+            if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED) or tray.raw_removed:
+                continue
+            for slide in tray.slides:
+                key = (tray.number, slide.position)
+                if slide.preview_stale and slide.status is not SlideStatus.BLANK:
+                    if key not in attempted:
+                        return key
+        return None
 
     def _require_ready(self) -> None:
         status = self._scanner.status()
