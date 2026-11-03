@@ -28,6 +28,7 @@ from opticfilm_linux.app.prefs import (
 )
 from opticfilm_linux.app.qt.destination import DestinationCheck
 from opticfilm_linux.app.qt.models import DictListModel
+from opticfilm_linux.app.qt.selection import FIELDS, SelectionBridge
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
@@ -67,12 +68,6 @@ SLIDE_KEYS = (
     "afterUrl",
     "beforeUrl",
 )
-FIELDS = {
-    "brightness": "brightness_ev",
-    "color": "color_strength",
-    "grain": "grain_strength",
-    "sharpen": "sharpen_amount",
-}
 DEFAULTS = BatchDefaults()
 
 
@@ -123,7 +118,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
     return Property(kind, lambda self: read(self._state, self), notify=changed)
 
 
-class Bridge(QObject):
+class Bridge(SelectionBridge):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
@@ -229,6 +224,24 @@ class Bridge(QObject):
         self.changed.emit()
         if replaced:
             self.batchReplaced.emit()
+
+    selection = Property(
+        "QVariantList",
+        lambda self: [list(key) for key in sorted(self._state.selection)],
+        notify=changed,
+    )
+    selectionFocus = Property(
+        "QVariantList", lambda self: list(self._state.focus or ()), notify=changed
+    )
+    selectionSummary = Property(
+        "QVariantMap",
+        lambda self: {
+            "count": self._state.selection_summary.count,
+            "accepted": self._state.selection_summary.accepted,
+            "settings": dict(self._state.selection_summary.settings),
+        },
+        notify=changed,
+    )
 
     trays = Property(QObject, lambda self: self._trays, constant=True)
     slides = Property(QObject, lambda self: self._slides, constant=True)

@@ -1,14 +1,16 @@
 """Immutable snapshots of everything the window shows, built from the manifest."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Literal
 
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
+from opticfilm_linux.app.selection import Selection, prune, selectable_keys
 from opticfilm_linux.batch.cleanup_recovery import interrupted_cleanup_guidance
 from opticfilm_linux.batch.empty import empty_frame_fingerprints, is_empty_confirmed
 from opticfilm_linux.batch.model import (
     BatchManifest,
+    SlideKey,
     SlideRecord,
     SlideSettings,
     SlideStatus,
@@ -86,6 +88,50 @@ LoadPhase = Literal["idle", "jogging", "await_reinsert", "loading", "done", "fai
 
 
 @dataclass(frozen=True)
+class SelectionSummary:
+    count: int = 0
+    accepted: int = 0
+    settings: tuple[tuple[str, object], ...] = ()  # None means mixed or automatic
+
+
+def selection_fields(manifest, selection: Selection) -> dict:
+    selection = prune(selection, selectable_keys(manifest) if manifest else ())
+    slides = (
+        tuple(
+            slide
+            for tray in manifest.trays
+            for slide in tray.slides
+            if (tray.number, slide.position) in selection.keys
+        )
+        if manifest
+        else ()
+    )
+    common = (
+        tuple(
+            (
+                field.name,
+                getattr(slides[0].settings, field.name)
+                if all(
+                    getattr(slide.settings, field.name) == getattr(slides[0].settings, field.name)
+                    for slide in slides
+                )
+                else None,
+            )
+            for field in fields(SlideSettings)
+        )
+        if slides
+        else ()
+    )
+    return {
+        "selection": selection.keys,
+        "focus": selection.focus,
+        "selection_summary": SelectionSummary(
+            len(slides), sum(slide.status is SlideStatus.ACCEPTED for slide in slides), common
+        ),
+    }
+
+
+@dataclass(frozen=True)
 class AppState:
     batch_name: str | None
     readonly: bool
@@ -130,6 +176,9 @@ class AppState:
     empty_confirmation_sweep_version: int = 0
     empty_confirmation_previews: tuple[tuple[int, str, int], ...] = ()
     held_tray: int | None = None
+    selection: frozenset[SlideKey] = frozenset()
+    focus: SlideKey | None = None
+    selection_summary: SelectionSummary = SelectionSummary()
 
 
 EMPTY_STATE = AppState(
@@ -293,6 +342,13 @@ def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverab
     )
 
 
+def _selected_batch_fields(manifest, selected, preview_tokens, updating, selection):
+    return {
+        **_batch_fields(manifest, selected, preview_tokens, updating),
+        **selection_fields(manifest, selection or Selection()),
+    }
+
+
 def build_state(
     manifest: BatchManifest | None,
     *,
@@ -317,10 +373,11 @@ def build_state(
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
     raw_pending: frozenset[int] = frozenset(),
     raw_recoverable: frozenset[int] = frozenset(),
+    selection: Selection | None = None,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
     return AppState(
-        **_batch_fields(manifest, selected, preview_tokens, updating),
+        **_selected_batch_fields(manifest, selected, preview_tokens, updating, selection),
         **_auto_fields(manifest, readonly, preview_tokens, raw_pending),
         **_scanner_fields(
             manifest,
