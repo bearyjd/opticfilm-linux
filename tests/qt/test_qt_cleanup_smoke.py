@@ -240,7 +240,7 @@ def test_first_load_card_reseats_then_reports_exit_code(qapp, sweep600_dir, tmp_
     c = Controller(lambda _dpi: scanner)
     bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: c.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         root = engine.rootObjects()[0]
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "First", "", "", 600)
@@ -268,7 +268,7 @@ def test_first_load_card_cancel_warns_then_stops(qapp, sweep600_dir, tmp_path):
     scanner = InteractiveScanner(sweep600_dir)
     c = Controller(lambda _dpi: scanner)
     bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
-    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
+    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None), size=(1220, 780))
     try:
         root = engine.rootObjects()[0]
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Cancel", "", "", 600)
@@ -309,7 +309,7 @@ def test_first_load_quit_warns_and_can_be_rejected(qapp, sweep600_dir, tmp_path,
     scanner = _held_first_load_scanner(sweep600_dir, phase)
     c = Controller(lambda _dpi: scanner)
     bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
-    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
+    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None), size=(1220, 780))
     stopped = False
     try:
         root = engine.rootObjects()[0]

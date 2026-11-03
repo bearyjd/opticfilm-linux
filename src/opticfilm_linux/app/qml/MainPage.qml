@@ -59,6 +59,22 @@ Kirigami.Page {
     Keys.onPressed: event => handleKey(event)
 
     ConfirmDialog {
+        id: reexportDialog
+        objectName: "reexportSelectionDialog"
+        title: qsTr("Re-export selected slides?")
+        subtitle: qsTr("This writes new numbered files for the accepted slides in the selection. Existing files are kept. Writing files cannot be undone.")
+        onConfirmed: bridge.reexportSelection()
+    }
+    ConfirmDialog {
+        id: recoverDialog
+        objectName: "recoverDialog"
+        property int tray: 0
+        title: qsTr("Recover raw scans of tray %1?").arg(recoverDialog.tray)
+        subtitle: qsTr("Recovery verifies the current raw scans, restores this tray to review and resets its export marks. Incomplete older sweeps are kept and do not need verification for recovery. Review the frames, export them again, and approve raw removal again. Missing or damaged current raw scans require restoring the original folders or rescanning.")
+        onConfirmed: bridge.recoverInterruptedCleanup(recoverDialog.tray)
+    }
+
+    ConfirmDialog {
         id: rescanDialog
         objectName: "rescanSelectionDialog"
         title: qsTr("Re-scan tray %1?").arg(inspector.singleTray)
@@ -86,6 +102,8 @@ Kirigami.Page {
         }
         function onBatchReplaced() {
             heldReleaseDialog.close();
+            reexportDialog.close();
+            recoverDialog.close();
         }
         function onChanged() {
             if (heldReleaseDialog.tray !== bridge.heldTray)
@@ -334,6 +352,7 @@ Kirigami.Page {
                 TrayQueue {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    onRecoverRequested: number => { recoverDialog.tray = number; recoverDialog.open(); }
                     onTrayChosen: { sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
                 }
                 PillButton {
@@ -365,6 +384,7 @@ Kirigami.Page {
                 Layout.maximumWidth: 360
                 Layout.minimumWidth: 270
                 Layout.fillHeight: true
+                onReexportRequested: reexportDialog.open()
                 onRescanRequested: rescanDialog.open()
             }
         }
