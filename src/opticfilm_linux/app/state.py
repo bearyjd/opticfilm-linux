@@ -32,7 +32,7 @@ class SlideCard:
     owner_decided: bool
     exported: bool
     updating: bool
-    preview_token: int  # modified time of the "after" preview; 0 when there is none
+    preview_token: int  # cached version of the "after" preview; 0 when there is none
     before_preview_token: int = 0
 
 
@@ -51,6 +51,7 @@ class TrayRow:
     auto_flagged: tuple[int, ...] = ()
     auto_error: str = ""
     can_recover_raw: bool = False
+    slides: tuple[SlideCard, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,8 @@ class SelectionSummary:
     count: int = 0
     accepted: int = 0
     settings: tuple[tuple[str, object], ...] = ()  # None means mixed or automatic
+    mixed: tuple[str, ...] = ()
+    trays: tuple[int, ...] = ()
 
 
 def selection_fields(manifest, selection: Selection) -> dict:
@@ -126,7 +129,19 @@ def selection_fields(manifest, selection: Selection) -> dict:
         "selection": selection.keys,
         "focus": selection.focus,
         "selection_summary": SelectionSummary(
-            len(slides), sum(slide.status is SlideStatus.ACCEPTED for slide in slides), common
+            len(slides),
+            sum(slide.status is SlideStatus.ACCEPTED for slide in slides),
+            common,
+            tuple(
+                name
+                for name, value in common
+                if value is None
+                and any(
+                    getattr(slide.settings, name) != getattr(slides[0].settings, name)
+                    for slide in slides
+                )
+            ),
+            tuple(sorted({number for number, _ in selection.keys}, reverse=True)),
         ),
     }
 
@@ -179,6 +194,7 @@ class AppState:
     selection: frozenset[SlideKey] = frozenset()
     focus: SlideKey | None = None
     selection_summary: SelectionSummary = SelectionSummary()
+    undo_label: str = ""
 
 
 EMPTY_STATE = AppState(
@@ -288,7 +304,7 @@ def _scanner_fields(
     readonly: bool,
     holder_control: bool,
     holder_busy: bool,
-    next_strip: bool,
+    next_strip: bool | None,
     jobs_running: bool,
     holder_latch: HolderLatch,
 ) -> dict:
@@ -305,8 +321,10 @@ def _scanner_fields(
         and not readonly,
         "scan_pending": scan_pending,
         "can_eject": idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY),
-        "can_load_next": idle and next_strip and scanner is ScannerStatus.NOT_READY,
-        "next_strip_enabled": next_strip,
+        "can_load_next": idle
+        and (next_strip_enabled() if next_strip is None else next_strip)
+        and scanner is ScannerStatus.NOT_READY,
+        "next_strip_enabled": next_strip_enabled() if next_strip is None else next_strip,
         "can_confirm_scanner": scanner is ScannerStatus.INTERRUPTED and not busy,
         "holder_busy": holder_busy,
         "holder_latch_text": holder_latch_text(holder_latch),
@@ -340,6 +358,14 @@ def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverab
         _tray_row(t, progress, scan_started, now, raw_pending, raw_recoverable)
         for t in (manifest.trays if manifest else ())
     )
+
+
+def _sheet_trays(manifest, rows, tokens, updating):
+    cards = {
+        tray.number: tuple(_slide_card(tray, slide, tokens, updating) for slide in tray.slides)
+        for tray in (manifest.trays if manifest else ())
+    }
+    return tuple(replace(row, slides=cards[row.number]) for row in rows)
 
 
 def _selected_batch_fields(manifest, selected, preview_tokens, updating, selection):
@@ -376,23 +402,16 @@ def build_state(
     selection: Selection | None = None,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
+    rows = _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable)
+    scanner_state = manifest, scanner, scan_pending, readonly
+    holder_state = holder_control, holder_busy, next_strip, jobs_running, holder_latch
     return AppState(
         **_selected_batch_fields(manifest, selected, preview_tokens, updating, selection),
         **_auto_fields(manifest, readonly, preview_tokens, raw_pending),
-        **_scanner_fields(
-            manifest,
-            scanner,
-            scan_pending,
-            readonly,
-            holder_control,
-            holder_busy,
-            next_strip_enabled() if next_strip is None else next_strip,
-            jobs_running,
-            holder_latch,
-        ),
+        **_scanner_fields(*scanner_state, *holder_state),
         batch_session=batch_session,
         readonly=readonly,
-        trays=_tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable),
+        trays=_sheet_trays(manifest, rows, preview_tokens, updating),
         banner=banner,
         export=export,
         free_space=free_space,

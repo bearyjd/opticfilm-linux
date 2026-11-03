@@ -6,6 +6,7 @@ import org.kde.kirigami as Kirigami
 ListView {
     id: queue
     objectName: "trayQueue"
+    signal trayChosen()
 
     clip: true
     model: bridge.trays
@@ -39,7 +40,12 @@ ListView {
 
         width: ListView.view.width
         highlighted: number === bridge.selectedTray
-        onClicked: bridge.selectTray(number)
+        onClicked: { bridge.selectTray(number, 0); queue.trayChosen(); }
+        MouseArea {
+            anchors.fill: parent
+            z: 1
+            onClicked: mouse => { bridge.selectTray(row.number, mouse.modifiers); queue.trayChosen(); }
+        }
 
         ConfirmDialog {
             id: recoverDialog
@@ -49,6 +55,7 @@ ListView {
         }
 
         contentItem: ColumnLayout {
+            z: 2
             spacing: Kirigami.Units.smallSpacing
 
             RowLayout {

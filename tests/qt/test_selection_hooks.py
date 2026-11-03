@@ -63,6 +63,8 @@ def test_properties_notify_and_return_copies(bridge):
         "count": 2,
         "accepted": 1,
         "settings": {"brightness_ev": None, "rotation": 90},
+        "mixed": [],
+        "trays": [],
     }
     summary["settings"]["rotation"] = 0
     assert bridge.selectionSummary["settings"]["rotation"] == 90
@@ -79,4 +81,40 @@ def test_unaccept_uses_pending_and_adjust_translates_fields(bridge):
     assert bridge._controller.method_calls == [
         call.set_selection_status(SlideStatus.PENDING),
         call.adjust_selection({"color_strength": 0.7}),
+    ]
+
+
+def test_tray_modifiers_keep_legacy_slot_and_add_range_selection(bridge):
+    bridge.selectTray(2)
+    modifiers = Qt.KeyboardModifier.ControlModifier.value | Qt.KeyboardModifier.ShiftModifier.value
+    assert QMetaObject.invokeMethod(
+        bridge,
+        "selectTray",
+        Qt.ConnectionType.DirectConnection,
+        Q_ARG(int, 3),
+        Q_ARG(int, modifiers),
+    )
+    assert bridge._controller.method_calls == [
+        call.select_tray(2),
+        call.select_tray_slides(3, True, True),
+    ]
+
+
+def test_filter_and_review_slots_forward_to_bulk_commands(bridge):
+    bridge.selectFlagged()
+    bridge.selectFailed()
+    bridge.toggleSelectionAccepted()
+    bridge.setSelectionStatus("rejected")
+    bridge.setSelectionStatus("needs_look")
+    bridge.setSelectionStatus("blank")
+    bridge.reexportSelection()
+    bridge.undo()
+    assert bridge._controller.method_calls == [
+        call.select_where("flagged"),
+        call.select_where("failed"),
+        call.toggle_selection_accepted(),
+        call.set_selection_status(SlideStatus.PENDING),
+        call.set_selection_status(SlideStatus.NEEDS_LOOK),
+        call.reexport_selection(),
+        call.undo(),
     ]
