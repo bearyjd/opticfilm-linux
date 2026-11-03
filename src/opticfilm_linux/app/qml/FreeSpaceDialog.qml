@@ -6,26 +6,43 @@ import org.kde.kirigami as Kirigami
 Kirigami.Dialog {
     id: dialog
 
+    Kirigami.Theme.inherit: false
+    Kirigami.Theme.backgroundColor: Theme.card
+    Kirigami.Theme.alternateBackgroundColor: Theme.track
+    Kirigami.Theme.textColor: Theme.text
+    Kirigami.Theme.disabledTextColor: Theme.muted
+    Kirigami.Theme.highlightColor: Theme.accent
+    Kirigami.Theme.highlightedTextColor: Theme.accentText
+    Kirigami.Theme.linkColor: Theme.accent
+
+    background: Rectangle {
+        objectName: "dialogSurface"
+        radius: Theme.cardRadius
+        color: Theme.card
+        border.color: Theme.line
+    }
     title: qsTr("Free disk space")
-    padding: Kirigami.Units.largeSpacing
+    padding: Theme.spacing
     standardButtons: Kirigami.Dialog.NoButton
     closePolicy: bridge.freeSpaceRunning ? QQC2.Popup.NoAutoClose : QQC2.Popup.CloseOnEscape
-    onClosed: if (bridge.hasFreeSpace && !bridge.freeSpaceRunning) bridge.dismissFreeSpace()
-
+    onClosed: if (bridge.hasFreeSpace && !bridge.freeSpaceRunning)
+        bridge.dismissFreeSpace()
     ColumnLayout {
-        spacing: Kirigami.Units.largeSpacing
+        spacing: Theme.spacing
         implicitWidth: Kirigami.Units.gridUnit * 28
-
         QQC2.Label {
+            color: Theme.text
+            font.pixelSize: Theme.fontBody
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             text: bridge.freeSpaceText
         }
         QQC2.Label {
+            font.pixelSize: Theme.fontBody
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             visible: !bridge.freeSpaceDone
-            opacity: 0.8
+            color: Theme.muted
             text: qsTr("Only the raw scans are removed. The exported files and the previews stay. Slides can no longer be adjusted or exported again afterwards.")
         }
         QQC2.ProgressBar {
@@ -35,15 +52,16 @@ Kirigami.Dialog {
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight
-
-            QQC2.Button {
+            PillButton {
                 visible: bridge.freeSpaceReady
                 text: qsTr("Remove raw scans")
                 icon.name: "edit-delete"
                 highlighted: true
                 onClicked: bridge.confirmFreeSpace()
             }
-            QQC2.Button {
+            PillButton {
+                flat: true
+                icon.name: bridge.freeSpaceDone ? "dialog-close" : "dialog-cancel"
                 text: bridge.freeSpaceDone ? qsTr("Close") : (bridge.freeSpaceRunning ? qsTr("Stop after this tray") : qsTr("Cancel"))
                 onClicked: bridge.freeSpaceRunning ? bridge.cancelFreeSpace() : dialog.close()
             }

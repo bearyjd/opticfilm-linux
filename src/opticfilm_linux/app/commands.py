@@ -485,14 +485,13 @@ class ReviewCommands:
 
     def _retry_auto_cleanup(self, session, tray) -> None:
         """Retry one transient commit race per tray, leaving persistent errors visible."""
+        retry = (
+            tray.auto == "verified" and tray.auto_error and not cleanup_pending(session.store, tray)
+        )
         with self._lock:
             if self._session is not session:
                 return
-            if (
-                tray.auto == "verified"
-                and tray.auto_error
-                and not cleanup_pending(session.store, tray)
-            ):
+            if retry:
                 if tray.number not in self._auto_retried:
                     self._auto_retried.add(tray.number)
                     self._auto_due.add(tray.number)
@@ -524,9 +523,18 @@ class ReviewCommands:
         """The owner's one explicit release of the checked first tray."""
         with self._lock:
             session = self._session
-            if session is None or session.runner is None or number in self._auto_active:
+            if session is None or session.runner is None:
                 return
-            self._auto_active.add(number)
+            busy = number in self._auto_active
+            if not busy:
+                self._auto_active.add(number)
+        if busy:
+            self._set(
+                _banner=Banner(
+                    f"Tray {number}: wait for automatic export to finish, then free raw scans again"
+                )
+            )
+            return
         self._queue_auto(session, number, release=True)
 
     def recover_interrupted_cleanup(self, number: int) -> None:

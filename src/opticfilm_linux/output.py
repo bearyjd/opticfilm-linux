@@ -209,7 +209,10 @@ def _sync_directory(descriptor: int, required: bool = True) -> None:
             if not required:
                 return
             raise OSError(
-                exc.errno, "Directory sync is unsupported; cannot guarantee a durable export."
+                exc.errno,
+                "Directory sync is unsupported at this export location; cannot guarantee a "
+                "durable export. Choose another export folder on a filesystem that supports "
+                "directory sync, then retry. Keep the raw scans until verification succeeds.",
             ) from exc
         raise
 

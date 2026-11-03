@@ -3,46 +3,75 @@ import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 
-ColumnLayout {
+Card {
     id: banner
+    objectName: "errorBanner"
 
     property bool showDetail: false
 
-    spacing: 0
+    borderColor: Theme.error
+    borderWidth: 2
+    visible: bridge.hasBanner
+    onVisibleChanged: if (!visible)
+        showDetail = false
+    Accessible.role: Accessible.AlertMessage
+    Accessible.name: bridge.bannerMessage
 
-    Kirigami.InlineMessage {
-        Layout.fillWidth: true
-        visible: bridge.hasBanner
-        type: Kirigami.MessageType.Error
-        text: bridge.bannerMessage
-        onVisibleChanged: if (!visible) banner.showDetail = false
-        onLinkActivated: link => Qt.openUrlExternally(link)
-        actions: [
-            Kirigami.Action {
+    contentItem: ColumnLayout {
+        spacing: Theme.spacingSmall
+
+        RowLayout {
+            spacing: Theme.spacingSmall
+
+            Kirigami.Icon {
+                source: "dialog-error"
+                color: Theme.error
+                Layout.preferredWidth: Theme.spacingLarge
+                Layout.preferredHeight: Theme.spacingLarge
+                Accessible.ignored: true
+            }
+            Kirigami.SelectableLabel {
+                objectName: "bannerMessage"
+                Layout.fillWidth: true
+                text: bridge.bannerMessage
+                color: Theme.text
+                font.pixelSize: Theme.fontBody
+                wrapMode: Text.Wrap
+                onLinkActivated: link => Qt.openUrlExternally(link)
+            }
+        }
+        RowLayout {
+            spacing: Theme.spacingSmall
+
+            PillButton {
+                objectName: "bannerDetails"
                 text: banner.showDetail ? qsTr("Hide details") : qsTr("Details")
-                onTriggered: banner.showDetail = !banner.showDetail
-            },
-            Kirigami.Action {
+                icon.name: "dialog-information"
+                onClicked: banner.showDetail = !banner.showDetail
+            }
+            PillButton {
+                objectName: "bannerDismiss"
                 text: qsTr("Dismiss")
+                flat: true
                 icon.name: "dialog-close"
-                onTriggered: bridge.dismissBanner()
-            },
-            Kirigami.Action {
+                onClicked: bridge.dismissBanner()
+            }
+            PillButton {
+                objectName: "bannerReadonly"
                 visible: bridge.bannerLocked
                 text: qsTr("Open read-only")
-                icon.name: "document-open"
-                onTriggered: bridge.openLastReadonly()
+                onClicked: bridge.openLastReadonly()
             }
-        ]
-    }
-
-    QQC2.Label {
-        Layout.fillWidth: true
-        Layout.margins: Kirigami.Units.smallSpacing
-        visible: bridge.hasBanner && banner.showDetail
-        text: bridge.bannerDetail.replace(/^LOCKED: /, "")
-        wrapMode: Text.Wrap
-        font.family: "monospace"
-        opacity: 0.8
+        }
+        QQC2.Label {
+            objectName: "bannerDetail"
+            Layout.fillWidth: true
+            visible: banner.showDetail
+            text: bridge.bannerDetail.replace(/^LOCKED: /, "")
+            color: Theme.muted
+            font.pixelSize: Theme.fontBody
+            font.family: "monospace"
+            wrapMode: Text.Wrap
+        }
     }
 }

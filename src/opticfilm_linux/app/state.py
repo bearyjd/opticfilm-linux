@@ -1,13 +1,16 @@
 """Immutable snapshots of everything the window shows, built from the manifest."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Literal
 
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
+from opticfilm_linux.app.selection import Selection, prune, selectable_keys
+from opticfilm_linux.batch.cleanup_recovery import interrupted_cleanup_guidance
 from opticfilm_linux.batch.empty import empty_frame_fingerprints, is_empty_confirmed
 from opticfilm_linux.batch.model import (
     BatchManifest,
+    SlideKey,
     SlideRecord,
     SlideSettings,
     SlideStatus,
@@ -29,7 +32,7 @@ class SlideCard:
     owner_decided: bool
     exported: bool
     updating: bool
-    preview_token: int  # modified time of the "after" preview; 0 when there is none
+    preview_token: int  # cached version of the "after" preview; 0 when there is none
     before_preview_token: int = 0
 
 
@@ -48,6 +51,7 @@ class TrayRow:
     auto_flagged: tuple[int, ...] = ()
     auto_error: str = ""
     can_recover_raw: bool = False
+    slides: tuple[SlideCard, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,64 @@ class FreeSpaceView:
 
 
 LoadPhase = Literal["idle", "jogging", "await_reinsert", "loading", "done", "failed"]
+
+
+@dataclass(frozen=True)
+class SelectionSummary:
+    count: int = 0
+    accepted: int = 0
+    settings: tuple[tuple[str, object], ...] = ()  # None means mixed or automatic
+    mixed: tuple[str, ...] = ()
+    trays: tuple[int, ...] = ()
+
+
+def selection_fields(manifest, selection: Selection) -> dict:
+    selection = prune(selection, selectable_keys(manifest) if manifest else ())
+    slides = (
+        tuple(
+            slide
+            for tray in manifest.trays
+            for slide in tray.slides
+            if (tray.number, slide.position) in selection.keys
+        )
+        if manifest
+        else ()
+    )
+    common = (
+        tuple(
+            (
+                field.name,
+                getattr(slides[0].settings, field.name)
+                if all(
+                    getattr(slide.settings, field.name) == getattr(slides[0].settings, field.name)
+                    for slide in slides
+                )
+                else None,
+            )
+            for field in fields(SlideSettings)
+        )
+        if slides
+        else ()
+    )
+    return {
+        "selection": selection.keys,
+        "focus": selection.focus,
+        "selection_summary": SelectionSummary(
+            len(slides),
+            sum(slide.status is SlideStatus.ACCEPTED for slide in slides),
+            common,
+            tuple(
+                name
+                for name, value in common
+                if value is None
+                and any(
+                    getattr(slide.settings, name) != getattr(slides[0].settings, name)
+                    for slide in slides
+                )
+            ),
+            tuple(sorted({number for number, _ in selection.keys} | selection.trays, reverse=True)),
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -129,6 +191,10 @@ class AppState:
     empty_confirmation_sweep_version: int = 0
     empty_confirmation_previews: tuple[tuple[int, str, int], ...] = ()
     held_tray: int | None = None
+    selection: frozenset[SlideKey] = frozenset()
+    focus: SlideKey | None = None
+    selection_summary: SelectionSummary = SelectionSummary()
+    undo_label: str = ""
 
 
 EMPTY_STATE = AppState(
@@ -145,6 +211,13 @@ EMPTY_STATE = AppState(
     export=None,
     free_space=None,
 )
+
+
+def _tray_error(tray, raw_pending, raw_recoverable):
+    if not tray.raw_removed or tray.number not in raw_pending:
+        return tray.error
+    guidance = interrupted_cleanup_guidance(tray.number, recoverable=tray.number in raw_recoverable)
+    return f"{tray.error} {guidance}" if tray.error else guidance
 
 
 def _tray_row(
@@ -167,7 +240,7 @@ def _tray_row(
         ),
         progress=progress.get(tray.number),
         elapsed_s=elapsed,
-        error=tray.error,
+        error=_tray_error(tray, raw_pending, raw_recoverable),
         needs_look=sum(1 for s in tray.slides if s.status is SlideStatus.NEEDS_LOOK),
         raw_removed=tray.raw_removed,
         can_recover_raw=tray.raw_removed and tray.number in raw_recoverable,
@@ -231,7 +304,7 @@ def _scanner_fields(
     readonly: bool,
     holder_control: bool,
     holder_busy: bool,
-    next_strip: bool,
+    next_strip: bool | None,
     jobs_running: bool,
     holder_latch: HolderLatch,
 ) -> dict:
@@ -248,8 +321,10 @@ def _scanner_fields(
         and not readonly,
         "scan_pending": scan_pending,
         "can_eject": idle and scanner in (ScannerStatus.READY, ScannerStatus.NOT_READY),
-        "can_load_next": idle and next_strip and scanner is ScannerStatus.NOT_READY,
-        "next_strip_enabled": next_strip,
+        "can_load_next": idle
+        and (next_strip_enabled() if next_strip is None else next_strip)
+        and scanner is ScannerStatus.NOT_READY,
+        "next_strip_enabled": next_strip_enabled() if next_strip is None else next_strip,
         "can_confirm_scanner": scanner is ScannerStatus.INTERRUPTED and not busy,
         "holder_busy": holder_busy,
         "holder_latch_text": holder_latch_text(holder_latch),
@@ -285,6 +360,21 @@ def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverab
     )
 
 
+def _sheet_trays(manifest, rows, tokens, updating):
+    cards = {
+        tray.number: tuple(_slide_card(tray, slide, tokens, updating) for slide in tray.slides)
+        for tray in (manifest.trays if manifest else ())
+    }
+    return tuple(replace(row, slides=cards[row.number]) for row in rows)
+
+
+def _selected_batch_fields(manifest, selected, preview_tokens, updating, selection):
+    return {
+        **_batch_fields(manifest, selected, preview_tokens, updating),
+        **selection_fields(manifest, selection or Selection()),
+    }
+
+
 def build_state(
     manifest: BatchManifest | None,
     *,
@@ -309,25 +399,19 @@ def build_state(
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
     raw_pending: frozenset[int] = frozenset(),
     raw_recoverable: frozenset[int] = frozenset(),
+    selection: Selection | None = None,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
+    rows = _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable)
+    scanner_state = manifest, scanner, scan_pending, readonly
+    holder_state = holder_control, holder_busy, next_strip, jobs_running, holder_latch
     return AppState(
-        **_batch_fields(manifest, selected, preview_tokens, updating),
+        **_selected_batch_fields(manifest, selected, preview_tokens, updating, selection),
         **_auto_fields(manifest, readonly, preview_tokens, raw_pending),
-        **_scanner_fields(
-            manifest,
-            scanner,
-            scan_pending,
-            readonly,
-            holder_control,
-            holder_busy,
-            next_strip_enabled() if next_strip is None else next_strip,
-            jobs_running,
-            holder_latch,
-        ),
+        **_scanner_fields(*scanner_state, *holder_state),
         batch_session=batch_session,
         readonly=readonly,
-        trays=_tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable),
+        trays=_sheet_trays(manifest, rows, preview_tokens, updating),
         banner=banner,
         export=export,
         free_space=free_space,
@@ -452,7 +536,15 @@ def _auto_fields(
 
 
 def _empty_confirmation_fields(tray, readonly, tokens):
-    blanks = tuple(s for s in tray.slides if s.status is SlideStatus.BLANK) if tray else ()
+    blanks = (
+        tuple(
+            s
+            for s in tray.slides
+            if s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s)
+        )
+        if tray
+        else ()
+    )
     fingerprints = empty_frame_fingerprints(tray) if tray else {}
     return {
         "empty_confirmation_tray": tray.number if tray and not readonly else None,

@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QUrl  # noqa: E402
-from test_qt_smoke import _wait, loaded, qapp  # noqa: E402, F401
+from test_qt_smoke import _scanned, _wait, loaded, qapp  # noqa: E402, F401
 
 from opticfilm_linux.app.qt.bridge import _slide_dict  # noqa: E402
 from opticfilm_linux.app.state import SlideCard  # noqa: E402
@@ -50,4 +50,26 @@ def test_cached_empty_frames_can_be_confirmed_and_enlarged(loaded, tmp_path):
     assert QMetaObject.invokeMethod(dialog, "enlargeFrame", Q_ARG(int, 0))
     enlarged = root.findChild(QObject, "enlargedEmptyFrame")
     _wait(bridge, lambda: enlarged.property("opened"))
+    assert warnings == []
+
+
+def test_mark_empty_button_routes_slide_back_to_blank(loaded, tmp_path):
+    bridge, engine, warnings = loaded
+    _scanned(bridge, tmp_path, "Mark empty")
+    bridge.selectSlide(1, 1, 0)
+    root = engine.rootObjects()[0]
+    _wait(bridge, lambda: root.findChild(QObject, "markEmpty_1") is not None)
+    button = root.findChild(QObject, "markEmpty_1")
+    assert button is not None and button.property("enabled")
+    store = bridge._controller._session.store
+    assert store.snapshot().trays[0].slides[0].status is not SlideStatus.BLANK
+    assert QMetaObject.invokeMethod(button, "click")
+    _wait(bridge, lambda: store.snapshot().trays[0].slides[0].status is SlideStatus.BLANK)
+    slide = store.snapshot().trays[0].slides[0]
+    assert slide.owner_decided and slide.empty_confirmed is None
+    _wait(bridge, lambda: not button.property("enabled"))
+    restore = root.findChild(QObject, "restoreEmptySlide")
+    assert restore.property("visible")
+    assert QMetaObject.invokeMethod(restore, "click")
+    _wait(bridge, lambda: store.snapshot().trays[0].slides[0].status is SlideStatus.ACCEPTED)
     assert warnings == []

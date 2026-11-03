@@ -8,7 +8,7 @@ import dataclasses
 from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 
-from opticfilm_linux.batch.empty import empty_frame_fingerprints
+from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.enhance import RawRemoved
 from opticfilm_linux.batch.model import (
     BatchManifest,
@@ -87,8 +87,8 @@ def _require_editable(tray: TrayRecord) -> None:
 
 
 def set_slide_status(store: BatchStore, number: int, position: int, status: SlideStatus) -> None:
-    if status not in SETTABLE_STATUSES:
-        raise BatchError(f"a slide can only be set to accepted or needs_look, not {status}")
+    if status not in (*SETTABLE_STATUSES, SlideStatus.BLANK):
+        raise BatchError(f"a slide can only be set to accepted, needs_look or blank, not {status}")
 
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, slide = _find(manifest, number, position)
@@ -99,10 +99,21 @@ def set_slide_status(store: BatchStore, number: int, position: int, status: Slid
             status=status,
             owner_decided=True,
             auto_accepted=False,
-            preview_stale=slide.preview_stale or slide.status is SlideStatus.BLANK,
+            preview_stale=slide.preview_stale
+            or slide.status is SlideStatus.BLANK
+            or status is SlideStatus.BLANK,
+            blank_fingerprint="" if status is SlideStatus.BLANK else slide.blank_fingerprint,
         )
 
     store.update(change)
+
+
+def _pending_empty_fingerprints(tray: TrayRecord) -> dict[int, str]:
+    return {
+        s.position: s.blank_fingerprint
+        for s in tray.slides
+        if s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s)
+    }
 
 
 def confirm_empty_frames(
@@ -123,7 +134,7 @@ def confirm_empty_frames(
         _require_raw(tray)
         if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED):
             raise BatchError(f"tray {number} is not ready for empty-frame confirmation")
-        current = empty_frame_fingerprints(tray)
+        current = _pending_empty_fingerprints(tray)
         if (
             not current
             or expected_sweep_version != tray.sweep_version
@@ -139,7 +150,7 @@ def confirm_empty_frames(
                 empty_confirmed=EmptyConfirmation(tray.sweep_version, current[s.position]),
                 auto_accepted=False,
             )
-            if s.status is SlideStatus.BLANK
+            if s.position in current
             else s
             for s in tray.slides
         )
@@ -358,12 +369,25 @@ def _edit_many(
     store: BatchStore,
     keys: Iterable[SlideKey],
     edit: Callable[[SlideKey, SlideRecord], BeforeEdit],
+    *,
+    toggle_accepted: bool = False,
 ) -> BulkEditResult:
     selected = set(keys)
     skipped = dict.fromkeys(selected, "missing")
     before: dict[SlideKey, BeforeEdit] = {}
 
     def change(manifest: BatchManifest) -> BatchManifest:
+        accepted = (
+            all(
+                slide.status is SlideStatus.ACCEPTED
+                for tray in manifest.trays
+                for slide in tray.slides
+                if (tray.number, slide.position) in selected and _bulk_skip(tray, slide) is None
+            )
+            if toggle_accepted
+            else False
+        )
+        status = SlideStatus.PENDING if accepted else SlideStatus.ACCEPTED
         trays = []
         for tray in manifest.trays:
             slides = []
@@ -377,7 +401,10 @@ def _edit_many(
                     else:
                         del skipped[key]
                         before[key] = (slide.settings, slide.status, slide.owner_decided)
-                        updated = _bulk_slide(slide, edit(key, slide))
+                        values = (
+                            (slide.settings, status, True) if toggle_accepted else edit(key, slide)
+                        )
+                        updated = _bulk_slide(slide, values)
                         settings_changed |= updated.settings != slide.settings
                         slide = updated
                 slides.append(slide)
@@ -402,9 +429,16 @@ def set_status_many(
 def apply_settings_many(
     store: BatchStore,
     keys: Iterable[SlideKey] | Mapping[SlideKey, SlideSettings],
-    changes: SlideSettings | Mapping[str, object] | Mapping[SlideKey, SlideSettings] | None = None,
+    changes: SlideSettings
+    | Mapping[str, object]
+    | Mapping[SlideKey, SlideSettings]
+    | Callable[[SlideSettings], SlideSettings]
+    | None = None,
 ) -> BulkEditResult:
     """Apply common partial/full settings or a per-key settings map atomically.
+
+    A callable derives each slide's new settings from its current settings inside the
+    same store update, so there is no read-compute-write gap.
 
     The two-argument form accepts a map from slide keys to full settings. Partial
     settings preserve every field omitted from the mapping on each selected slide.
@@ -419,6 +453,8 @@ def apply_settings_many(
     def edit(key: SlideKey, slide: SlideRecord) -> BeforeEdit:
         if isinstance(changes, SlideSettings):
             settings = changes
+        elif callable(changes):
+            settings = changes(slide.settings)
         elif key in changes:
             settings = changes[key]
             if not isinstance(settings, SlideSettings):
@@ -441,3 +477,13 @@ def restore_many(
     """
     saved = dict(before)
     return _edit_many(store, saved, lambda key, slide: saved[key])
+
+
+def toggle_accepted_many(store: BatchStore, keys: Iterable[SlideKey]) -> BulkEditResult:
+    """Toggle acceptance using only editable slides within the atomic update."""
+    return _edit_many(
+        store,
+        keys,
+        lambda key, slide: (slide.settings, slide.status, True),
+        toggle_accepted=True,
+    )

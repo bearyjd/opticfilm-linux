@@ -20,9 +20,11 @@ class Selection:
     keys: frozenset[SlideKey] = frozenset()
     anchor: SlideKey | None = None
     focus: SlideKey | None = None
+    trays: frozenset[int] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "keys", frozenset(self.keys))
+        object.__setattr__(self, "trays", frozenset(self.trays))
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,7 @@ def click(sel: Selection, key: SlideKey) -> Selection:
 
 
 def toggle(sel: Selection, key: SlideKey) -> Selection:
-    return Selection(sel.keys ^ {key}, key, key)
+    return Selection(sel.keys ^ {key}, key, key, sel.trays)
 
 
 def extend(
@@ -65,7 +67,9 @@ def extend(
     anchor = sel.anchor if sel.anchor in order else key
     low, high = sorted((order.index(anchor), order.index(key)))
     keys = frozenset(order[low : high + 1])
-    return Selection(keys | sel.keys if additive else keys, anchor, key)
+    return Selection(
+        keys | sel.keys if additive else keys, anchor, key, sel.trays if additive else frozenset()
+    )
 
 
 def select_all(order: Sequence[SlideKey]) -> Selection:
@@ -88,6 +92,7 @@ def select_tray(
         selected.keys | sel.keys if additive else selected.keys,
         selected.anchor,
         selected.focus,
+        sel.trays if additive else frozenset(),
     )
 
 
@@ -122,6 +127,7 @@ def prune(sel: Selection, order: Sequence[SlideKey]) -> Selection:
         sel.keys & available,
         sel.anchor if sel.anchor in available else None,
         sel.focus if sel.focus in available else None,
+        sel.trays,
     )
 
 
@@ -133,3 +139,26 @@ def pop_undo(
     stack: tuple[UndoEntry, ...],
 ) -> tuple[tuple[UndoEntry, ...], UndoEntry | None]:
     return (stack[:-1], stack[-1]) if stack else ((), None)
+
+
+def filter_matches(tray, slide, name: str) -> bool:
+    """Use identical predicates for contact-sheet filters and their counters."""
+    if name == "flagged":
+        return (
+            bool(slide.flags)
+            or slide.status is SlideStatus.BLANK
+            or slide.position in tray.auto_flagged
+        )
+    return (
+        slide.position in tray.auto_failed
+        or tray.stage is TrayStage.FAILED
+        or (tray.auto == "failed" and not tray.auto_failed)
+    )
+
+
+def failed_empty_trays(trays) -> frozenset[int]:
+    return frozenset(
+        tray.number
+        for tray in trays
+        if not tray.slides and (tray.stage is TrayStage.FAILED or tray.auto == "failed")
+    )

@@ -11,7 +11,7 @@ from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
-from opticfilm_linux.app.messages import bytes_text, load_command, slide_status_text
+from opticfilm_linux.app.messages import bytes_text, load_command
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
     DPI_CHOICES,
@@ -27,10 +27,19 @@ from opticfilm_linux.app.prefs import (
     remember_theme,
 )
 from opticfilm_linux.app.qt.destination import DestinationCheck
-from opticfilm_linux.app.qt.models import DictListModel
+from opticfilm_linux.app.qt.models import DictListModel, SheetModel
+from opticfilm_linux.app.qt.selection import FIELDS, SelectionBridge
+from opticfilm_linux.app.qt.sheet import (
+    _slide_dict,
+    _tray_dict,
+    filter_count,
+    focused_slide,
+    selection_summary,
+    sheet_rows,
+)
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
-from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
-from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
+from opticfilm_linux.app.state import EMPTY_STATE, AppState
+from opticfilm_linux.batch.model import ROTATIONS, SlideStatus
 from opticfilm_linux.batch.slots import slot_orientations
 
 TICK_MS = 500
@@ -67,69 +76,42 @@ SLIDE_KEYS = (
     "afterUrl",
     "beforeUrl",
 )
-FIELDS = {
-    "brightness": "brightness_ev",
-    "color": "color_strength",
-    "grain": "grain_strength",
-    "sharpen": "sharpen_amount",
-}
-DEFAULTS = BatchDefaults()
-
-
-def _tray_dict(row: TrayRow) -> dict[str, Any]:
-    elapsed = "" if row.elapsed_s is None else f"{int(row.elapsed_s)} s"
-    return {
-        "number": row.number,
-        "stage": row.stage.value,
-        "stageText": row.stage_text,
-        "progress": -1.0 if row.progress is None else row.progress,
-        "elapsed": elapsed,
-        "error": row.error or "",
-        "needsLook": row.needs_look,
-        "rawRemoved": row.raw_removed,
-        "canRecoverRaw": row.can_recover_raw,
-        "auto": row.auto,
-        "autoFailed": ", ".join(map(str, row.auto_failed)),
-        "autoError": row.auto_error,
-        "autoFlagged": ", ".join(map(str, row.auto_flagged)),
-    }
-
-
-def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
-    s = card.settings
-    base = f"image://preview/{tray}/{card.position}"
-    return {
-        "position": card.position,
-        "status": card.status.value,
-        "statusText": slide_status_text(card.status),
-        "flags": list(card.flags),
-        "rotation": s.rotation,
-        "mirror": s.mirror,
-        "brightness": s.brightness_ev,
-        "color": DEFAULTS.color_strength if s.color_strength is None else s.color_strength,
-        "grain": DEFAULTS.grain_strength if s.grain_strength is None else s.grain_strength,
-        "sharpen": DEFAULTS.sharpen_amount if s.sharpen_amount is None else s.sharpen_amount,
-        "ownerDecided": card.owner_decided,
-        "exported": card.exported,
-        "updating": card.updating,
-        "afterUrl": f"{base}/after/{card.preview_token}" if card.preview_token else "",
-        "beforeUrl": f"{base}/before/{card.before_preview_token}"
-        if card.before_preview_token
-        else "",
-    }
 
 
 def _p(kind: Any, changed: Signal, read) -> Property:
     return Property(kind, lambda self: read(self._state, self), notify=changed)
 
 
-class Bridge(QObject):
+class Bridge(SelectionBridge):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
     automaticExportProblemChanged = Signal()  # noqa: N815
     heldReleaseReady = Signal(int, str)  # noqa: N815
     _heldReleasePrepared = Signal(int, int, str)  # noqa: N815
+
+    selection = Property(
+        "QVariantList",
+        lambda self: [list(key) for key in sorted(self._state.selection)],
+        notify=changed,
+    )
+    selectionFocus = Property(  # noqa: N815
+        "QVariantList", lambda self: list(self._state.focus or ()), notify=changed
+    )
+    selectionSummary = Property(  # noqa: N815
+        "QVariantMap", lambda self: selection_summary(self._state), notify=changed
+    )
+    focusedSlide = Property(  # noqa: N815
+        "QVariantMap", lambda self: focused_slide(self._state), notify=changed
+    )
+    sheet = Property(QObject, lambda self: self._sheet, constant=True)
+    undoLabel = Property(str, lambda self: self._state.undo_label, notify=changed)  # noqa: N815
+    flaggedCount = Property(  # noqa: N815
+        int, lambda self: filter_count(self._state, "flagged"), notify=changed
+    )
+    failedCount = Property(  # noqa: N815
+        int, lambda self: filter_count(self._state, "failed"), notify=changed
+    )
 
     def __init__(
         self,
@@ -151,6 +133,7 @@ class Bridge(QObject):
         self._state: AppState = EMPTY_STATE
         self._trays = DictListModel(TRAY_KEYS, self)
         self._slides = DictListModel(SLIDE_KEYS, self)
+        self._sheet = SheetModel(TRAY_KEYS + ("slides",), self)
         self._pending: dict[tuple[int, int], dict[str, float]] = {}
         self._opening: Path | None = None
         self._last_attempt: Path | None = None
@@ -219,6 +202,7 @@ class Bridge(QObject):
                 self._pending_export = None
         self._state = state
         self._trays.set_rows([_tray_dict(t) for t in state.trays])
+        self._sheet.set_rows(sheet_rows(state))
         number = state.selected
         self._slides.set_rows(
             [] if number is None else [_slide_dict(number, c) for c in state.slides]
@@ -584,14 +568,24 @@ class Bridge(QObject):
         QGuiApplication.clipboard().setText(self._load_command)
 
     @Slot(int)
-    def selectTray(self, number: int) -> None:  # noqa: N802
-        self._controller.select_tray(number)
+    @Slot(int, int)
+    def selectTray(self, number: int, modifiers: int | None = None) -> None:  # noqa: N802
+        self._flush_now()
+        if modifiers is None:
+            self._controller.select_tray(number)
+        else:
+            self._select_tray_slides(number, modifiers)
 
     @Slot(int, int, bool)
     def setAccepted(self, number: int, position: int, accepted: bool) -> None:  # noqa: N802
         self._flush_now()
         status = SlideStatus.ACCEPTED if accepted else SlideStatus.NEEDS_LOOK
         self._controller.set_status(number, position, status)
+
+    @Slot(int, int)
+    def markEmpty(self, number: int, position: int) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.set_status(number, position, SlideStatus.BLANK)
 
     @Slot(int, int, int)
     def rotate(self, number: int, position: int, quarter_turns: int) -> None:

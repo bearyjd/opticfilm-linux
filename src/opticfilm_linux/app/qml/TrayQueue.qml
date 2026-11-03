@@ -6,6 +6,7 @@ import org.kde.kirigami as Kirigami
 ListView {
     id: queue
     objectName: "trayQueue"
+    signal trayChosen()
 
     clip: true
     model: bridge.trays
@@ -39,7 +40,18 @@ ListView {
 
         width: ListView.view.width
         highlighted: number === bridge.selectedTray
-        onClicked: bridge.selectTray(number)
+        // Keep error text readable on selected rows in both themes.
+        background: Rectangle {
+            color: row.highlighted ? Theme.track : row.hovered ? Theme.card : "transparent"
+            border.color: row.highlighted || row.visualFocus ? Theme.accent : "transparent"
+            border.width: 1
+        }
+        onClicked: { bridge.selectTray(number, 0); queue.trayChosen(); }
+        MouseArea {
+            anchors.fill: parent
+            z: 1
+            onClicked: mouse => { bridge.selectTray(row.number, mouse.modifiers); queue.trayChosen(); }
+        }
 
         ConfirmDialog {
             id: recoverDialog
@@ -49,6 +61,7 @@ ListView {
         }
 
         contentItem: ColumnLayout {
+            z: 2
             spacing: Kirigami.Units.smallSpacing
 
             RowLayout {
@@ -85,7 +98,7 @@ ListView {
             QQC2.Button {
                 objectName: "recoverRaw" + row.number
                 visible: row.canRecoverRaw && !bridge.readonly
-                text: qsTr("Recover intact raw scans…")
+                text: qsTr("Verify remaining scans…")
                 onClicked: recoverDialog.open()
             }
             QQC2.Label {
@@ -94,9 +107,10 @@ ListView {
                 color: Kirigami.Theme.neutralTextColor
             }
             QQC2.Label {
-                visible: row.stage === "failed"
+                objectName: "trayError" + row.number
+                visible: row.error !== ""
                 text: row.error
-                color: Kirigami.Theme.negativeTextColor
+                color: Theme.error
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }
