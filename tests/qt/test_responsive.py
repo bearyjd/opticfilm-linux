@@ -35,9 +35,6 @@ PANES_PENDING = pytest.mark.xfail(
 STATUS_PENDING = pytest.mark.xfail(
     strict=True, raises=AssertionError, reason="PR4: bounded prioritized status area"
 )
-DIALOGS_PENDING = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="PR3: bounded dialogs and visible footer actions"
-)
 
 
 @pytest.fixture(scope="module")
@@ -119,7 +116,6 @@ def test_worst_stack_keeps_review_space_and_safety_actions(layout, size, theme):
     tuple(
         pytest.param(
             name,
-            marks=DIALOGS_PENDING if name not in {"confirm-cleanup", "first-load-quit"} else (),
         )
         for name in (
             "export",

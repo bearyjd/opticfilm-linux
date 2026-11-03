@@ -5,6 +5,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    preferredWidth: Math.min(32 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 32 * Kirigami.Units.gridUnit)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
 
     Kirigami.Theme.inherit: false
     Kirigami.Theme.backgroundColor: Theme.card
@@ -29,7 +34,6 @@ Kirigami.Dialog {
     readonly property bool busy: bridge.scanPending || bridge.holderBusy
     ColumnLayout {
         spacing: Theme.spacing
-        implicitWidth: Kirigami.Units.gridUnit * 32
         Card {
             id: busyWarning
             objectName: "loadBusyWarning"

@@ -5,6 +5,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    preferredWidth: Math.min(28 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 28 * Kirigami.Units.gridUnit)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
 
     Kirigami.Theme.inherit: false
     Kirigami.Theme.backgroundColor: Theme.card
@@ -31,7 +36,6 @@ Kirigami.Dialog {
     }
     ColumnLayout {
         spacing: Theme.spacing
-        implicitWidth: Kirigami.Units.gridUnit * 28
         QQC2.Label {
             color: Theme.text
             font.pixelSize: Theme.fontBody
@@ -59,16 +63,24 @@ Kirigami.Dialog {
             wrapMode: Text.Wrap
             text: qsTr("Slides are enhanced again and must be exported again. Trays whose raw scans were removed keep their old orientation; you will be told which. Choosing the current orientation changes nothing.")
         }
-        PillButton {
-            Layout.alignment: Qt.AlignRight
-            objectName: "orientationApply"
-            text: qsTr("Apply")
-            icon.name: "dialog-ok-apply"
-            highlighted: true
-            enabled: !bridge.readonly
-            onClicked: {
-                bridge.setBatchOrientation(parseInt(rotationBox.currentText), mirrorBox.checked);
-                dialog.close();
+    }
+    footer: QQC2.Control {
+        padding: Theme.spacing
+        contentItem: RowLayout {
+            Item {
+                Layout.fillWidth: true
+            }
+            PillButton {
+                Layout.alignment: Qt.AlignRight
+                objectName: "orientationApply"
+                text: qsTr("Apply")
+                icon.name: "dialog-ok-apply"
+                highlighted: true
+                enabled: !bridge.readonly
+                onClicked: {
+                    bridge.setBatchOrientation(parseInt(rotationBox.currentText), mirrorBox.checked);
+                    dialog.close();
+                }
             }
         }
     }

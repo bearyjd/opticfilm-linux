@@ -4,6 +4,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.PromptDialog {
     id: dialog
+    preferredWidth: Math.min(30 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 30 * Kirigami.Units.gridUnit)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
     padding: Theme.spacing
     contentPadding: Theme.spacing
 
