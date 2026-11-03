@@ -23,7 +23,7 @@ QtObject {
         id: fontMetrics
         font: Qt.application.font
     }
-    readonly property int gu: Math.max(Kirigami.Units.gridUnit, fontMetrics.height)
+    readonly property int gu: Math.max(1, Kirigami.Units.gridUnit || 0, fontMetrics.height || 0)
     readonly property int cardRadius: Math.round(gu * 0.8)
     readonly property int spacingSmall: Math.round(gu * 0.45)
     readonly property int spacing: Math.round(gu * 0.9)
