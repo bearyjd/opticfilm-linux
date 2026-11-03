@@ -385,7 +385,7 @@ def test_freed_first_tray_allows_surviving_held_settings_approval():
     assert _build(manifest).held_tray == 2
 
 
-def test_empty_confirmation_includes_every_blank_with_rendered_fingerprints():
+def test_empty_confirmation_only_includes_unconfirmed_blanks():
     from opticfilm_linux.batch.model import EmptyConfirmation
 
     manifest = _manifest()
@@ -408,12 +408,11 @@ def test_empty_confirmation_includes_every_blank_with_rendered_fingerprints():
         preview_tokens={(1, 1): 20, (1, 1, "before"): 10, (1, 2): 30},
     )
     assert state.empty_confirmation_sweep_version == 3
-    assert state.empty_confirmation_count == 2
+    assert state.empty_confirmation_count == 1
     assert [(p, digest) for p, digest, _ in state.empty_confirmation_previews] == [
-        (1, "a" * 64),
         (2, "b" * 64),
     ]
-    assert [token for _, _, token in state.empty_confirmation_previews] == [10, 0]
+    assert [token for _, _, token in state.empty_confirmation_previews] == [0]
 
 
 def test_legacy_owner_blank_still_needs_explicit_confirmation():
@@ -427,3 +426,20 @@ def test_legacy_owner_blank_still_needs_explicit_confirmation():
     state = _build(replace(manifest, trays=(first,)))
     assert state.empty_confirmation_tray == 1
     assert state.held_tray is None
+
+
+@pytest.mark.parametrize("recoverable", [False, True])
+@pytest.mark.parametrize("auto", ["", "off", "verified"])
+def test_interrupted_cleanup_row_has_actionable_guidance(auto, recoverable):
+    from opticfilm_linux.batch.cleanup_recovery import interrupted_cleanup_guidance
+
+    manifest = _manifest()
+    tray = replace(manifest.trays[0], raw_removed=True, auto=auto, error="Existing error.")
+    state = _build(
+        replace(manifest, trays=(tray,)),
+        raw_pending=frozenset({tray.number}),
+        raw_recoverable=frozenset({tray.number}) if recoverable else frozenset(),
+    )
+    assert state.trays[0].error == "Existing error. " + interrupted_cleanup_guidance(
+        tray.number, recoverable=recoverable
+    )

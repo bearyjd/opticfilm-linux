@@ -88,8 +88,8 @@ def test_set_slide_status_marks_the_owner_decision(store):
     assert slide.status is SlideStatus.NEEDS_LOOK and slide.owner_decided
 
 
-@pytest.mark.parametrize("status", [SlideStatus.PENDING, SlideStatus.BLANK])
-def test_set_status_rejects_pending_and_blank(store, status):
+@pytest.mark.parametrize("status", [SlideStatus.PENDING])
+def test_set_status_rejects_pending(store, status):
     with pytest.raises(BatchError):
         set_slide_status(store, 1, 1, status)
 
