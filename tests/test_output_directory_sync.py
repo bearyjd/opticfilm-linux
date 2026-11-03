@@ -59,6 +59,9 @@ def test_unsupported_directory_sync_rejects_receipt(tmp_path, monkeypatch, error
             on_written=lambda *receipt: receipts.append(receipt),
         )
     assert raised.value.errno == error
+    assert "export location" in str(raised.value)
+    assert "Choose another export folder" in str(raised.value)
+    assert "raw scans" in str(raised.value)
     assert receipts == []
     assert not list(tmp_path.rglob("*.jpg"))
 

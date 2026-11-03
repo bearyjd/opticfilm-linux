@@ -85,7 +85,7 @@ ListView {
             QQC2.Button {
                 objectName: "recoverRaw" + row.number
                 visible: row.canRecoverRaw && !bridge.readonly
-                text: qsTr("Recover intact raw scans…")
+                text: qsTr("Verify remaining scans…")
                 onClicked: recoverDialog.open()
             }
             QQC2.Label {
@@ -94,7 +94,8 @@ ListView {
                 color: Kirigami.Theme.neutralTextColor
             }
             QQC2.Label {
-                visible: row.stage === "failed"
+                objectName: "trayError" + row.number
+                visible: row.error !== ""
                 text: row.error
                 color: Kirigami.Theme.negativeTextColor
                 wrapMode: Text.Wrap
