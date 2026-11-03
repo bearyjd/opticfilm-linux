@@ -63,7 +63,7 @@ def loaded(qapp, sweep600_dir, monkeypatch):
     controller = Controller(scanner_factory(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     assert engine.rootObjects(), warnings
     yield bridge, engine, warnings
     bridge.shutdown()
@@ -318,7 +318,7 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         load_runner_note="runs in the box",
     )
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Loose", "", "", 600)
         _wait(bridge, lambda: bridge.hasBatch and bridge.canLoadNext)
@@ -367,7 +367,7 @@ def test_the_help_dialog_hides_the_power_steps_while_a_scan_runs(qapp, sweep600_
     controller = Controller(lambda _dpi: scanner)
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Busy", "", "", 600)
         _wait(bridge, lambda: bridge.hasBatch and bridge.canScan)
@@ -407,7 +407,7 @@ def test_an_interrupted_scanner_offers_only_confirm_and_the_dialog_clears_it(
     controller = Controller(lambda _dpi: Guarded(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Cut", "", "", 600)
         _wait(bridge, lambda: bridge.hasBatch and bridge.canConfirmScanner)
@@ -564,7 +564,7 @@ def test_start_page_defaults_to_7200(qapp, sweep600_dir, demo_dpi, expected):
     controller = Controller(scanner_factory(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=demo_dpi)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         assert engine.rootObjects(), warnings
         root = engine.rootObjects()[0]

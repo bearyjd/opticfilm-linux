@@ -5,13 +5,45 @@ import org.kde.kirigami as Kirigami
 Kirigami.ApplicationWindow {
     id: root
 
+    readonly property real gridUnit: Kirigami.Units.gridUnit
+    property int windowedWidth: 0
+    property int windowedHeight: 0
+    signal saveWindowGeometry(int windowWidth, int windowHeight, bool maximized)
+
+    // Previous windowed size: a maximized size can arrive before visibility flips,
+    // so it is rolled back when the window turns out to be maximized/fullscreen.
+    property int previousWindowedWidth: 0
+    property int previousWindowedHeight: 0
+
+    onWidthChanged: if (visibility === Window.Windowed && width > 0) {
+        previousWindowedWidth = windowedWidth;
+        windowedWidth = width;
+    }
+    onHeightChanged: if (visibility === Window.Windowed && height > 0) {
+        previousWindowedHeight = windowedHeight;
+        windowedHeight = height;
+    }
+    onVisibilityChanged: {
+        if (visibility === Window.Windowed) {
+            if (windowedWidth > 0 && windowedHeight > 0) {
+                width = windowedWidth;
+                height = windowedHeight;
+            }
+        } else if (visibility === Window.Maximized || visibility === Window.FullScreen) {
+            if (width === windowedWidth && previousWindowedWidth > 0)
+                windowedWidth = previousWindowedWidth;
+            if (height === windowedHeight && previousWindowedHeight > 0)
+                windowedHeight = previousWindowedHeight;
+        }
+    }
+
     property bool closeWhenIdle: false
     property bool firstLoadQuitConfirmed: false
 
     title: bridge.hasBatch ? bridge.batchName + " — OpticFilm Linux" : "OpticFilm Linux"
-    width: 1220
-    height: 780
-    visible: true
+    width: 68 * gridUnit
+    height: 43 * gridUnit
+    visible: false
     color: Theme.window
 
     Binding { target: Theme; property: "dark"; value: bridge.theme === "dark" }
@@ -81,6 +113,9 @@ Kirigami.ApplicationWindow {
             close.accepted = false;
             waitDialog.open();
         }
+        if (close.accepted)
+            root.saveWindowGeometry(root.windowedWidth, root.windowedHeight,
+                                    root.visibility === Window.Maximized);
     }
 
     ConfirmDialog {

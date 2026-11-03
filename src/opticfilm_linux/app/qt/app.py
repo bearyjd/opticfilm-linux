@@ -1,6 +1,7 @@
 """``opticfilm``: start the desktop app (``--fake SWEEP_DIR`` runs it on the fake scanner)."""
 
 import argparse
+import logging
 import os
 import sys
 from importlib.resources import files
@@ -11,6 +12,11 @@ from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.eject_watch import EjectWatch
 from opticfilm_linux.app.messages import load_command, runner_note
 from opticfilm_linux.app.provenance import ProvenanceScanner
+from opticfilm_linux.app.qt.window_geometry import (
+    initial_geometry,
+    override_geometry,
+    resolve_override,
+)
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -28,6 +34,8 @@ APP_ID = "io.github.bearyjd.OpticFilmLinux"
 APP_NAME = "opticfilm"
 DISPLAY_NAME = "OpticFilm Linux"
 STYLE = "Basic"
+LOGGER = logging.getLogger(__name__)
+WINDOW_SIZE_ENV = "OPTICFILM_WINDOW_SIZE"
 LOAD_COMMAND_ENV = "OPTICFILM_LOAD_COMMAND"  # replaces the shown first-load terminal command
 MISSING_QT_MESSAGE = (
     "opticfilm: the desktop app needs the distribution's PySide6 and Kirigami (the PyPI PySide6 "
@@ -71,7 +79,9 @@ def load_runner_note() -> str:
     return runner_note()
 
 
-def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
+def create_engine(
+    bridge: Any, provider: Any, size: tuple[int, int] | None = None
+) -> tuple[Any, list[str]]:
     """The QML engine with the window loaded, and the list its warnings are collected in."""
     from PySide6.QtCore import QUrl  # noqa: PLC0415 - Qt is imported only when it runs
     from PySide6.QtQml import QQmlApplicationEngine  # noqa: PLC0415
@@ -83,7 +93,57 @@ def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
     engine.addImageProvider("preview", provider)
     engine.rootContext().setContextProperty("bridge", bridge)
     engine.load(QUrl.fromLocalFile(str(qml_main())))
+    if engine.rootObjects():
+        _show_window(engine.rootObjects()[0], size)
     return engine, warnings
+
+
+def _show_window(window: Any, size: object) -> None:
+    """Apply geometry before showing; any failure falls back to the default size."""
+    maximized = False
+    try:
+        maximized = _apply_geometry(window, size)
+    except Exception as exc:  # noqa: BLE001 - the window must always become visible
+        LOGGER.warning("Window geometry failed (%s); using the default size", exc)
+    finally:
+        if maximized:
+            window.showMaximized()
+        else:
+            window.show()
+
+
+def _apply_geometry(window: Any, size: object) -> bool:
+    """Resize the window; returns whether it should start maximized."""
+    from opticfilm_linux.app.qt.settings import QSettingsPrefs  # noqa: PLC0415
+
+    override = resolve_override(size, os.environ.get(WINDOW_SIZE_ENV, ""))
+    screen = window.screen()
+    if screen is None:
+        from PySide6.QtGui import QGuiApplication  # noqa: PLC0415
+
+        screen = QGuiApplication.primaryScreen()
+    available = screen.availableGeometry()
+    grid_unit = window.property("gridUnit")
+    maximized = False
+    if override is not None:
+        width, height, min_w, min_h = override_geometry(
+            override, available.width(), available.height(), grid_unit
+        )
+    else:
+        prefs = QSettingsPrefs()
+        width, height, maximized, min_w, min_h = initial_geometry(
+            available.width(), available.height(), grid_unit, prefs.window_geometry()
+        )
+        # A closure keeps `prefs` alive; Qt would not own a bound method's instance.
+        window.saveWindowGeometry.connect(
+            lambda saved_w, saved_h, is_max: prefs.save_window_geometry(saved_w, saved_h, is_max)
+        )
+    window.setMinimumWidth(min_w)
+    window.setMinimumHeight(min_h)
+    window.resize(width, height)
+    window.setProperty("windowedWidth", width)
+    window.setProperty("windowedHeight", height)
+    return maximized
 
 
 def configure_style() -> None:

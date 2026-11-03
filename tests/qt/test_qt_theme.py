@@ -53,7 +53,7 @@ def test_theme_toggle_persists_across_fresh_bridge(qapp):
     prefs = MemoryPrefs()
     first = Bridge(Controller(scanner_factory(None)), prefs)
     provider = PreviewProvider(lambda *_: None)
-    engine, warnings = create_engine(first, provider)
+    engine, warnings = create_engine(first, provider, size=(1220, 780))
     second = None
     try:
         assert engine.rootObjects(), warnings
