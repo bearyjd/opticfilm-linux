@@ -12,6 +12,8 @@ QtObject {
     readonly property color pressedAccent: dark ? "#a4c8ff" : "#194780"
     readonly property color accentText: dark ? "#102039" : "#ffffff"
     readonly property color line: dark ? "#4b5d78" : "#acbbcf"
+    readonly property color warn: dark ? "#f2c14e" : "#8a5a00"
+    readonly property color error: dark ? "#ff9a9a" : "#a8201a"
     readonly property color track: dark ? "#39465b" : "#dce4ef"
 
     readonly property int cardRadius: 14
