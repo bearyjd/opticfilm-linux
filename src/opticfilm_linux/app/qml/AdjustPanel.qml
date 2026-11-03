@@ -32,6 +32,12 @@ Kirigami.FormLayout {
             onToggled: bridge.setAccepted(panel.tray, panel.position, checked)
         }
         QQC2.Button {
+            objectName: "markEmpty_%1".arg(panel.position)
+            enabled: panel.status !== "blank"
+            text: qsTr("Mark empty")
+            onClicked: bridge.markEmpty(panel.tray, panel.position)
+        }
+        QQC2.Button {
             enabled: panel.status !== "blank"
             text: qsTr("Rotate left")
             icon.name: "object-rotate-left"

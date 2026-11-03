@@ -34,6 +34,7 @@ from typing import Literal
 from PIL import Image
 
 from opticfilm_linux.batch.cleanup_recovery import (
+    _check_interrupted_cleanup,
     _cleanup_listable,
     _compare_cleanup_evidence,
     _record_cleanup_complete,
@@ -686,8 +687,7 @@ def check_cleanup_allowed(
     _recheck_released_raw(store, manifest, number)
     _cleanup_policy(manifest, number, release_first=release_first)
     if tray.raw_removed:
-        folders = tuple(_checked_sweep_folders(store, number))
-        _checked_snapshot(store, tray, folders)
+        _check_interrupted_cleanup(store, tray)
         return tray
     if tray.stage is not TrayStage.EXPORTED:
         raise CleanupPolicyRefused(

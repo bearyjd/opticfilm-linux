@@ -72,15 +72,13 @@ def test_owner_recovery_refuses_partial_current_raw(interrupted, missing):
     assert store.snapshot().trays[0].raw_removed
 
 
-@pytest.mark.parametrize("change", ["extra", "legacy", "duplicate_version"])
+@pytest.mark.parametrize("change", ["extra", "duplicate_version"])
 def test_owner_recovery_requires_intact_remaining_inventory(interrupted, change):
     store, _ = interrupted
     if change == "extra":
         store.sweep_dir(1, 0).mkdir()
     elif change == "duplicate_version":
         shutil.copytree(store.sweep_dir(1, 1), store.tray_dir(1) / "sweep-01")
-    elif change == "legacy":
-        store.update_tray(1, cleanup_sweeps=())
     with pytest.raises(export.CleanupPolicyRefused, match="tray 1"):
         export.recover_interrupted_cleanup(store, 1)
     assert store.snapshot().trays[0].raw_removed

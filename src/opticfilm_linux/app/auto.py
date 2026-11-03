@@ -66,6 +66,19 @@ class AutoPipeline:
         if self.store.readonly:
             return ()
         for tray in self.store.snapshot().trays:
+            if (
+                tray.raw_removed
+                and tray.auto not in {"", "off", "freed"}
+                and not cleanup_pending(self.store, tray)
+            ):
+                if self.store.update_tray_if(
+                    tray.number,
+                    lambda current, previous=tray: current == previous,
+                    auto="freed",
+                    auto_error="",
+                    auto_failed=(),
+                ):
+                    self.on_update()
             if not tray.auto and tray.stage in READY:
                 self.arm(tray.number)
         return tuple(t.number for t in self.store.snapshot().trays if self._eligible(t))

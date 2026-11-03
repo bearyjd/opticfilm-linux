@@ -20,6 +20,7 @@ from opticfilm_linux.app.qt.bridge import Bridge  # noqa: E402
     [
         ("poll", (), "tick"),
         ("setAccepted", (1, 1, True), "set_status"),
+        ("markEmpty", (1, 1), "set_status"),
         ("rotate", (1, 1, 1), "rotate"),
         ("mirror", (1, 1), "mirror"),
         ("resetSlide", (1, 2), "reset_slide"),
@@ -61,4 +62,15 @@ def test_pending_edit_is_submitted_before_action(slot, args, method):
     assert controller.method_calls[0] == call.adjust_slide(1, 1, {"brightness_ev": 0.5})
     assert controller.method_calls[1][0] == method
     assert not bridge._flush_timer.isActive()
+    assert app is not None
+
+
+def test_mark_empty_uses_existing_status_command():
+    from opticfilm_linux.batch.model import SlideStatus
+
+    app = QApplication.instance() or QApplication(["test"])
+    controller = Mock()
+    bridge = Bridge(controller, MemoryPrefs())
+    bridge.markEmpty(2, 3)
+    controller.set_status.assert_called_once_with(2, 3, SlideStatus.BLANK)
     assert app is not None

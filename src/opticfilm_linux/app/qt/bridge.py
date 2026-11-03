@@ -606,6 +606,11 @@ class Bridge(SelectionBridge):
         status = SlideStatus.ACCEPTED if accepted else SlideStatus.NEEDS_LOOK
         self._controller.set_status(number, position, status)
 
+    @Slot(int, int)
+    def markEmpty(self, number: int, position: int) -> None:  # noqa: N802
+        self._flush_now()
+        self._controller.set_status(number, position, SlideStatus.BLANK)
+
     @Slot(int, int, int)
     def rotate(self, number: int, position: int, quarter_turns: int) -> None:
         self._flush_now()

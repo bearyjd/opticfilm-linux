@@ -8,7 +8,7 @@ import dataclasses
 from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 
-from opticfilm_linux.batch.empty import empty_frame_fingerprints
+from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.enhance import RawRemoved
 from opticfilm_linux.batch.model import (
     BatchManifest,
@@ -87,8 +87,8 @@ def _require_editable(tray: TrayRecord) -> None:
 
 
 def set_slide_status(store: BatchStore, number: int, position: int, status: SlideStatus) -> None:
-    if status not in SETTABLE_STATUSES:
-        raise BatchError(f"a slide can only be set to accepted or needs_look, not {status}")
+    if status not in (*SETTABLE_STATUSES, SlideStatus.BLANK):
+        raise BatchError(f"a slide can only be set to accepted, needs_look or blank, not {status}")
 
     def change(manifest: BatchManifest) -> BatchManifest:
         tray, slide = _find(manifest, number, position)
@@ -99,10 +99,21 @@ def set_slide_status(store: BatchStore, number: int, position: int, status: Slid
             status=status,
             owner_decided=True,
             auto_accepted=False,
-            preview_stale=slide.preview_stale or slide.status is SlideStatus.BLANK,
+            preview_stale=slide.preview_stale
+            or slide.status is SlideStatus.BLANK
+            or status is SlideStatus.BLANK,
+            blank_fingerprint="" if status is SlideStatus.BLANK else slide.blank_fingerprint,
         )
 
     store.update(change)
+
+
+def _pending_empty_fingerprints(tray: TrayRecord) -> dict[int, str]:
+    return {
+        s.position: s.blank_fingerprint
+        for s in tray.slides
+        if s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s)
+    }
 
 
 def confirm_empty_frames(
@@ -123,7 +134,7 @@ def confirm_empty_frames(
         _require_raw(tray)
         if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED):
             raise BatchError(f"tray {number} is not ready for empty-frame confirmation")
-        current = empty_frame_fingerprints(tray)
+        current = _pending_empty_fingerprints(tray)
         if (
             not current
             or expected_sweep_version != tray.sweep_version
@@ -139,7 +150,7 @@ def confirm_empty_frames(
                 empty_confirmed=EmptyConfirmation(tray.sweep_version, current[s.position]),
                 auto_accepted=False,
             )
-            if s.status is SlideStatus.BLANK
+            if s.position in current
             else s
             for s in tray.slides
         )
