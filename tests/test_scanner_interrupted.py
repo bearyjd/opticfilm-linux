@@ -423,8 +423,7 @@ def test_an_external_ctrl_c_to_the_driver_is_an_interrupted_scan(make, tmp_path,
     thread = threading.Thread(target=scan)
     thread.start()
     try:
-        _wait_for(pids_file)
-        time.sleep(0.3)
+        _wait_for(pids_file)  # written inside the driver's Ctrl-C handler, so no settle sleep
         os.kill(json.loads(pids_file.read_text())[0], signal.SIGINT)
         thread.join(60)
     finally:
