@@ -25,9 +25,14 @@ SYSTEMCTL_STUB = """#!/bin/bash
 echo "$*" >>"$STUB_LOG"
 S="$STUB_STATE"
 state() { if [[ -f "$S/active" ]]; then cat "$S/active"; else echo inactive; fi; }
+# Hold until the test creates $S/release-<name>: the test, not the clock, ends the hold.
+hold() {
+    local i
+    for ((i = 0; i < 1200; i++)); do [[ -f "$S/release-$1" ]] && return; sleep 0.05; done
+}
 case "$2" in
 start)
-    [[ -z "${BLOCK_START:-}" ]] || sleep "$BLOCK_START"
+    [[ -z "${BLOCK_START:-}" ]] || hold start
     echo "${START_STATE:-active}" >"$S/active"
     if [[ -z "${NO_PROC:-}" ]]; then
         mkdir -p "$PROC_ROOT/4242"
@@ -43,7 +48,7 @@ stop)
     touch "$S/stopped"
     if [[ -n "${FAIL_FIRST_STOP:-}" && ! -f "$S/stop-failed" ]]; then
         touch "$S/stop-failed"
-        sleep "${FAILED_STOP_SLEEP:-0}"
+        [[ -z "${HOLD_FAILED_STOP:-}" ]] || hold failed-stop
         [[ -z "${FAILED_STOP_STATE:-}" ]] || echo "$FAILED_STOP_STATE" >"$S/active"
         exit 1
     fi
@@ -566,8 +571,8 @@ def test_fail_reports_leftover_watcher_process(rig):
 
 
 def test_sigint_runs_the_stop_path(rig):
-    p = rig.popen(rig.driver, BLOCK_START="5")
-    for _ in range(100):
+    p = rig.popen(rig.driver, BLOCK_START="1")
+    for _ in range(900):  # a loaded machine starts slowly
         if any(" start " in f" {c} " for c in rig.log.read_text().splitlines()):
             break
         time.sleep(0.1)
@@ -575,6 +580,7 @@ def test_sigint_runs_the_stop_path(rig):
         p.kill()
         pytest.fail("start was never called")
     p.send_signal(signal.SIGINT)
+    (rig.tmp / "state" / "release-start").touch()  # the signal is in before start returns
     out, _ = p.communicate(timeout=30)
     verbs = _verbs(rig.log.read_text().splitlines())
     assert p.returncode == 1
@@ -879,15 +885,17 @@ def test_global_service_defaults_allow_matching_effective_unit(rig, dropins):
 
 @pytest.mark.parametrize("second_signal", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
 def test_cleanup_signal_cannot_skip_retry_after_failed_stop(rig, second_signal):
-    p = rig.popen(rig.driver, JOURNAL_LINE="Traceback", FAIL_FIRST_STOP="1", FAILED_STOP_SLEEP="1")
+    p = rig.popen(rig.driver, JOURNAL_LINE="Traceback", FAIL_FIRST_STOP="1", HOLD_FAILED_STOP="1")
     try:
-        for _ in range(200):
+        for _ in range(3600):  # a loaded machine starts slowly
             if (rig.tmp / "state" / "stop-failed").exists():
                 break
             time.sleep(0.025)
         else:
-            pytest.fail("first cleanup stop was never reached")
-        p.send_signal(second_signal)
+            p.kill()
+            pytest.fail(f"first cleanup stop was never reached: {p.communicate()[0]}")
+        p.send_signal(second_signal)  # lands while the failed stop is held open
+        (rig.tmp / "state" / "release-failed-stop").touch()
         out, _ = p.communicate(timeout=10)
     finally:
         if p.poll() is None:
