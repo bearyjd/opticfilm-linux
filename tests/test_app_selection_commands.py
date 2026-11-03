@@ -82,6 +82,18 @@ def test_select_all_prunes_busy_trays_and_clears_on_close(selected):
     assert not selected.state().selection and not selected._selection.keys
 
 
+def test_select_all_synchronizes_selected_tray_with_new_focus(selected):
+    selected.select_slide(2, 1)
+    assert selected.state().selected == 2
+    selected.select_all()
+    state = selected.state()
+    assert state.focus == (3, 1)
+    assert state.selected == 3
+    assert state.selection == set(selected._selection_order)
+    selected._rebuild()
+    assert selected.state().selected == selected.state().focus[0] == 3
+
+
 def test_bulk_status_uses_runner_and_schedules_automatic_work(selected, monkeypatch):
     selected.select_slide(1, 1)
     selected.select_slide(2, 2, control=True)

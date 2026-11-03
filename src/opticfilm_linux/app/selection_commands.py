@@ -34,7 +34,8 @@ class SelectionCommands:
 
     def select_all(self) -> None:
         with self._lock:
-            self._publish_selection(selection.select_all(self._selection_order))
+            new = selection.select_all(self._selection_order)
+            self._publish_selection(new, new.focus[0] if new.focus else None)
         self._kick_refresh()
 
     def clear_selection(self) -> None:

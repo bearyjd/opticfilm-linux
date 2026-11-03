@@ -40,6 +40,12 @@ ListView {
 
         width: ListView.view.width
         highlighted: number === bridge.selectedTray
+        // Keep error text readable on selected rows in both themes.
+        background: Rectangle {
+            color: row.highlighted ? Theme.track : row.hovered ? Theme.card : "transparent"
+            border.color: row.highlighted || row.visualFocus ? Theme.accent : "transparent"
+            border.width: 1
+        }
         onClicked: { bridge.selectTray(number, 0); queue.trayChosen(); }
         MouseArea {
             anchors.fill: parent
@@ -104,7 +110,7 @@ ListView {
                 objectName: "trayError" + row.number
                 visible: row.error !== ""
                 text: row.error
-                color: Kirigami.Theme.negativeTextColor
+                color: Theme.error
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }
