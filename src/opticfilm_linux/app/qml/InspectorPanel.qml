@@ -11,21 +11,10 @@ QQC2.ScrollView {
     readonly property int singleTray: summary.trays && summary.trays.length === 1 ? summary.trays[0] : -1
     property bool showBefore: false
     signal rescanRequested()
+    signal reexportRequested()
     clip: true
     contentWidth: availableWidth
     QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
-
-    ConfirmDialog {
-        id: reexportDialog
-        objectName: "reexportSelectionDialog"
-        title: qsTr("Re-export selected slides?")
-        subtitle: qsTr("This writes new numbered files for the accepted slides in the selection. Existing files are kept. Writing files cannot be undone.")
-        onConfirmed: bridge.reexportSelection()
-    }
-    Connections {
-        target: bridge
-        function onBatchReplaced() { reexportDialog.close(); }
-    }
 
     function setting(field, fallback) {
         const value = summary.settings ? summary.settings[field] : null;
@@ -236,7 +225,7 @@ QQC2.ScrollView {
                 objectName: "reexportSelection"
                 Layout.fillWidth: true
                 text: qsTr("Re-export selected")
-                onClicked: reexportDialog.open()
+                onClicked: panel.reexportRequested()
             }
         }
         QQC2.Button {
