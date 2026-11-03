@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Literal
 
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
+from opticfilm_linux.batch.cleanup_recovery import interrupted_cleanup_guidance
 from opticfilm_linux.batch.empty import empty_frame_fingerprints, is_empty_confirmed
 from opticfilm_linux.batch.model import (
     BatchManifest,
@@ -147,6 +148,13 @@ EMPTY_STATE = AppState(
 )
 
 
+def _tray_error(tray, raw_pending, raw_recoverable):
+    if not tray.raw_removed or tray.number not in raw_pending:
+        return tray.error
+    guidance = interrupted_cleanup_guidance(tray.number, recoverable=tray.number in raw_recoverable)
+    return f"{tray.error} {guidance}" if tray.error else guidance
+
+
 def _tray_row(
     tray: TrayRecord,
     progress: Mapping[int, float],
@@ -167,7 +175,7 @@ def _tray_row(
         ),
         progress=progress.get(tray.number),
         elapsed_s=elapsed,
-        error=tray.error,
+        error=_tray_error(tray, raw_pending, raw_recoverable),
         needs_look=sum(1 for s in tray.slides if s.status is SlideStatus.NEEDS_LOOK),
         raw_removed=tray.raw_removed,
         can_recover_raw=tray.raw_removed and tray.number in raw_recoverable,
@@ -452,7 +460,15 @@ def _auto_fields(
 
 
 def _empty_confirmation_fields(tray, readonly, tokens):
-    blanks = tuple(s for s in tray.slides if s.status is SlideStatus.BLANK) if tray else ()
+    blanks = (
+        tuple(
+            s
+            for s in tray.slides
+            if s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s)
+        )
+        if tray
+        else ()
+    )
     fingerprints = empty_frame_fingerprints(tray) if tray else {}
     return {
         "empty_confirmation_tray": tray.number if tray and not readonly else None,

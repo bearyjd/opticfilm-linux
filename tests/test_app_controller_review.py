@@ -95,7 +95,7 @@ def test_edit_after_raw_removed_gives_banner_and_clears_updating(reviewed):
 
 
 def test_dismiss_banner_clears_it(reviewed):
-    reviewed.set_status(1, 1, SlideStatus.BLANK)  # refused by the core
+    reviewed.set_status(1, 1, SlideStatus.PENDING)  # refused by the core
     wait_until(reviewed, lambda: reviewed.state().banner is not None)
     reviewed.dismiss_banner()
     wait_until(reviewed, lambda: reviewed.state().banner is None)

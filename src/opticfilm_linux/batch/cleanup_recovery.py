@@ -1,8 +1,10 @@
 """Explicit owner recovery of intact raw after a committed cleanup was interrupted.
 
 Recovery never deletes scans or trusts the removal marker as evidence. Recorded folder
-membership must be a subset of the recorded cleanup. The current sweep must decode and
-split, and any available current raw hashes must match. Older sweeps may remain partly
+membership must be a subset of the recorded cleanup, when available. Legacy manifests
+without that inventory may contain only sweep versions up to the recorded current sweep.
+The current sweep must decode and split, and any available current raw hashes must match.
+Older sweeps may remain partly
 deleted; recovery preserves those folders without treating them as current raw evidence.
 Legacy scans without hashes need their configured infrared plane;
 missing raw cannot be restored by clearing a manifest marker. Delivery files may be missing:
@@ -23,19 +25,53 @@ _RECOVERY_CHECKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 def _recovery_inventory(store: BatchStore, tray: TrayRecord) -> tuple[Path, ...]:
     from opticfilm_linux.batch import export
 
-    if not tray.raw_removed or not tray.cleanup_sweeps:
-        raise ValueError("no recorded interrupted cleanup inventory")
+    if not tray.raw_removed:
+        raise ValueError("no recorded interrupted cleanup")
     folders = tuple(export._checked_sweep_folders(store, tray.number))
     export._checked_sweep_versions(tray, folders)
     versions = tuple(int(path.name.removeprefix("sweep-")) for path in folders)
     if len(set(versions)) != len(versions):
         raise ValueError("additional raw sweep folders have duplicate versions")
-    if tray.sweep_version not in tray.cleanup_sweeps:
+    if tray.cleanup_sweeps and tray.sweep_version not in tray.cleanup_sweeps:
         raise ValueError("current raw sweep is absent from the recorded cleanup inventory")
     for path in folders:
         if any(child.is_symlink() for child in path.rglob("*")):
             raise ValueError("raw sweep contains a symlink")
     return folders
+
+
+def interrupted_cleanup_guidance(number: int, *, recoverable: bool) -> str:
+    if recoverable:
+        return (
+            f"Tray {number}: select Verify remaining scans… to recover intact raw, then "
+            "review and re-export before freeing raw scans."
+        )
+    return (
+        f"Tray {number}: remaining raw could not be verified. Restore damaged or missing "
+        "current raw from its original sweep folders, then select Verify remaining scans…, "
+        "review and re-export; otherwise rescan this tray."
+    )
+
+
+def _check_interrupted_cleanup(store: BatchStore, tray: TrayRecord) -> None:
+    from opticfilm_linux.batch import export
+
+    try:
+        folders = tuple(export._checked_sweep_folders(store, tray.number))
+        export._checked_snapshot(store, tray, folders)
+    except (OSError, ValueError, export.BatchError) as exc:
+        if tray.cleanup_sweeps:
+            raise
+        message = (
+            f"Cannot finish cleanup for tray {tray.number}: {exc}. Select Verify remaining "
+            "scans… to recover intact raw, then review and re-export. If verification fails, "
+            "restore the original raw sweep folders or rescan this tray."
+        )
+        if isinstance(exc, export.ExportVerificationFailed):
+            raise export.ExportVerificationFailed(
+                tray.number, exc.position, ValueError(message)
+            ) from exc
+        raise export.CleanupPolicyRefused(message) from exc
 
 
 def can_recover_interrupted_cleanup(

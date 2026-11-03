@@ -159,3 +159,35 @@ def test_confirmation_parser_rejects_malformed_evidence():
         from_json(json.dumps(data))
     with pytest.raises(ValueError):
         EmptyConfirmation(1, "not-a-digest")
+
+
+def test_mark_empty_requires_new_evidence_before_confirmation(store):
+    _confirm(store)
+    set_slide_status(store, 1, 1, SlideStatus.ACCEPTED)
+    set_slide_status(store, 1, 1, SlideStatus.BLANK)
+    tray = store.snapshot().trays[0]
+    slide = tray.slides[0]
+    assert slide.status is SlideStatus.BLANK and slide.owner_decided
+    assert slide.preview_stale and not slide.blank_fingerprint
+    assert slide.empty_confirmed is None and not is_empty_confirmed(tray, slide)
+    with pytest.raises(BatchError, match="changed"):
+        _confirm(store)
+    refreshed = dataclasses.replace(slide, blank_fingerprint="b" * 64, preview_stale=False)
+    store.update_tray(1, slides=(refreshed,))
+    _confirm(store, expected_fingerprints={1: "b" * 64})
+    tray = store.snapshot().trays[0]
+    assert is_empty_confirmed(tray, tray.slides[0])
+
+
+def test_confirm_pending_blanks_preserves_previous_confirmation(store):
+    _confirm(store)
+    tray = store.snapshot().trays[0]
+    confirmed = tray.slides[0]
+    pending = SlideRecord(2, status=SlideStatus.BLANK, blank_fingerprint="b" * 64)
+    store.update_tray(1, slides=(confirmed, pending))
+    confirm_empty_frames(
+        store, 1, (2,), expected_fingerprints={2: "b" * 64}, expected_sweep_version=1
+    )
+    tray = store.snapshot().trays[0]
+    assert tray.slides[0] == confirmed
+    assert all(is_empty_confirmed(tray, slide) for slide in tray.slides)
