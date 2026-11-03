@@ -87,7 +87,8 @@ def test_auto_disabled_only_reconciles_completed_cleanup(store, keep_raw, folder
             m, defaults=dataclasses.replace(m.defaults, auto_export=False, keep_raw=keep_raw)
         )
     )
-    assert (1 in auto.resume()) is not folders
+    assert 1 not in auto.resume()
+    assert auto._tray(1).auto == ("verified" if folders else "freed")
     auto.run(1)
     assert auto._tray(1).auto == ("verified" if folders else "freed")
     assert store.sweep_dir(1, 1).exists() is folders
