@@ -10,12 +10,30 @@ Kirigami.ApplicationWindow {
     property int windowedHeight: 0
     signal saveWindowGeometry(int windowWidth, int windowHeight, bool maximized)
 
-    onWidthChanged: if (visibility === Window.Windowed) windowedWidth = width
-    onHeightChanged: if (visibility === Window.Windowed) windowedHeight = height
+    // Previous windowed size: a maximized size can arrive before visibility flips,
+    // so it is rolled back when the window turns out to be maximized/fullscreen.
+    property int previousWindowedWidth: 0
+    property int previousWindowedHeight: 0
+
+    onWidthChanged: if (visibility === Window.Windowed && width > 0) {
+        previousWindowedWidth = windowedWidth;
+        windowedWidth = width;
+    }
+    onHeightChanged: if (visibility === Window.Windowed && height > 0) {
+        previousWindowedHeight = windowedHeight;
+        windowedHeight = height;
+    }
     onVisibilityChanged: {
         if (visibility === Window.Windowed) {
-            width = windowedWidth;
-            height = windowedHeight;
+            if (windowedWidth > 0 && windowedHeight > 0) {
+                width = windowedWidth;
+                height = windowedHeight;
+            }
+        } else if (visibility === Window.Maximized || visibility === Window.FullScreen) {
+            if (width === windowedWidth && previousWindowedWidth > 0)
+                windowedWidth = previousWindowedWidth;
+            if (height === windowedHeight && previousWindowedHeight > 0)
+                windowedHeight = previousWindowedHeight;
         }
     }
 

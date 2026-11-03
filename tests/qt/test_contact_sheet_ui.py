@@ -411,11 +411,7 @@ def test_selection_confirmations_are_owned_by_page(sheet_window):
     reexport = root.findChild(QObject, "reexportSelectionDialog")
     content = page.property("contentItem")
     assert reexport.parent() == content
-    recover = next(
-        obj
-        for obj in content.children()
-        if str(obj.property("title")).startswith("Recover raw scans of tray ")
-    )
+    recover = root.findChild(QObject, "recoverDialog")
     assert recover.parent() == content
     queue = root.findChild(QObject, "trayQueue")
     queue.recoverRequested.emit(2)

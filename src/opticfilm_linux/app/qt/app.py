@@ -1,6 +1,7 @@
 """``opticfilm``: start the desktop app (``--fake SWEEP_DIR`` runs it on the fake scanner)."""
 
 import argparse
+import logging
 import os
 import sys
 from importlib.resources import files
@@ -11,7 +12,11 @@ from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.eject_watch import EjectWatch
 from opticfilm_linux.app.messages import load_command, runner_note
 from opticfilm_linux.app.provenance import ProvenanceScanner
-from opticfilm_linux.app.qt.window_geometry import initial_geometry, parse_window_size
+from opticfilm_linux.app.qt.window_geometry import (
+    initial_geometry,
+    override_geometry,
+    resolve_override,
+)
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -29,6 +34,7 @@ APP_ID = "io.github.bearyjd.OpticFilmLinux"
 APP_NAME = "opticfilm"
 DISPLAY_NAME = "OpticFilm Linux"
 STYLE = "Basic"
+LOGGER = logging.getLogger(__name__)
 WINDOW_SIZE_ENV = "OPTICFILM_WINDOW_SIZE"
 LOAD_COMMAND_ENV = "OPTICFILM_LOAD_COMMAND"  # replaces the shown first-load terminal command
 MISSING_QT_MESSAGE = (
@@ -92,39 +98,52 @@ def create_engine(
     return engine, warnings
 
 
-def _show_window(window: Any, size: tuple[int, int] | None) -> None:
-    """Apply geometry before showing, with deterministic overrides for test/probe windows."""
+def _show_window(window: Any, size: object) -> None:
+    """Apply geometry before showing; any failure falls back to the default size."""
+    maximized = False
+    try:
+        maximized = _apply_geometry(window, size)
+    except Exception as exc:  # noqa: BLE001 - the window must always become visible
+        LOGGER.warning("Window geometry failed (%s); using the default size", exc)
+    finally:
+        if maximized:
+            window.showMaximized()
+        else:
+            window.show()
+
+
+def _apply_geometry(window: Any, size: object) -> bool:
+    """Resize the window; returns whether it should start maximized."""
     from opticfilm_linux.app.qt.settings import QSettingsPrefs  # noqa: PLC0415
 
-    override = size if size is not None else parse_window_size(os.environ.get(WINDOW_SIZE_ENV, ""))
+    override = resolve_override(size, os.environ.get(WINDOW_SIZE_ENV, ""))
+    screen = window.screen()
+    if screen is None:
+        from PySide6.QtGui import QGuiApplication  # noqa: PLC0415
+
+        screen = QGuiApplication.primaryScreen()
+    available = screen.availableGeometry()
+    grid_unit = window.property("gridUnit")
     maximized = False
     if override is not None:
-        width, height = override
-        if width <= 0 or height <= 0:
-            raise ValueError("Window dimensions must be positive")
+        width, height, min_w, min_h = override_geometry(
+            override, available.width(), available.height(), grid_unit
+        )
     else:
-        screen = window.screen()
-        if screen is None:
-            from PySide6.QtGui import QGuiApplication  # noqa: PLC0415
-
-            screen = QGuiApplication.primaryScreen()
-        available = screen.availableGeometry()
         prefs = QSettingsPrefs()
         width, height, maximized, min_w, min_h = initial_geometry(
-            available.width(),
-            available.height(),
-            window.property("gridUnit"),
-            prefs.window_geometry(),
+            available.width(), available.height(), grid_unit, prefs.window_geometry()
         )
-        window.setMinimumWidth(min_w)
-        window.setMinimumHeight(min_h)
+        # A closure keeps `prefs` alive; Qt would not own a bound method's instance.
         window.saveWindowGeometry.connect(
-            lambda width, height, maximized: prefs.save_window_geometry(width, height, maximized)
+            lambda saved_w, saved_h, is_max: prefs.save_window_geometry(saved_w, saved_h, is_max)
         )
+    window.setMinimumWidth(min_w)
+    window.setMinimumHeight(min_h)
     window.resize(width, height)
     window.setProperty("windowedWidth", width)
     window.setProperty("windowedHeight", height)
-    window.showMaximized() if maximized else window.show()
+    return maximized
 
 
 def configure_style() -> None:

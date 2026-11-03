@@ -67,6 +67,7 @@ Kirigami.Page {
     }
     ConfirmDialog {
         id: recoverDialog
+        objectName: "recoverDialog"
         property int tray: 0
         title: qsTr("Recover raw scans of tray %1?").arg(recoverDialog.tray)
         subtitle: qsTr("Recovery verifies the current raw scans, restores this tray to review and resets its export marks. Incomplete older sweeps are kept and do not need verification for recovery. Review the frames, export them again, and approve raw removal again. Missing or damaged current raw scans require restoring the original folders or rescanning.")
