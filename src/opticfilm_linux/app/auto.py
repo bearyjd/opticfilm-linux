@@ -76,6 +76,7 @@ class AutoPipeline:
                     lambda current, previous=tray: current == previous,
                     auto="freed",
                     auto_error="",
+                    auto_failed=(),
                 ):
                     self.on_update()
             if not tray.auto and tray.stage in READY:

@@ -67,7 +67,14 @@ def test_busy_held_release_publishes_actionable_banner_outside_lock(monkeypatch)
 @pytest.mark.parametrize("folders", [False, True])
 def test_resume_reconciles_every_stale_cleanup_state(tmp_path, auto, folders):
     with BatchStore.create(tmp_path / "batch", name="Reconcile") as store:
-        tray = TrayRecord(1, TrayStage.EXPORTED, auto=auto, raw_removed=True, auto_error="raw kept")
+        tray = TrayRecord(
+            1,
+            TrayStage.EXPORTED,
+            auto=auto,
+            raw_removed=True,
+            auto_error="raw kept",
+            auto_failed=(1,),
+        )
         store.update(lambda m: dataclasses.replace(m, trays=(tray,)))
         if folders:
             store.sweep_dir(1, 1).mkdir(parents=True)
@@ -77,6 +84,7 @@ def test_resume_reconciles_every_stale_cleanup_state(tmp_path, auto, folders):
         current = store.snapshot().trays[0]
         assert current.auto == (auto if folders else "freed")
         assert current.auto_error == ("raw kept" if folders else "")
+        assert current.auto_failed == ((1,) if folders else ())
         assert current.raw_removed
         assert updated == ([] if folders else [True])
 
