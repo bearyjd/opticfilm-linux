@@ -59,7 +59,7 @@ Kirigami.ScrollablePage {
                         font.pixelSize: Theme.fontBody
                         text: page.parentFolder.toString() === "" ? qsTr("(none chosen)") : decodeURIComponent(page.parentFolder.toString().replace("file://", ""))
                         elide: Text.ElideMiddle
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+                        Layout.maximumWidth: Theme.gu * 24
                     }
                     PillButton {
                         text: qsTr("Browse…")
@@ -135,7 +135,7 @@ Kirigami.ScrollablePage {
                         font.pixelSize: Theme.fontBody
                         text: page.exportFolder.toString() === "" ? qsTr("(choose later)") : decodeURIComponent(page.exportFolder.toString().replace("file://", ""))
                         elide: Text.ElideMiddle
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+                        Layout.maximumWidth: Theme.gu * 24
                     }
                     PillButton {
                         text: qsTr("Browse…")
@@ -197,7 +197,7 @@ Kirigami.ScrollablePage {
                     visible: autoExportSwitch.checked
                     text: keepRawBox.checked ? qsTr("Raw scans are kept after automatic export.") : qsTr("Raw data is kept until you check and free the first tray. Later trays are freed after verification.")
                     wrapMode: Text.Wrap
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                    Layout.maximumWidth: Theme.gu * 28
                 }
                 QQC2.CheckBox {
                     id: keepRawBox
@@ -212,7 +212,7 @@ Kirigami.ScrollablePage {
                     visible: page.automaticExportProblem !== ""
                     text: page.automaticExportProblem
                     wrapMode: Text.Wrap
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                    Layout.maximumWidth: Theme.gu * 28
                 }
                 RowLayout {
                     Kirigami.FormData.label: qsTr("Slide orientation:")
@@ -262,7 +262,7 @@ Kirigami.ScrollablePage {
                     text: qsTr("Applied to that slot in every tray, on top of the slide orientation above. Your own changes to a slide still apply on top.")
                     color: Theme.muted
                     wrapMode: Text.WordWrap
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+                    Layout.maximumWidth: Theme.gu * 24
                 }
                 PillButton {
                     objectName: "createBatch"

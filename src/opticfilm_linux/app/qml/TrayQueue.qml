@@ -16,7 +16,7 @@ ListView {
     QQC2.Label {
         anchors.centerIn: parent
         visible: queue.count === 0
-        width: parent.width - Kirigami.Units.gridUnit * 2
+        width: parent.width - Theme.gu * 2
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
         opacity: 0.7

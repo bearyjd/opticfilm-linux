@@ -6,7 +6,7 @@ import org.kde.kirigami as Kirigami
 QQC2.Button {
     id: control
 
-    implicitWidth: Math.max(100, implicitContentWidth + leftPadding + rightPadding)
+    implicitWidth: Math.max(5.5 * Theme.gu, implicitContentWidth + leftPadding + rightPadding)
     implicitHeight: Theme.controlHeight
     horizontalPadding: Theme.spacingLarge
     font.pixelSize: Theme.fontBody
@@ -25,8 +25,8 @@ QQC2.Button {
             source: control.icon.name
             color: control.labelColor
             Layout.alignment: Qt.AlignVCenter
-            Layout.preferredWidth: Theme.spacing
-            Layout.preferredHeight: Theme.spacing
+            Layout.preferredWidth: Theme.iconSmall
+            Layout.preferredHeight: Theme.iconSmall
             Accessible.ignored: true
         }
         Text {

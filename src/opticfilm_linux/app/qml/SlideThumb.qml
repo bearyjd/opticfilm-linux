@@ -7,7 +7,6 @@ Rectangle {
     required property var slide
     signal chosen(int modifiers)
     objectName: "slideThumb_" + slide.tray + "_" + slide.position
-    implicitHeight: 170
     color: Theme.card
     radius: Theme.cardRadius
     border.width: slide.focused ? 3 : slide.selected ? 2 : 1

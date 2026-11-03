@@ -5,7 +5,7 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
-    preferredWidth: Math.min(44 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 44 * Kirigami.Units.gridUnit)
+    preferredWidth: Math.min(44 * Theme.gu, parent ? parent.width * 0.9 : 44 * Theme.gu)
     maximumWidth: preferredWidth
     // Keep centering independent of wrapped body and footer measurements.
     width: preferredWidth
@@ -105,7 +105,7 @@ Kirigami.Dialog {
         GridLayout {
             id: frameGrid
             Layout.fillWidth: true
-            columns: width >= 2 * 14 * Kirigami.Units.gridUnit ? 2 : 1
+            columns: width >= 2 * 14 * Theme.gu ? 2 : 1
             Repeater {
                 id: frames
                 model: dialog.previews
@@ -126,7 +126,7 @@ Kirigami.Dialog {
                     Image {
                         id: preview
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Math.min(Kirigami.Units.gridUnit * 8, width / 1.5)
+                        Layout.preferredHeight: Math.min(Theme.gu * 8, width / 1.5)
                         fillMode: Image.PreserveAspectFit
                         source: modelData.url
                     }

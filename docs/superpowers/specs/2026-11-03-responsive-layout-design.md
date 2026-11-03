@@ -1,7 +1,7 @@
 # Responsive layout design for the OpticFilm Linux Qt/QML GUI
 
 Status: approved design (Opus architect audit, 2026-11-03). Owner request: the GUI must reflow by screen size and must not need manual resizing to be useful.
-Paths are relative to `src/opticfilm_linux/app/` unless they start with `tests/`. gu = `Kirigami.Units.gridUnit`; px values are at gu=18.
+Paths are relative to `src/opticfilm_linux/app/` unless they start with `tests/`. gu = `Theme.gu`, the integer maximum of `Kirigami.Units.gridUnit` and application-font `FontMetrics.height`; px values are at gu=18.
 Evidence (333 offscreen captures + automatic overflow detection): 800x600 to 3840x2160, dpr 1/1.5/2, dark+light. Harness lives in the session scratchpad (`live-run/matrix/run_matrix.py`, `tree.js`).
 
 ## 0. Summary
@@ -11,7 +11,7 @@ The GUI is a 1220x780 desktop layout with no screen awareness. It breaks below a
 - A banner column with no height limit: `qml/MainPage.qml:190-315`.
 - A toolbar that never overflows: `qml/MainPage.qml:119-188`.
 
-Design: size the window from the screen in Python before showing; two size axes (width class, height class) with breakpoints in gridUnits; Kirigami `ActionToolBar` for secondary toolbar actions; tray list and Inspector become drawers on narrow windows (single instances, reparented); one prioritized status area with a height cap and an "n more" control; dialogs sized `min(content, 90% of window)` with footer actions always visible; all sizes derived from `Kirigami.Units.gridUnit`. Ships as 5 PRs each guarded by a probe that measures the real item tree.
+Design: size the window from the screen in Python before showing; two size axes (width class, height class) with breakpoints in gridUnits; Kirigami `ActionToolBar` for secondary toolbar actions; tray list and Inspector become drawers on narrow windows (single instances, reparented); one prioritized status area with a height cap and an "n more" control; dialogs sized `min(content, 90% of window)` with footer actions always visible; all sizes derived from `Theme.gu`. Ships as 5 PRs each guarded by a probe that measures the real item tree.
 
 ## 1. Root causes (with file:line)
 
@@ -82,14 +82,16 @@ I. Dialog hosts that a drawer design would break: `reexportDialog` is declared i
 - Hoist `reexportDialog` and `recoverDialog` to `MainPage` scope (the latter as `recoverDialog.tray = n; open()`).
 
 ## 3. Sizing system (`qml/Theme.qml`; add `import org.kde.kirigami as Kirigami`)
-All tokens derive from `gu = Kirigami.Units.gridUnit`.
+All sizing tokens derive from `Theme.gu = Math.max(Kirigami.Units.gridUnit, fontMetrics.height)`, where `fontMetrics` uses `Qt.application.font`. Icon tokens retain Kirigami icon sizes.
+
+Approved PR 2 decision: Kirigami’s grid unit stays fixed on the tested stack when the application font grows. Use its grid unit as a floor and the application font height as the scaling input, keeping one effective unit for text, controls, layout bounds and breakpoints. The default effective unit remains 18; smaller fonts cannot shrink it below Kirigami’s unit. To prevent new overflow from larger fonts, the existing status stack scrolls within a height cap that reserves review space and the shortcut hint, with room for at least two control heights in the status viewport.
 - `spacingSmall`/`spacing`/`spacingLarge` = `round(gu*0.45)`/`round(gu*0.9)`/`round(gu*1.33)` (8/16/24)
 - `cardRadius` = `round(gu*0.8)` (14)
 - `fontSmall`/`fontBody`/`fontHeading` = `round(gu*0.67)`/`round(gu*0.78)`/`round(gu*1.11)` (12/14/20)
 - `controlHeight` = `max(44, round(gu*2.45))` (44, minimum touch target)
 - `iconSmall`/`iconMedium` = `Kirigami.Units.iconSizes.small` / `.smallMedium`
 - `minCell` 8, `maxCell` 22, `paneMin` 11, `paneMax` 15, `inspectorMin` 16, `inspectorMax` 22 gu; `reviewMin` = `max(17gu, 0.5H)`.
-Replacements: `qml/PillButton.qml:9` 100 -> 5.5*gu; `qml/SegmentedControl.qml:11` 96 -> 5*gu; `qml/SlideThumb.qml:10` remove fixed height (sheet sets it); `qml/InspectorPanel.qml:112` `max(150,..)` -> `max(8*gu,..)`; `:174` -> 5.5*gu; `qml/MainPage.qml:323-325,364-366` use the tokens. At the default font the values are identical to today (PR 2 has no visible change at defaults; it only fixes scaling).
+Replacements: `qml/PillButton.qml:9` 100 -> 5.5*gu; `qml/SegmentedControl.qml:11` 96 -> 5*gu; `qml/SlideThumb.qml:10` remove fixed height (sheet sets it); `qml/InspectorPanel.qml:112` `max(150,..)` -> `max(8*gu,..)`; `:174` -> 5.5*gu; `qml/MainPage.qml:323-325,364-366` use the tokens. The effective-unit correction preserves the existing PR 2 default screenshots; the approved coefficient replacements can change pre-PR 2 pane geometry. Token values follow the approved coefficients above (for example, `controlHeight` rounds to 44 at gu=18); font growth uses the same coefficients and effective unit.
 
 ## 4. PR order (each shippable and green)
 1. `fix/window-fits-screen`: new `qt/window_geometry.py`; `qt/app.py` (`create_engine(size=)`, restore/save), `qt/settings.py` (3 keys), `qml/Main.qml` (`visible: false`, gu defaults, save on closing); hoist `reexportDialog` (`qml/InspectorPanel.qml:18-28`) and `recoverDialog` (`qml/TrayQueue.qml:56-61`) to `qml/MainPage.qml`; tests `tests/test_window_geometry.py` + the probe infrastructure (section 5) with today's failures marked strict `xfail`.

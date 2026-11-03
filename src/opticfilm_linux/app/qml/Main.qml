@@ -5,7 +5,7 @@ import org.kde.kirigami as Kirigami
 Kirigami.ApplicationWindow {
     id: root
 
-    readonly property real gridUnit: Kirigami.Units.gridUnit
+    readonly property real gridUnit: Theme.gu
     property int windowedWidth: 0
     property int windowedHeight: 0
     signal saveWindowGeometry(int windowWidth, int windowHeight, bool maximized)

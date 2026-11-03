@@ -26,8 +26,8 @@ Card {
             Kirigami.Icon {
                 source: "dialog-error"
                 color: Theme.error
-                Layout.preferredWidth: Theme.spacingLarge
-                Layout.preferredHeight: Theme.spacingLarge
+                Layout.preferredWidth: Theme.iconMedium
+                Layout.preferredHeight: Theme.iconMedium
                 Accessible.ignored: true
             }
             Kirigami.SelectableLabel {

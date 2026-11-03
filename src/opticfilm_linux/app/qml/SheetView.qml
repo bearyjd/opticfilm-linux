@@ -102,9 +102,10 @@ ListView {
                 model: row.slides
                 delegate: SlideThumb {
                     required property var slideData
+                    implicitHeight: Theme.gu * 170 / 18
                     Layout.fillWidth: true
                     Layout.preferredWidth: 1
-                    Layout.preferredHeight: Math.max(130, Math.min(200, sheet.width * 0.28))
+                    Layout.preferredHeight: Math.max(Theme.gu * 130 / 18, Math.min(Theme.gu * 200 / 18, sheet.width * 0.28))
                     slide: slideData
                     onChosen: modifiers => {
                         bridge.selectSlide(slide.tray, slide.position, modifiers);

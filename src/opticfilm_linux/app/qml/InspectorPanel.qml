@@ -98,7 +98,7 @@ QQC2.ScrollView {
                 }
                 Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.max(150, panel.width * 0.7)
+                    Layout.preferredHeight: Math.max(Theme.minCell, panel.width * 0.7)
                     Image {
                         objectName: "inspectorPreview"
                         anchors.fill: parent
@@ -160,7 +160,7 @@ QQC2.ScrollView {
                 PillButton {
                     objectName: "acceptSelection"
                     Layout.fillWidth: true
-                    implicitWidth: 100
+                    implicitWidth: 5.5 * Theme.gu
                     text: qsTr("Accept")
                     onClicked: bridge.setSelectionAccepted(true)
                 }
@@ -186,7 +186,7 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "rotateSelectionLeft"
                     text: "↶"
-                    font.pixelSize: Theme.fontHeading + 4
+                    font.pixelSize: Theme.fontRotation
                     implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate left")
                     QQC2.ToolTip.visible: hovered
@@ -196,7 +196,7 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "rotateSelectionRight"
                     text: "↷"
-                    font.pixelSize: Theme.fontHeading + 4
+                    font.pixelSize: Theme.fontRotation
                     implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate right")
                     QQC2.ToolTip.visible: hovered
