@@ -35,6 +35,8 @@ from opticfilm_linux.app.jobs import (
 )
 from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
+from opticfilm_linux.app.selection import Selection, prune, selectable_keys
+from opticfilm_linux.app.selection_commands import SelectionCommands
 from opticfilm_linux.app.state import (
     EMPTY_STATE,
     AppState,
@@ -82,7 +84,7 @@ class _Session:
     auto_export: bool = False  # batch setting is immutable throughout this session
 
 
-class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
+class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCommands):
     def __init__(
         self,
         scanner_factory: Callable[[int], Scanner],
@@ -116,6 +118,8 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
         self._job_futures: set[Future] = set()
         self._jobs_idle = threading.Condition(self._lock)
         self._selected: int | None = None
+        self._selection = Selection()
+        self._selection_order = ()
         self._updating: frozenset[tuple[int, int]] = frozenset()
         self._progress: dict[int, float] = {}
         self._scan_started: dict[int, float] = {}
@@ -424,7 +428,9 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
             self._restore_eject_watch()  # no scanner is opened for a read-only batch
 
     def _attach_session(self, session: _Session) -> None:
-        trays = session.store.snapshot().trays
+        manifest = session.store.snapshot()
+        trays = manifest.trays
+        order = selectable_keys(manifest)
         with self._lock:
             self._next_latch_sequence()
             self._latch_applied = self._latch_sequence
@@ -437,6 +443,8 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
             self._latch_invalidated = True
             self._sync_holder_latch(session.scanner)
             self._selected = trays[0].number if trays else None
+            self._selection = Selection()
+            self._selection_order = order
             self._banner = None
             self._updating = frozenset()
             self._progress = {}
@@ -486,6 +494,8 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
             self._restore_eject_watch()
         with self._lock:
             self._selected = None
+            self._selection = Selection()
+            self._selection_order = ()
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
 
     def _scanner_idle(self) -> bool:
@@ -590,9 +600,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
 
     def _rebuild(self) -> None:
         session = self._session
-        status, sequence = (
-            session.poller.snapshot() if session and session.poller else (ScannerStatus.UNKNOWN, 0)
-        )
+        status, sequence = self._poll_status(session)
         manifest = session.store.snapshot() if session is not None else None
         with self._lock:
             selected = self._selected
@@ -604,6 +612,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
         with self._lock:
             if session is not self._session:
                 return  # the batch changed while we were polling; the next refresh will do
+            self._prune_selection(manifest)
             self._update_holder_status(session, status, sequence)
             self._state = self._with_first_load(
                 build_state(
@@ -616,6 +625,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
                     ),
                     readonly=bool(session and session.runner is None),
                     selected=selected,
+                    selection=self._selection,
                     updating=self._updating,
                     progress=self._progress,
                     scan_started=self._scan_started,
@@ -637,6 +647,16 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands):
                     raw_recoverable=raw_recoverable,
                 )
             )
+
+    @staticmethod
+    def _poll_status(session):
+        return (
+            session.poller.snapshot() if session and session.poller else (ScannerStatus.UNKNOWN, 0)
+        )
+
+    def _prune_selection(self, manifest):
+        self._selection_order = selectable_keys(manifest) if manifest else ()
+        self._selection = prune(self._selection, self._selection_order)
 
     @staticmethod
     def _raw_recoverable(session, manifest, pending) -> frozenset[int]:

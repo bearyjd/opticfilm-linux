@@ -172,13 +172,21 @@ class BatchRunner:
         review.apply_slide_settings(self._store, number, position, settings)
         self._submit(self._enhance_pool, self._reenhance_job, number, position)
 
-    def edit_many(self, keys, changes) -> review.BulkEditResult:
+    def edit_many(self, keys, changes=None, *, status=None) -> review.BulkEditResult:
         """Apply one atomic bulk edit and queue a yielding preview drain.
 
         The result contains skipped reasons and the inverse snapshot for undo.
         """
-        result = review.apply_settings_many(self._store, keys, changes)
+        if status is not None:
+            if changes is not None:
+                raise ValueError("provide settings or status, not both")
+            result = review.set_status_many(self._store, keys, status)
+        else:
+            result = review.apply_settings_many(self._store, keys, changes)
         self._queue_stale_previews()
+        if status is not None:
+            for number, position in result.before:
+                self._emit(SlideUpdated(number, position))
         return result
 
     def set_slide_status(self, number: int, position: int, status: SlideStatus) -> None:

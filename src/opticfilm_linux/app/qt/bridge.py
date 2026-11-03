@@ -28,6 +28,7 @@ from opticfilm_linux.app.prefs import (
 )
 from opticfilm_linux.app.qt.destination import DestinationCheck
 from opticfilm_linux.app.qt.models import DictListModel
+from opticfilm_linux.app.qt.selection import FIELDS, SelectionBridge
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState, SlideCard, TrayRow
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideStatus
@@ -67,12 +68,6 @@ SLIDE_KEYS = (
     "afterUrl",
     "beforeUrl",
 )
-FIELDS = {
-    "brightness": "brightness_ev",
-    "color": "color_strength",
-    "grain": "grain_strength",
-    "sharpen": "sharpen_amount",
-}
 DEFAULTS = BatchDefaults()
 
 
@@ -123,7 +118,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
     return Property(kind, lambda self: read(self._state, self), notify=changed)
 
 
-class Bridge(QObject):
+class Bridge(SelectionBridge):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
@@ -230,6 +225,24 @@ class Bridge(QObject):
         if replaced:
             self.batchReplaced.emit()
 
+    selection = Property(
+        "QVariantList",
+        lambda self: [list(key) for key in sorted(self._state.selection)],
+        notify=changed,
+    )
+    selectionFocus = Property(
+        "QVariantList", lambda self: list(self._state.focus or ()), notify=changed
+    )
+    selectionSummary = Property(
+        "QVariantMap",
+        lambda self: {
+            "count": self._state.selection_summary.count,
+            "accepted": self._state.selection_summary.accepted,
+            "settings": dict(self._state.selection_summary.settings),
+        },
+        notify=changed,
+    )
+
     trays = Property(QObject, lambda self: self._trays, constant=True)
     slides = Property(QObject, lambda self: self._slides, constant=True)
     demoDpi = Property(int, lambda self: self._demo_dpi, constant=True)  # noqa: N815
@@ -290,7 +303,9 @@ class Bridge(QObject):
     canFirstLoad = _p(bool, changed, lambda s, _: s.can_first_load)  # noqa: N815
     loadPhase = _p(str, changed, lambda s, _: s.load_phase)  # noqa: N815
     loadExitCode = _p(
-        str, changed, lambda s, _: "" if s.load_exit_code is None else str(s.load_exit_code)
+        str,
+        changed,
+        lambda s, _: "" if s.load_exit_code is None else str(s.load_exit_code),
     )  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
     holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
@@ -302,7 +317,9 @@ class Bridge(QObject):
     bannerMessage = _p(str, changed, lambda s, _: s.banner.message if s.banner else "")  # noqa: N815
     bannerDetail = _p(str, changed, lambda s, _: s.banner.detail if s.banner else "")  # noqa: N815
     bannerLocked = _p(  # noqa: N815
-        bool, changed, lambda s, _: bool(s.banner and s.banner.detail.startswith(LOCKED_PREFIX))
+        bool,
+        changed,
+        lambda s, _: bool(s.banner and s.banner.detail.startswith(LOCKED_PREFIX)),
     )
     hasExport = _p(bool, changed, lambda s, _: s.export is not None)  # noqa: N815
     exportRunning = _p(bool, changed, lambda s, _: bool(s.export and s.export.running))  # noqa: N815
@@ -335,7 +352,9 @@ class Bridge(QObject):
         bool, changed, lambda s, _: bool(s.free_space and s.free_space.running)
     )
     freeSpaceDone = _p(  # noqa: N815
-        bool, changed, lambda s, _: bool(s.free_space and s.free_space.freed is not None)
+        bool,
+        changed,
+        lambda s, _: bool(s.free_space and s.free_space.freed is not None),
     )
     freeSpaceText = _p(str, changed, lambda s, _: _free_text(s))  # noqa: N815
     lastExportFolder = _p(  # noqa: N815
