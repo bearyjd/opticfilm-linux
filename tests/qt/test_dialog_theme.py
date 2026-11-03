@@ -15,6 +15,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
+from theme_metrics import theme_metrics
 
 from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.prefs import MemoryPrefs
@@ -54,6 +55,7 @@ def _wait_closed(dialog):
 )
 def test_dialog_surfaces_and_buttons_follow_live_theme(dialogs, name):
     _, bridge, root, warnings = dialogs
+    metrics = theme_metrics(root)
     object_name = "emptyFramesDialog" if name == "EmptyFrames" else "sample" + name
     dialog = root.findChild(QObject, object_name)
     QMetaObject.invokeMethod(dialog, "open")
@@ -66,7 +68,7 @@ def test_dialog_surfaces_and_buttons_follow_live_theme(dialogs, name):
         QTest.qWait(100)
         background = dialog.property("background")
         assert background.property("color").name() == surface
-        assert background.property("radius") == 14
+        assert background.property("radius") == metrics["cardRadius"]
         content = dialog.property("contentItem")
         colors = root.labelColors(content).toVariant()
         assert colors
@@ -76,7 +78,7 @@ def test_dialog_surfaces_and_buttons_follow_live_theme(dialogs, name):
         buttons = root.pillButtons(content).toVariant() + root.pillButtons(footer).toVariant()
         assert buttons
         for button in buttons:
-            assert button.property("implicitHeight") == 44
+            assert button.property("implicitHeight") == metrics["controlHeight"]
             if button.isEnabled() and not button.property("flat"):
                 assert button.property("background").property("color").name() == accent
     QMetaObject.invokeMethod(dialog, "close")
@@ -116,6 +118,7 @@ def test_confirmation_keeps_keyboard_accept_reject_and_focus(dialogs):
 
 def test_start_page_uses_rounded_card_and_pill_actions(dialogs):
     _, bridge, root, warnings = dialogs
+    metrics = theme_metrics(root)
     card = root.findChild(QQuickItem, "newBatchCard")
     create = root.findChild(QQuickItem, "createBatch")
     assert card is not None
@@ -125,7 +128,7 @@ def test_start_page_uses_rounded_card_and_pill_actions(dialogs):
         bridge.setTheme(theme)
         QTest.qWait(100)
         assert card.property("background").property("color").name() == surface
-        assert card.property("background").property("radius") == 14
+        assert card.property("background").property("radius") == metrics["cardRadius"]
     assert warnings == []
 
 

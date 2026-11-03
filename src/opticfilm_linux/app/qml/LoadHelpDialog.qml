@@ -5,7 +5,7 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
-    preferredWidth: Math.min(32 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 32 * Kirigami.Units.gridUnit)
+    preferredWidth: Math.min(32 * Theme.gu, parent ? parent.width * 0.9 : 32 * Theme.gu)
     maximumWidth: preferredWidth
     // Keep centering independent of wrapped body and footer measurements.
     width: preferredWidth
@@ -49,8 +49,8 @@ Kirigami.Dialog {
                 Kirigami.Icon {
                     source: "dialog-warning"
                     color: Theme.warn
-                    Layout.preferredWidth: Theme.spacingLarge
-                    Layout.preferredHeight: Theme.spacingLarge
+                    Layout.preferredWidth: Theme.iconMedium
+                    Layout.preferredHeight: Theme.iconMedium
                     Accessible.ignored: true
                 }
                 Kirigami.SelectableLabel {

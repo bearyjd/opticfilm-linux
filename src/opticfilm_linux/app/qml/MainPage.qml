@@ -198,6 +198,9 @@ Kirigami.Page {
                 }
             }
             QQC2.Button {
+                Layout.minimumWidth: 0
+                Layout.fillWidth: true
+                Layout.maximumWidth: implicitWidth
                 text: qsTr("Close batch")
                 icon.name: "document-close"
                 onClicked: bridge.closeBatch()
@@ -209,127 +212,149 @@ Kirigami.Page {
         anchors.fill: parent
         spacing: 0
 
-        RowLayout {
+        QQC2.ScrollView {
+            id: statusScroll
+            objectName: "statusScroll"
             Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            visible: bridge.batchAutoExport || bridge.autoStatus !== "" || bridge.emptyConfirmationCount > 0
+            Layout.preferredHeight: Math.min(statusColumn.implicitHeight,
+                Math.max(2 * Theme.controlHeight, parent.height - Theme.reviewMin(parent.height)
+                    - shortcuts.implicitHeight - 2 * Theme.spacingSmall))
+            Layout.maximumHeight: Layout.preferredHeight
+            padding: 0
+            clip: true
+            contentWidth: availableWidth
+            contentHeight: statusColumn.implicitHeight
+            QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
 
-            QQC2.Label {
-                objectName: "autoPipelineStatus"
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
-            }
-            QQC2.Button {
-                objectName: "confirmEmptyFrames"
-                visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
-                text: qsTr("Review %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
-                onClicked: {
-                    emptyFramesDialog.tray = bridge.emptyConfirmationTray;
-                    emptyFramesDialog.sweepVersion = bridge.emptyConfirmationSweepVersion;
-                    emptyFramesDialog.previews = bridge.emptyConfirmationPreviews.slice();
-                    emptyFramesDialog.open();
+            ColumnLayout {
+                id: statusColumn
+                width: statusScroll.availableWidth
+                spacing: 0
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.margins: Kirigami.Units.smallSpacing
+                    visible: bridge.batchAutoExport || bridge.autoStatus !== "" || bridge.emptyConfirmationCount > 0
+
+                    QQC2.Label {
+                        objectName: "autoPipelineStatus"
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
+                    }
+                    QQC2.Button {
+                        objectName: "confirmEmptyFrames"
+                        visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
+                        text: qsTr("Review %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
+                        onClicked: {
+                            emptyFramesDialog.tray = bridge.emptyConfirmationTray;
+                            emptyFramesDialog.sweepVersion = bridge.emptyConfirmationSweepVersion;
+                            emptyFramesDialog.previews = bridge.emptyConfirmationPreviews.slice();
+                            emptyFramesDialog.open();
+                        }
+                    }
+                    QQC2.Button {
+                        objectName: "freeHeldRaw"
+                        visible: bridge.heldTray > 0 && !bridge.readonly
+                        text: qsTr("Approve settings and release raw cleanup")
+                        onClicked: bridge.requestHeldRelease(bridge.heldTray)
+                    }
                 }
-            }
-            QQC2.Button {
-                objectName: "freeHeldRaw"
-                visible: bridge.heldTray > 0 && !bridge.readonly
-                text: qsTr("Approve settings and release raw cleanup")
-                onClicked: bridge.requestHeldRelease(bridge.heldTray)
-            }
-        }
 
-        FirstLoadCard {
-            onTerminalHelp: loadHelpDialog.open()
-        }
-
-        QQC2.Label {
-            objectName: "holderLatchText"
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            wrapMode: Text.Wrap
-            text: bridge.holderLatchText
-        }
-
-        Kirigami.InlineMessage {
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            visible: bridge.holderLatchWarning
-            type: Kirigami.MessageType.Warning
-            text: qsTr("Holder latch is unknown. Reseat and latch the holder before scanning.")
-        }
-
-        QQC2.Button {
-            objectName: "confirmHolderLatched"
-            Layout.margins: Kirigami.Units.smallSpacing
-            visible: bridge.canConfirmHolderLatched
-            text: qsTr("Confirm holder is seated and latched")
-            onClicked: bridge.confirmHolderLatched()
-        }
-
-        RowLayout {
-            // the scanner's status and the holder controls: own row, so the text is never cut off
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            spacing: Kirigami.Units.largeSpacing
-
-            QQC2.Label {
-                objectName: "scannerStatusText"
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-                text: bridge.readonly ? qsTr("Read-only — another program has this batch open") : bridge.scannerText
-            }
-            QQC2.Button {
-                objectName: "loadHelpLink"
-                visible: !bridge.readonly && bridge.scannerStatus === "not_ready"
-                flat: true
-                text: qsTr("How to load the scanner")
-                icon.name: "help-contextual"
-                onClicked: loadHelpDialog.open()
-            }
-            QQC2.Button {
-                objectName: "confirmScannerButton"
-                visible: !bridge.readonly && bridge.scannerStatus === "interrupted"
-                enabled: bridge.canConfirmScanner
-                text: qsTr("Confirm scanner reset…")
-                icon.name: "dialog-ok"
-                onClicked: confirmScannerDialog.open()
-            }
-            QQC2.Button {
-                objectName: "ejectButton"
-                text: qsTr("Eject holder")
-                icon.name: "media-eject"
-                enabled: bridge.canEject
-                onClicked: bridge.ejectHolder()
-            }
-            Item {
-                // a disabled button gets no hover, so the explanation hangs on this wrapper
-                implicitWidth: loadNextButton.implicitWidth
-                implicitHeight: loadNextButton.implicitHeight
-                QQC2.ToolTip.visible: loadNextHover.hovered
-                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Load the next holder after the first terminal load.") : qsTr("Switched off by OPTICFILM_NEXT_STRIP. Unset it and restart the app to enable loading the next holder.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
-
-                HoverHandler {
-                    id: loadNextHover
+                FirstLoadCard {
+                    onTerminalHelp: loadHelpDialog.open()
                 }
+
+                QQC2.Label {
+                    objectName: "holderLatchText"
+                    Layout.fillWidth: true
+                    Layout.margins: Kirigami.Units.smallSpacing
+                    wrapMode: Text.Wrap
+                    text: bridge.holderLatchText
+                }
+
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    Layout.margins: Kirigami.Units.smallSpacing
+                    visible: bridge.holderLatchWarning
+                    type: Kirigami.MessageType.Warning
+                    text: qsTr("Holder latch is unknown. Reseat and latch the holder before scanning.")
+                }
+
                 QQC2.Button {
-                    id: loadNextButton
+                    objectName: "confirmHolderLatched"
+                    Layout.margins: Kirigami.Units.smallSpacing
+                    visible: bridge.canConfirmHolderLatched
+                    text: qsTr("Confirm holder is seated and latched")
+                    onClicked: bridge.confirmHolderLatched()
+                }
 
-                    objectName: "loadNextButton"
-                    anchors.fill: parent
-                    text: qsTr("Load next holder")
-                    icon.name: "go-down"
-                    enabled: bridge.canLoadNext
-                    onClicked: bridge.loadNextHolder()
+                RowLayout {
+                    // the scanner's status and the holder controls: own row, so the text is never cut off
+                    Layout.fillWidth: true
+                    Layout.margins: Kirigami.Units.smallSpacing
+                    spacing: Kirigami.Units.largeSpacing
+
+                    QQC2.Label {
+                        objectName: "scannerStatusText"
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        text: bridge.readonly ? qsTr("Read-only — another program has this batch open") : bridge.scannerText
+                    }
+                    QQC2.Button {
+                        objectName: "loadHelpLink"
+                        visible: !bridge.readonly && bridge.scannerStatus === "not_ready"
+                        flat: true
+                        text: qsTr("How to load the scanner")
+                        icon.name: "help-contextual"
+                        onClicked: loadHelpDialog.open()
+                    }
+                    QQC2.Button {
+                        objectName: "confirmScannerButton"
+                        visible: !bridge.readonly && bridge.scannerStatus === "interrupted"
+                        enabled: bridge.canConfirmScanner
+                        text: qsTr("Confirm scanner reset…")
+                        icon.name: "dialog-ok"
+                        onClicked: confirmScannerDialog.open()
+                    }
+                    QQC2.Button {
+                        objectName: "ejectButton"
+                        implicitHeight: Math.round(Theme.gu * 40 / 18)
+                        text: qsTr("Eject holder")
+                        icon.name: "media-eject"
+                        enabled: bridge.canEject
+                        onClicked: bridge.ejectHolder()
+                    }
+                    Item {
+                        // a disabled button gets no hover, so the explanation hangs on this wrapper
+                        implicitWidth: loadNextButton.implicitWidth
+                        implicitHeight: loadNextButton.implicitHeight
+                        QQC2.ToolTip.visible: loadNextHover.hovered
+                        QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                        QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Load the next holder after the first terminal load.") : qsTr("Switched off by OPTICFILM_NEXT_STRIP. Unset it and restart the app to enable loading the next holder.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
+
+                        HoverHandler {
+                            id: loadNextHover
+                        }
+                        QQC2.Button {
+                            id: loadNextButton
+
+                            objectName: "loadNextButton"
+                            implicitHeight: Math.round(Theme.gu * 40 / 18)
+                            anchors.fill: parent
+                            text: qsTr("Load next holder")
+                            icon.name: "go-down"
+                            enabled: bridge.canLoadNext
+                            onClicked: bridge.loadNextHolder()
+                        }
+                    }
+                }
+                Kirigami.Separator {
+                    Layout.fillWidth: true
+                }
+                ErrorBanner {
+                    Layout.fillWidth: true
                 }
             }
-        }
-        Kirigami.Separator {
-            Layout.fillWidth: true
-        }
-        ErrorBanner {
-            Layout.fillWidth: true
         }
 
         RowLayout {
@@ -338,9 +363,9 @@ Kirigami.Page {
             spacing: 0
 
             ColumnLayout {
-                Layout.preferredWidth: 230
-                Layout.maximumWidth: 230
-                Layout.minimumWidth: 180
+                Layout.preferredWidth: Theme.paneMax
+                Layout.maximumWidth: Theme.paneMax
+                Layout.minimumWidth: Theme.paneMin
                 Layout.fillHeight: true
                 spacing: Theme.spacingSmall
                 QQC2.Label {
@@ -380,15 +405,16 @@ Kirigami.Page {
             Kirigami.Separator { Layout.fillHeight: true }
             InspectorPanel {
                 id: inspector
-                Layout.preferredWidth: Math.min(360, page.width * 0.3)
-                Layout.maximumWidth: 360
-                Layout.minimumWidth: 270
+                Layout.preferredWidth: Math.min(Theme.inspectorMax, page.width * 0.3)
+                Layout.maximumWidth: Theme.inspectorMax
+                Layout.minimumWidth: Theme.inspectorMin
                 Layout.fillHeight: true
                 onReexportRequested: reexportDialog.open()
                 onRescanRequested: rescanDialog.open()
             }
         }
         QQC2.Label {
+            id: shortcuts
             Layout.fillWidth: true
             Layout.margins: Theme.spacingSmall
             text: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo")

@@ -6,7 +6,7 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
-    preferredWidth: Math.min(28 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 28 * Kirigami.Units.gridUnit)
+    preferredWidth: Math.min(28 * Theme.gu, parent ? parent.width * 0.9 : 28 * Theme.gu)
     maximumWidth: preferredWidth
     // Keep centering independent of wrapped body and footer measurements.
     width: preferredWidth

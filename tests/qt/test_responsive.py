@@ -21,6 +21,8 @@ from layout_probe import (
     thumb_caption_violations,
     tree,
 )
+from PySide6.QtQml import QQmlExpression
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtWidgets import QApplication
 
 from opticfilm_linux.scanner.base import ScannerStatus
@@ -88,8 +90,19 @@ def test_contact_sheet_controls_are_reachable(layout, size, theme):
     assert not thumb_caption_violations(nodes), "SlideThumb captions must fit at supported widths"
 
 
-@pytest.mark.parametrize("size,theme", CASES)
-@STATUS_PENDING
+@pytest.mark.parametrize(
+    "size,theme",
+    tuple(
+        pytest.param(
+            size,
+            theme,
+            marks=STATUS_PENDING if size[0] >= 1280 else (),
+            id=f"{size[0]}x{size[1]}-{theme}",
+        )
+        for size, theme in ((s, "dark") for s in SIZES)
+    )
+    + (pytest.param((800, 600), "light", id="800x600-light"),),
+)
 def test_worst_stack_keeps_review_space_and_safety_actions(layout, size, theme):
     layout.apply("worst-stack", size, theme)
     nodes = tree(layout.engine, layout.root)
@@ -180,3 +193,31 @@ def test_state_specific_safety_actions_are_reachable(layout, state, names):
     layout.bridge._apply(replace(worst_stack(layout.main), **changes[state]))
     pump(100)
     assert_reachable(tree(layout.engine, layout.root), layout.root, names)
+
+
+def test_status_stack_scrolls_to_bottom_safety_actions(layout):
+    layout.apply("worst-stack", (1024, 600))
+    nodes = tree(layout.engine, layout.root)
+    viewport = named(nodes, "statusScroll").rect
+    failed = named(nodes, "selectFailed")
+    tray_pane = nodes[failed.parent].rect
+    assert named(nodes, "mainPage").rect.contains(tray_pane)
+    for name in ("selectFlagged", "selectFailed"):
+        assert tray_pane.contains(named(nodes, name).rect), name
+    shortcuts = next(node for node in nodes if node.text.startswith("Ctrl+A select all"))
+    assert tray_pane.y + tray_pane.height <= shortcuts.rect.y
+    assert named(nodes, "bannerDismiss").rect.y > viewport.y + viewport.height
+    scroll = layout.root.findChild(QQuickItem, "statusScroll")
+    expression = QQmlExpression(
+        layout.engine.rootContext(),
+        scroll,
+        "contentItem.contentY = contentItem.contentHeight - contentItem.height",
+    )
+    expression.evaluate()
+    assert not expression.hasError(), expression.error().toString()
+    pump(100)
+    nodes = tree(layout.engine, layout.root)
+    for name in ("bannerDetails", "bannerDismiss"):
+        assert viewport.contains(named(nodes, name).rect), name
+    QQmlExpression(layout.engine.rootContext(), scroll, "contentItem.contentY = 0").evaluate()
+    pump(50)

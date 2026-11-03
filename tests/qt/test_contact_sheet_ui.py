@@ -16,6 +16,7 @@ from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from shiboken6 import isValid
 from test_qt_smoke import _wait, loaded, qapp  # noqa: F401
+from theme_metrics import theme_metrics
 
 from opticfilm_linux.batch.model import (
     Flag,
@@ -188,6 +189,7 @@ def test_select_all_keeps_inspector_and_queue_on_focused_tray(sheet_window):
 
 def test_rotate_buttons_are_legible_named_and_rotate_selection(sheet_window):
     bridge, root, store, _warnings = sheet_window
+    metrics = theme_metrics(root)
     _tap(root, "slideThumb_2_1")
     _wait(bridge, lambda: bridge.selection == [[2, 1]])
     for name, label, rotation in [
@@ -195,8 +197,8 @@ def test_rotate_buttons_are_legible_named_and_rotate_selection(sheet_window):
         ("rotateSelectionRight", "Rotate right", 0),
     ]:
         button = root.findChild(QQuickItem, name)
-        assert button.property("font").pixelSize() >= 24
-        assert button.height() >= 44
+        assert button.property("font").pixelSize() == metrics["fontRotation"]
+        assert button.height() >= metrics["controlHeight"]
         accessible = QAccessible.queryAccessibleInterface(button)
         assert accessible.text(QAccessible.Text.Name) == label
         assert QMetaObject.invokeMethod(button, "click")
