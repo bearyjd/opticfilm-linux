@@ -9,6 +9,8 @@ Card {
 
     property bool showDetail: false
 
+    borderColor: Theme.error
+    borderWidth: 2
     visible: bridge.hasBanner
     onVisibleChanged: if (!visible)
         showDetail = false
@@ -23,7 +25,7 @@ Card {
 
             Kirigami.Icon {
                 source: "dialog-error"
-                color: Theme.text
+                color: Theme.error
                 Layout.preferredWidth: Theme.spacingLarge
                 Layout.preferredHeight: Theme.spacingLarge
                 Accessible.ignored: true
@@ -44,11 +46,14 @@ Card {
             PillButton {
                 objectName: "bannerDetails"
                 text: banner.showDetail ? qsTr("Hide details") : qsTr("Details")
+                icon.name: "dialog-information"
                 onClicked: banner.showDetail = !banner.showDetail
             }
             PillButton {
                 objectName: "bannerDismiss"
                 text: qsTr("Dismiss")
+                flat: true
+                icon.name: "dialog-close"
                 onClicked: bridge.dismissBanner()
             }
             PillButton {

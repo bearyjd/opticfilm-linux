@@ -40,6 +40,10 @@ QQC2.ApplicationWindow {
         return colors;
     }
 
+    function showsIcon(button) {
+        return button.contentItem.children.some(child => child.source !== undefined && child.visible && child.source.toString() !== "");
+    }
+
     function pillButtons(item) {
         let buttons = [];
         for (const child of item.children) {
@@ -64,6 +68,9 @@ QQC2.ApplicationWindow {
     }
     LoadHelpDialog {
         objectName: "sampleLoadHelp"
+    }
+    EmptyFramesDialog {
+        objectName: "emptyFramesDialog"
     }
     ConfirmDialog {
         objectName: "sampleConfirm"

@@ -295,14 +295,13 @@ Kirigami.ScrollablePage {
                 objectName: "recentBatchCard"
                 required property var modelData
                 Layout.fillWidth: true
-                opacity: modelData.exists ? 1 : 0.5
                 contentItem: RowLayout {
                     spacing: Theme.spacingSmall
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 0
                         QQC2.Label {
-                            color: Theme.text
+                            color: modelData.exists ? Theme.text : Theme.muted
                             font.pixelSize: Theme.fontBody
                             text: modelData.name
                             font.bold: true

@@ -49,10 +49,13 @@ def _wait_closed(dialog):
     raise AssertionError("dialog did not close")
 
 
-@pytest.mark.parametrize("name", ["Export", "FreeSpace", "Orientation", "LoadHelp", "Confirm"])
+@pytest.mark.parametrize(
+    "name", ["Export", "FreeSpace", "Orientation", "LoadHelp", "Confirm", "EmptyFrames"]
+)
 def test_dialog_surfaces_and_buttons_follow_live_theme(dialogs, name):
     _, bridge, root, warnings = dialogs
-    dialog = root.findChild(QObject, "sample" + name)
+    object_name = "emptyFramesDialog" if name == "EmptyFrames" else "sample" + name
+    dialog = root.findChild(QObject, object_name)
     QMetaObject.invokeMethod(dialog, "open")
     QTest.qWait(100)
     for theme, surface, accent in [
@@ -74,7 +77,7 @@ def test_dialog_surfaces_and_buttons_follow_live_theme(dialogs, name):
         assert buttons
         for button in buttons:
             assert button.property("implicitHeight") == 44
-            if button.isEnabled():
+            if button.isEnabled() and not button.property("flat"):
                 assert button.property("background").property("color").name() == accent
     QMetaObject.invokeMethod(dialog, "close")
     assert warnings == []
@@ -182,3 +185,74 @@ def _wait_banner(bridge, visible):
             return
         QTest.qWait(10)
     raise AssertionError("banner did not update")
+
+
+def test_secondary_actions_are_outlined_not_filled(dialogs):
+    _, bridge, root, warnings = dialogs
+    for name, flat_text in [("sampleConfirm", "Cancel"), ("sampleFreeSpace", "Cancel")]:
+        dialog = root.findChild(QObject, name)
+        QMetaObject.invokeMethod(dialog, "open")
+        QTest.qWait(100)
+        buttons = root.pillButtons(dialog.property("contentItem")).toVariant()
+        buttons += root.pillButtons(dialog.property("footer")).toVariant()
+        flat = [b for b in buttons if b.property("text").replace("&", "") == flat_text]
+        assert flat and all(b.property("flat") for b in flat)
+        assert all(b.property("background").property("color").alpha() == 0 for b in flat)
+        QMetaObject.invokeMethod(dialog, "close")
+        _wait_closed(dialog)
+    assert warnings == []
+
+
+def test_pill_button_renders_its_icon(dialogs):
+    _, _, root, warnings = dialogs
+    dialog = root.findChild(QObject, "sampleConfirm")
+    QMetaObject.invokeMethod(dialog, "open")
+    QTest.qWait(100)
+    for button in root.pillButtons(dialog.property("footer")).toVariant():
+        assert root.showsIcon(button)
+    QMetaObject.invokeMethod(dialog, "close")
+    assert warnings == []
+
+
+@pytest.mark.parametrize("name", ["Confirm", "LoadHelp"])
+def test_enter_activates_the_accept_button_and_escape_closes(dialogs, name):
+    _, _, root, warnings = dialogs
+    dialog = root.findChild(QObject, "sample" + name)
+    QMetaObject.invokeMethod(dialog, "open")
+    QTest.qWait(100)
+    QTest.keyClick(root, Qt.Key_Return)
+    QTest.qWait(100)
+    _wait_closed(dialog)
+    if name == "Confirm":
+        assert root.property("confirmations") == 1
+    QMetaObject.invokeMethod(dialog, "open")
+    QTest.qWait(100)
+    QTest.keyClick(root, Qt.Key_Escape)
+    _wait_closed(dialog)
+    assert warnings == []
+
+
+def test_severity_accents_follow_theme(dialogs, tmp_path):
+    _, bridge, root, warnings = dialogs
+    bridge.openBatch(str(tmp_path / "missing"), False)
+    _wait_banner(bridge, True)
+    banner = root.findChild(QQuickItem, "errorBanner")
+    for theme, error in [("dark", "#ff9a9a"), ("light", "#a8201a")]:
+        bridge.setTheme(theme)
+        QTest.qWait(50)
+        assert banner.property("borderColor").name() == error
+        assert banner.property("borderWidth") == 2
+    assert warnings == []
+
+
+def test_enlarge_dialog_is_themed(dialogs):
+    _, bridge, root, warnings = dialogs
+    zoom = root.findChild(QObject, "enlargedEmptyFrame")
+    QMetaObject.invokeMethod(zoom, "open")
+    QTest.qWait(100)
+    for theme, surface in [("dark", "#232a38"), ("light", "#ffffff")]:
+        bridge.setTheme(theme)
+        QTest.qWait(50)
+        assert zoom.property("background").property("color").name() == surface
+    QMetaObject.invokeMethod(zoom, "close")
+    assert warnings == []

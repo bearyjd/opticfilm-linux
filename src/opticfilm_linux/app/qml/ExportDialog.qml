@@ -150,6 +150,7 @@ Kirigami.Dialog {
             PillButton {
                 Layout.alignment: Qt.AlignRight
                 text: bridge.exportFinished ? qsTr("Close") : qsTr("Cancel")
+                flat: true
                 icon.name: bridge.exportFinished ? "dialog-close" : "dialog-cancel"
                 onClicked: bridge.exportFinished ? dialog.close() : bridge.cancelExport()
             }

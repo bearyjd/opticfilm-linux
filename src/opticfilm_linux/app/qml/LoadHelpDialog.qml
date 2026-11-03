@@ -35,6 +35,8 @@ Kirigami.Dialog {
             objectName: "loadBusyWarning"
             Layout.fillWidth: true
             visible: dialog.busy
+            borderColor: Theme.warn
+            borderWidth: 2
             text: bridge.scanPending ? qsTr("A scan is running. Do NOT switch the scanner off; wait until it finishes.") : qsTr("The holder is moving. Do NOT switch the scanner off; wait until it finishes.")
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
@@ -42,7 +44,7 @@ Kirigami.Dialog {
                 spacing: Theme.spacingSmall
                 Kirigami.Icon {
                     source: "dialog-warning"
-                    color: Theme.text
+                    color: Theme.warn
                     Layout.preferredWidth: Theme.spacingLarge
                     Layout.preferredHeight: Theme.spacingLarge
                     Accessible.ignored: true
@@ -157,11 +159,21 @@ Kirigami.Dialog {
         }
     }
 
+    // Enter activates the only (Close) button: it takes the focus when the dialog opens.
+    onAboutToShow: Qt.callLater(() => {
+        if (buttonBox.count > 0)
+            buttonBox.itemAt(0).forceActiveFocus(Qt.TabFocusReason);
+    })
+
     footer: QQC2.DialogButtonBox {
+        id: buttonBox
         standardButtons: dialog.standardButtons
         padding: Theme.spacing
         spacing: Theme.spacingSmall
         background: Item {}
-        delegate: PillButton {}
+        delegate: PillButton {
+            icon.name: "dialog-close"
+            highlighted: true
+        }
     }
 }

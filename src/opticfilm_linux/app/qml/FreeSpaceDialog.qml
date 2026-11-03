@@ -60,6 +60,8 @@ Kirigami.Dialog {
                 onClicked: bridge.confirmFreeSpace()
             }
             PillButton {
+                flat: true
+                icon.name: bridge.freeSpaceDone ? "dialog-close" : "dialog-cancel"
                 text: bridge.freeSpaceDone ? qsTr("Close") : (bridge.freeSpaceRunning ? qsTr("Stop after this tray") : qsTr("Cancel"))
                 onClicked: bridge.freeSpaceRunning ? bridge.cancelFreeSpace() : dialog.close()
             }
