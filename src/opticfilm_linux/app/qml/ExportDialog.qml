@@ -6,41 +6,61 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
-    objectName: "exportDialog"
 
+    Kirigami.Theme.inherit: false
+    Kirigami.Theme.backgroundColor: Theme.card
+    Kirigami.Theme.alternateBackgroundColor: Theme.track
+    Kirigami.Theme.textColor: Theme.text
+    Kirigami.Theme.disabledTextColor: Theme.muted
+    Kirigami.Theme.highlightColor: Theme.accent
+    Kirigami.Theme.highlightedTextColor: Theme.accentText
+    Kirigami.Theme.linkColor: Theme.accent
+
+    background: Rectangle {
+        objectName: "dialogSurface"
+        radius: Theme.cardRadius
+        color: Theme.card
+        border.color: Theme.line
+    }
+    objectName: "exportDialog"
     property string folderUrl: ""
     readonly property var formats: [
-        {key: "tiff16", label: qsTr("16-bit TIFF (best quality)")},
-        {key: "png8", label: qsTr("8-bit PNG")},
-        {key: "jpeg", label: qsTr("JPEG")}
+        {
+            key: "tiff16",
+            label: qsTr("16-bit TIFF (best quality)")
+        },
+        {
+            key: "png8",
+            label: qsTr("8-bit PNG")
+        },
+        {
+            key: "jpeg",
+            label: qsTr("JPEG")
+        }
     ]
-
     function resetSettings() {
         folderUrl = bridge.batchExportFolder;
         formatBox.currentIndex = Math.max(0, formatBox.indexOfValue(bridge.batchExportFormat));
         sizeBox.currentIndex = Math.max(0, sizeBox.indexOfValue(bridge.batchJpegSize));
     }
-
     onOpened: resetSettings()
-
     Connections {
         target: bridge
-        function onBatchReplaced() { dialog.resetSettings(); }
+        function onBatchReplaced() {
+            dialog.resetSettings();
+        }
     }
-
     title: qsTr("Export accepted slides")
-    padding: Kirigami.Units.largeSpacing
+    padding: Theme.spacing
     standardButtons: Kirigami.Dialog.NoButton
     closePolicy: bridge.exportRunning ? QQC2.Popup.NoAutoClose : QQC2.Popup.CloseOnEscape
-    onClosed: if (bridge.hasExport && !bridge.exportRunning) bridge.dismissExport()
-
+    onClosed: if (bridge.hasExport && !bridge.exportRunning)
+        bridge.dismissExport()
     FolderDialog {
         id: folderDialog
-
         title: qsTr("Export to folder")
         onAccepted: dialog.folderUrl = selectedFolder.toString()
     }
-
     ConfirmDialog {
         id: reexportConfirm
         objectName: "reexportConfirmDialog"
@@ -48,27 +68,28 @@ Kirigami.Dialog {
         subtitle: qsTr("The next export will write new numbered files for all accepted slides. The old files are retained. This cannot be undone.")
         onConfirmed: bridge.reexportAllAccepted()
     }
-
     ColumnLayout {
-        spacing: Kirigami.Units.largeSpacing
+        spacing: Theme.spacing
         implicitWidth: Kirigami.Units.gridUnit * 28
-
         ColumnLayout {
             visible: !bridge.hasExport
-            spacing: Kirigami.Units.largeSpacing
-
+            spacing: Theme.spacing
             QQC2.Label {
+                color: Theme.text
+                font.pixelSize: Theme.fontBody
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 text: qsTr("Writes the accepted slides that have not been exported yet. Slides that need a look and empty windows are never exported. You can export again later to continue.")
             }
             RowLayout {
                 QQC2.Label {
+                    color: Theme.text
+                    font.pixelSize: Theme.fontBody
                     Layout.fillWidth: true
                     elide: Text.ElideMiddle
                     text: dialog.folderUrl === "" ? qsTr("(no folder chosen)") : decodeURIComponent(dialog.folderUrl.replace("file://", ""))
                 }
-                QQC2.Button {
+                PillButton {
                     text: qsTr("Browse…")
                     icon.name: "folder-open"
                     onClicked: folderDialog.open()
@@ -77,7 +98,6 @@ Kirigami.Dialog {
             QQC2.ComboBox {
                 id: formatBox
                 objectName: "exportFormat"
-
                 Layout.fillWidth: true
                 model: dialog.formats
                 textRole: "label"
@@ -87,12 +107,21 @@ Kirigami.Dialog {
                 id: sizeBox
                 objectName: "exportSize"
                 Layout.fillWidth: true
-                model: [{key: "full", label: qsTr("Full size")}, {key: "3600", label: qsTr("3600 dpi size")}]
+                model: [
+                    {
+                        key: "full",
+                        label: qsTr("Full size")
+                    },
+                    {
+                        key: "3600",
+                        label: qsTr("3600 dpi size")
+                    }
+                ]
                 textRole: "label"
                 valueRole: "key"
                 enabled: formatBox.currentValue === "jpeg"
             }
-            QQC2.Button {
+            PillButton {
                 objectName: "startExport"
                 Layout.alignment: Qt.AlignRight
                 text: qsTr("Export")
@@ -102,11 +131,9 @@ Kirigami.Dialog {
                 onClicked: bridge.startExport(dialog.folderUrl, formatBox.currentValue, sizeBox.currentValue)
             }
         }
-
         ColumnLayout {
             visible: bridge.hasExport
-            spacing: Kirigami.Units.largeSpacing
-
+            spacing: Theme.spacing
             QQC2.ProgressBar {
                 Layout.fillWidth: true
                 from: 0
@@ -114,25 +141,20 @@ Kirigami.Dialog {
                 value: bridge.exportDone
             }
             QQC2.Label {
+                color: Theme.text
+                font.pixelSize: Theme.fontBody
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                text: bridge.exportFinished
-                    ? (bridge.exportCancelled
-                        ? qsTr("Cancelled. %1 slides were written; export again to continue.").arg(bridge.exportWritten)
-                        : (bridge.exportMessage !== ""
-                            ? bridge.exportMessage
-                            : qsTr("Done. %1 slides were written.").arg(bridge.exportWritten)))
-                    : qsTr("Exporting %1 of %2…").arg(bridge.exportDone).arg(bridge.exportTotal)
+                text: bridge.exportFinished ? (bridge.exportCancelled ? qsTr("Cancelled. %1 slides were written; export again to continue.").arg(bridge.exportWritten) : (bridge.exportMessage !== "" ? bridge.exportMessage : qsTr("Done. %1 slides were written.").arg(bridge.exportWritten))) : qsTr("Exporting %1 of %2…").arg(bridge.exportDone).arg(bridge.exportTotal)
             }
-            QQC2.Button {
+            PillButton {
                 Layout.alignment: Qt.AlignRight
                 text: bridge.exportFinished ? qsTr("Close") : qsTr("Cancel")
                 icon.name: bridge.exportFinished ? "dialog-close" : "dialog-cancel"
                 onClicked: bridge.exportFinished ? dialog.close() : bridge.cancelExport()
             }
         }
-
-        QQC2.Button {
+        PillButton {
             objectName: "reexportAllAccepted"
             text: qsTr("Re-export all accepted")
             visible: !bridge.exportRunning
