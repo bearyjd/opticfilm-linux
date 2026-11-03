@@ -5,48 +5,66 @@ from collections import Counter
 from collections.abc import Mapping
 
 from opticfilm_linux.app import selection
-from opticfilm_linux.app.state import Banner
+from opticfilm_linux.app.state import Banner, selection_fields
 from opticfilm_linux.batch.model import SlideSettings, SlideStatus
 
 
 class SelectionCommands:
+    """Mixin for Controller: relies on its _lock, _state, _selected, _manifest and writers."""
+
     def select_slide(self, number: int, position: int, control=False, shift=False) -> None:
         key = (number, position)
         with self._lock:
             if key not in self._selection_order:
                 return
             if shift:
-                self._selection = selection.extend(
+                new = selection.extend(
                     self._selection, key, self._selection_order, additive=control
                 )
             elif control:
-                self._selection = selection.toggle(self._selection, key)
+                new = selection.toggle(self._selection, key)
             else:
-                self._selection = selection.click(self._selection, key)
-            self._selected = number
+                new = selection.click(self._selection, key)
+            self._publish_selection(new, number)
+        self._kick_refresh()
 
     def select_all(self) -> None:
         with self._lock:
-            self._selection = selection.select_all(self._selection_order)
+            self._publish_selection(selection.select_all(self._selection_order))
+        self._kick_refresh()
 
     def clear_selection(self) -> None:
         with self._lock:
-            self._selection = selection.clear()
+            self._publish_selection(selection.clear())
+        self._kick_refresh()
 
     def select_tray_slides(self, number: int, additive: bool = False) -> None:
         with self._lock:
-            self._selection = selection.select_tray(
-                self._selection, number, self._selection_order, additive
-            )
-            self._selected = number
+            if not any(key[0] == number for key in self._selection_order):
+                return  # nothing selectable there: keep the tray and selection as they are
+            new = selection.select_tray(self._selection, number, self._selection_order, additive)
+            self._publish_selection(new, number)
+        self._kick_refresh()
 
     def move_focus(self, delta: int, extend: bool = False) -> None:
         with self._lock:
-            self._selection = selection.move_focus(
-                self._selection, delta, self._selection_order, extend
-            )
-            if self._selection.focus:
-                self._selected = self._selection.focus[0]
+            new = selection.move_focus(self._selection, delta, self._selection_order, extend)
+            self._publish_selection(new, new.focus[0] if new.focus else None)
+        self._kick_refresh()
+
+    def _publish_selection(self, new, tray: int | None = None) -> None:
+        """Swap the selection and patch the published state from the cached manifest.
+
+        Called with the lock held: in-memory work only, no store or disk access.
+        """
+        self._selection = new
+        if tray is not None:
+            self._selected = tray
+        self._state = dataclasses.replace(
+            self._state,
+            selected=self._selected,
+            **selection_fields(self._manifest, new),
+        )
 
     def _selection_keys(self):
         with self._lock:
@@ -54,6 +72,8 @@ class SelectionCommands:
 
     def set_selection_status(self, status: SlideStatus) -> None:
         keys = self._selection_keys()
+        if not keys:
+            return
 
         def job(runner):
             result = runner.edit_many(keys, status=status)
@@ -86,17 +106,11 @@ class SelectionCommands:
 
     def _edit_selection(self, changes) -> None:
         keys = self._selection_keys()
+        if not keys:
+            return
 
         def job(runner):
-            edits = changes
-            if callable(changes):
-                edits = {
-                    (tray.number, slide.position): changes(slide.settings)
-                    for tray in self._open_store().snapshot().trays
-                    for slide in tray.slides
-                    if (tray.number, slide.position) in keys
-                }
-            result = runner.edit_many(keys, edits)
+            result = runner.edit_many(keys, changes)
             self._bulk_result(result)
 
         self._run_writer(job, "Could not adjust selected slides")

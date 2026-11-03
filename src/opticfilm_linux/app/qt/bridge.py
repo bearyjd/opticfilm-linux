@@ -303,9 +303,7 @@ class Bridge(SelectionBridge):
     canFirstLoad = _p(bool, changed, lambda s, _: s.can_first_load)  # noqa: N815
     loadPhase = _p(str, changed, lambda s, _: s.load_phase)  # noqa: N815
     loadExitCode = _p(
-        str,
-        changed,
-        lambda s, _: "" if s.load_exit_code is None else str(s.load_exit_code),
+        str, changed, lambda s, _: "" if s.load_exit_code is None else str(s.load_exit_code)
     )  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
     holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
@@ -317,9 +315,7 @@ class Bridge(SelectionBridge):
     bannerMessage = _p(str, changed, lambda s, _: s.banner.message if s.banner else "")  # noqa: N815
     bannerDetail = _p(str, changed, lambda s, _: s.banner.detail if s.banner else "")  # noqa: N815
     bannerLocked = _p(  # noqa: N815
-        bool,
-        changed,
-        lambda s, _: bool(s.banner and s.banner.detail.startswith(LOCKED_PREFIX)),
+        bool, changed, lambda s, _: bool(s.banner and s.banner.detail.startswith(LOCKED_PREFIX))
     )
     hasExport = _p(bool, changed, lambda s, _: s.export is not None)  # noqa: N815
     exportRunning = _p(bool, changed, lambda s, _: bool(s.export and s.export.running))  # noqa: N815
@@ -352,9 +348,7 @@ class Bridge(SelectionBridge):
         bool, changed, lambda s, _: bool(s.free_space and s.free_space.running)
     )
     freeSpaceDone = _p(  # noqa: N815
-        bool,
-        changed,
-        lambda s, _: bool(s.free_space and s.free_space.freed is not None),
+        bool, changed, lambda s, _: bool(s.free_space and s.free_space.freed is not None)
     )
     freeSpaceText = _p(str, changed, lambda s, _: _free_text(s))  # noqa: N815
     lastExportFolder = _p(  # noqa: N815

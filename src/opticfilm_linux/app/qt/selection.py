@@ -13,6 +13,8 @@ FIELDS = {
 
 
 class SelectionBridge(QObject):
+    """Mixin base of Bridge: needs its _controller and _flush_now()."""
+
     @Slot(int, int, int)
     def selectSlide(self, number: int, position: int, modifiers: int) -> None:  # noqa: N802
         self._flush_now()

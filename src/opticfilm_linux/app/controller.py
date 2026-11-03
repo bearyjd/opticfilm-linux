@@ -120,6 +120,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         self._selected: int | None = None
         self._selection = Selection()
         self._selection_order = ()
+        self._manifest = None  # last manifest a refresh read; selection gestures patch from it
         self._updating: frozenset[tuple[int, int]] = frozenset()
         self._progress: dict[int, float] = {}
         self._scan_started: dict[int, float] = {}
@@ -164,15 +165,18 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         if session is not None and session.poller is not None:
             session.poller.poll()
             self._act_on_eject_button(session.poller)
+        self._kick_refresh()
+        with self._lock:
+            changed = self._state is not self._reported
+            self._reported = self._state
+        return changed
+
+    def _kick_refresh(self) -> None:
         with self._lock:
             start = not self._refreshing
             self._refreshing = True
         if start:
             self._refresher.submit(self._refresh)
-        with self._lock:
-            changed = self._state is not self._reported
-            self._reported = self._state
-        return changed
 
     def _act_on_eject_button(self, poller: StatusPoller) -> None:
         # A press is always taken and handled now, never queued behind a scan.
@@ -445,6 +449,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             self._selected = trays[0].number if trays else None
             self._selection = Selection()
             self._selection_order = order
+            self._manifest = manifest
             self._banner = None
             self._updating = frozenset()
             self._progress = {}
@@ -496,6 +501,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             self._selected = None
             self._selection = Selection()
             self._selection_order = ()
+            self._manifest = None
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
 
     def _scanner_idle(self) -> bool:
@@ -610,8 +616,8 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             session, manifest, raw_pending, self._raw_recoverable
         )
         with self._lock:
-            if session is not self._session:
-                return  # the batch changed while we were polling; the next refresh will do
+            if session is not self._session or selected != self._selected:
+                return  # the batch or tray changed while we were polling; the next refresh will do
             self._prune_selection(manifest)
             self._update_holder_status(session, status, sequence)
             self._state = self._with_first_load(
@@ -655,6 +661,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         )
 
     def _prune_selection(self, manifest):
+        self._manifest = manifest
         self._selection_order = selectable_keys(manifest) if manifest else ()
         self._selection = prune(self._selection, self._selection_order)
 

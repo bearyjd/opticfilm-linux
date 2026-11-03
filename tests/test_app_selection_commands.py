@@ -106,8 +106,11 @@ def test_bulk_settings_preserve_owner_status_skip_freed_and_report_summary(selec
     assert slides[1, 1].settings == SlideSettings(rotation=90, mirror=True, brightness_ev=0.5)
     assert slides[1, 1].status is SlideStatus.NEEDS_LOOK and slides[1, 1].owner_decided
     assert slides[3, 1].settings == SlideSettings() and not slides[3, 1].owner_decided
-    wait_until(selected, lambda: selected.state().selection_summary.count == 6)
-    assert dict(selected.state().selection_summary.settings)["brightness_ev"] is None
+    wait_until(
+        selected,
+        lambda: dict(selected.state().selection_summary.settings).get("brightness_ev", 0.0) is None,
+    )
+    assert selected.state().selection_summary.count == 6
     assert "removed" in selected.state().banner.message
     selected.reset_selection()
     wait_until(selected, lambda: _slides(selected)[1, 1].settings == SlideSettings())
@@ -134,3 +137,77 @@ def test_readonly_selection_can_be_changed_but_not_edited(selected, monkeypatch)
     wait_until(selected, lambda: selected.state().banner is not None)
     assert "read-only" in selected.state().banner.message
     assert _slides(selected)[1, 1].settings == SlideSettings()
+
+
+def test_gestures_publish_the_state_immediately_without_waiting_for_a_tick(selected):
+    selected.tick()
+    wait_until(selected, lambda: selected.state().selected == 1)
+    selected.select_slide(2, 2)
+    state = selected.state()  # no tick and no wait: the gesture itself republished
+    assert state.selection == {(2, 2)} and state.focus == (2, 2) and state.selected == 2
+    assert state.selection_summary.count == 1
+    selected.select_all()
+    assert len(selected.state().selection) == 6
+    selected.move_focus(1)
+    assert selected.state().focus == selected._selection.focus
+    selected.select_tray_slides(3)
+    state = selected.state()
+    assert state.selection == {(3, 1), (3, 2)} and state.selected == 3
+    selected.clear_selection()
+    assert not selected.state().selection and selected.state().selection_summary.count == 0
+
+
+def test_select_tray_without_selectable_slides_keeps_tray_and_selection(selected):
+    selected.select_slide(1, 1)
+    selected._session.store.update_tray(2, stage=TrayStage.ENHANCING)
+    wait_until(selected, lambda: (2, 1) not in selected._selection_order)
+    before = selected._selected
+    selected.select_tray_slides(2)
+    selected.select_tray_slides(9)
+    assert selected._selected == before and selected._selection.keys == {(1, 1)}
+
+
+def test_rotate_and_mirror_are_one_atomic_store_update(selected, monkeypatch):
+    selected.select_all()
+    store = selected._session.store
+
+    def no_read(*_):
+        raise AssertionError("must not read a snapshot outside the edit")
+
+    monkeypatch.setattr(selected, "_open_store", no_read)
+    selected.rotate_selection(1)
+    selected.mirror_selection()
+    wait_until(selected, lambda: _slides(selected)[3, 2].settings.mirror)
+    assert _slides(selected)[1, 1].settings == SlideSettings(rotation=90, mirror=True)
+    assert store.snapshot() is not None
+
+
+def test_callable_edit_skips_missing_slides_instead_of_failing(sweep600_dir, tmp_path):
+    from opticfilm_linux.batch import review
+
+    with BatchStore.create(tmp_path / "b", name="callable") as store:
+        store.update(
+            lambda m: dataclasses.replace(
+                m, trays=(TrayRecord(1, TrayStage.REVIEW, slides=(SlideRecord(1),)),)
+            )
+        )
+        result = review.apply_settings_many(
+            store, [(1, 1), (9, 9)], lambda s: dataclasses.replace(s, rotation=90)
+        )
+        assert result.skipped == {(9, 9): "missing"}
+        assert store.snapshot().trays[0].slides[0].settings.rotation == 90
+
+
+def test_empty_selection_starts_no_job_and_touches_no_store(selected, monkeypatch):
+    writer = Mock()
+    monkeypatch.setattr(selected, "_run_writer", writer)
+    for command in (
+        lambda: selected.set_selection_status(SlideStatus.ACCEPTED),
+        lambda: selected.adjust_selection({"brightness_ev": 0.5}),
+        selected.reset_selection,
+        lambda: selected.rotate_selection(1),
+        selected.mirror_selection,
+    ):
+        command()
+    writer.assert_not_called()
+    assert selected.state().banner is None

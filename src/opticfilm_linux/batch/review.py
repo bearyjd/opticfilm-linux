@@ -402,9 +402,16 @@ def set_status_many(
 def apply_settings_many(
     store: BatchStore,
     keys: Iterable[SlideKey] | Mapping[SlideKey, SlideSettings],
-    changes: SlideSettings | Mapping[str, object] | Mapping[SlideKey, SlideSettings] | None = None,
+    changes: SlideSettings
+    | Mapping[str, object]
+    | Mapping[SlideKey, SlideSettings]
+    | Callable[[SlideSettings], SlideSettings]
+    | None = None,
 ) -> BulkEditResult:
     """Apply common partial/full settings or a per-key settings map atomically.
+
+    A callable derives each slide's new settings from its current settings inside the
+    same store update, so there is no read-compute-write gap.
 
     The two-argument form accepts a map from slide keys to full settings. Partial
     settings preserve every field omitted from the mapping on each selected slide.
@@ -419,6 +426,8 @@ def apply_settings_many(
     def edit(key: SlideKey, slide: SlideRecord) -> BeforeEdit:
         if isinstance(changes, SlideSettings):
             settings = changes
+        elif callable(changes):
+            settings = changes(slide.settings)
         elif key in changes:
             settings = changes[key]
             if not isinstance(settings, SlideSettings):
