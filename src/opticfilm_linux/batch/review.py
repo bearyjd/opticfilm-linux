@@ -369,12 +369,25 @@ def _edit_many(
     store: BatchStore,
     keys: Iterable[SlideKey],
     edit: Callable[[SlideKey, SlideRecord], BeforeEdit],
+    *,
+    toggle_accepted: bool = False,
 ) -> BulkEditResult:
     selected = set(keys)
     skipped = dict.fromkeys(selected, "missing")
     before: dict[SlideKey, BeforeEdit] = {}
 
     def change(manifest: BatchManifest) -> BatchManifest:
+        accepted = (
+            all(
+                slide.status is SlideStatus.ACCEPTED
+                for tray in manifest.trays
+                for slide in tray.slides
+                if (tray.number, slide.position) in selected and _bulk_skip(tray, slide) is None
+            )
+            if toggle_accepted
+            else False
+        )
+        status = SlideStatus.PENDING if accepted else SlideStatus.ACCEPTED
         trays = []
         for tray in manifest.trays:
             slides = []
@@ -388,7 +401,10 @@ def _edit_many(
                     else:
                         del skipped[key]
                         before[key] = (slide.settings, slide.status, slide.owner_decided)
-                        updated = _bulk_slide(slide, edit(key, slide))
+                        values = (
+                            (slide.settings, status, True) if toggle_accepted else edit(key, slide)
+                        )
+                        updated = _bulk_slide(slide, values)
                         settings_changed |= updated.settings != slide.settings
                         slide = updated
                 slides.append(slide)
@@ -461,3 +477,13 @@ def restore_many(
     """
     saved = dict(before)
     return _edit_many(store, saved, lambda key, slide: saved[key])
+
+
+def toggle_accepted_many(store: BatchStore, keys: Iterable[SlideKey]) -> BulkEditResult:
+    """Toggle acceptance using only editable slides within the atomic update."""
+    return _edit_many(
+        store,
+        keys,
+        lambda key, slide: (slide.settings, slide.status, True),
+        toggle_accepted=True,
+    )

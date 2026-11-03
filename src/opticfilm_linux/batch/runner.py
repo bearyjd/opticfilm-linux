@@ -189,6 +189,13 @@ class BatchRunner:
                 self._emit(SlideUpdated(number, position))
         return result
 
+    def toggle_many_accepted(self, keys) -> review.BulkEditResult:
+        result = review.toggle_accepted_many(self._store, keys)
+        self._queue_stale_previews()
+        for number, position in result.before:
+            self._emit(SlideUpdated(number, position))
+        return result
+
     def set_slide_status(self, number: int, position: int, status: SlideStatus) -> None:
         review.set_slide_status(self._store, number, position, status)
         self._queue_stale_previews()

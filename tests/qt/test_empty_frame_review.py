@@ -11,7 +11,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QUrl  # noqa: E402
-from PySide6.QtQml import QQmlComponent  # noqa: E402
 from test_qt_smoke import _scanned, _wait, loaded, qapp  # noqa: E402, F401
 
 from opticfilm_linux.app.qt.bridge import _slide_dict  # noqa: E402
@@ -57,27 +56,10 @@ def test_cached_empty_frames_can_be_confirmed_and_enlarged(loaded, tmp_path):
 def test_mark_empty_button_routes_slide_back_to_blank(loaded, tmp_path):
     bridge, engine, warnings = loaded
     _scanned(bridge, tmp_path, "Mark empty")
-    from pathlib import Path
-
-    import opticfilm_linux.app.qt.bridge as bridge_module
-
-    qml = Path(bridge_module.__file__).parents[1] / "qml" / "AdjustPanel.qml"
-    component = QQmlComponent(engine, QUrl.fromLocalFile(str(qml)))
-    panel = component.createWithInitialProperties(
-        {
-            "tray": 1,
-            "position": 1,
-            "status": "accepted",
-            "mirror": False,
-            "brightness": 0,
-            "color": 1,
-            "grain": 0,
-            "sharpen": 0,
-            "ownerDecided": True,
-        }
-    )
-    assert panel is not None, component.errors()
-    button = panel.findChild(QObject, "markEmpty_1")
+    bridge.selectSlide(1, 1, 0)
+    root = engine.rootObjects()[0]
+    _wait(bridge, lambda: root.findChild(QObject, "markEmpty_1") is not None)
+    button = root.findChild(QObject, "markEmpty_1")
     assert button is not None and button.property("enabled")
     store = bridge._controller._session.store
     assert store.snapshot().trays[0].slides[0].status is not SlideStatus.BLANK
@@ -85,7 +67,9 @@ def test_mark_empty_button_routes_slide_back_to_blank(loaded, tmp_path):
     _wait(bridge, lambda: store.snapshot().trays[0].slides[0].status is SlideStatus.BLANK)
     slide = store.snapshot().trays[0].slides[0]
     assert slide.owner_decided and slide.empty_confirmed is None
-    panel.setProperty("status", "blank")
-    assert not button.property("enabled")
-    panel.deleteLater()
+    _wait(bridge, lambda: not button.property("enabled"))
+    restore = root.findChild(QObject, "restoreEmptySlide")
+    assert restore.property("visible")
+    assert QMetaObject.invokeMethod(restore, "click")
+    _wait(bridge, lambda: store.snapshot().trays[0].slides[0].status is SlideStatus.ACCEPTED)
     assert warnings == []

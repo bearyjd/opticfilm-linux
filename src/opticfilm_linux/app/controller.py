@@ -34,6 +34,7 @@ from opticfilm_linux.app.jobs import (
     run_free_space as run_free_space,
 )
 from opticfilm_linux.app.messages import failure_text
+from opticfilm_linux.app.preview_tokens import PreviewTokens
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
 from opticfilm_linux.app.selection import Selection, prune, selectable_keys
 from opticfilm_linux.app.selection_commands import SelectionCommands
@@ -50,7 +51,6 @@ from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChan
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     BatchDefaults,
-    SlideStatus,
     SlotOrientation,
     TrayStage,
 )
@@ -82,6 +82,7 @@ class _Session:
     holder: HolderControl | None = None  # None: the scanner cannot move the holder
     scanner: Scanner | None = None  # identity may become known only after the first status poll
     auto_export: bool = False  # batch setting is immutable throughout this session
+    previews: PreviewTokens = dataclasses.field(default_factory=PreviewTokens)
 
 
 class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCommands):
@@ -434,7 +435,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
     def _attach_session(self, session: _Session) -> None:
         manifest = session.store.snapshot()
         trays = manifest.trays
-        order = selectable_keys(manifest)
+        order = self._sheet_selection_order(manifest)
         with self._lock:
             self._next_latch_sequence()
             self._latch_applied = self._latch_sequence
@@ -568,6 +569,8 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         if isinstance(event, TrayStageChanged):
             self._on_stage(event.number, event.stage)
         elif isinstance(event, SlideUpdated):
+            if self._session is not None:
+                self._session.previews.invalidate(event.number, event.position)
             self._auto_due.add(event.number)
             self._updating = self._updating - {(event.number, event.position)}
             if event.number in self._enhancing:
@@ -610,7 +613,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         manifest = session.store.snapshot() if session is not None else None
         with self._lock:
             selected = self._selected
-        tokens = self._preview_tokens(session, manifest, selected)
+        tokens = self._preview_tokens(session, manifest)
         raw_pending = self._raw_pending(session, manifest)
         raw_recoverable = self._recovery_checks.poll(
             session, manifest, raw_pending, self._raw_recoverable
@@ -620,39 +623,54 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
                 return  # the batch or tray changed while we were polling; the next refresh will do
             self._prune_selection(manifest)
             self._update_holder_status(session, status, sequence)
-            self._state = self._with_first_load(
-                build_state(
-                    manifest,
-                    preview_tokens=tokens,
-                    scanner=status,
-                    scan_pending=bool(
-                        self._scans_queued
-                        or (session and session.runner and session.runner.scan_pending())
-                    ),
-                    readonly=bool(session and session.runner is None),
-                    selected=selected,
-                    selection=self._selection,
-                    updating=self._updating,
-                    progress=self._progress,
-                    scan_started=self._scan_started,
-                    now=self._clock(),
-                    banner=self._banner,
-                    export=self._export,
-                    free_space=self._free_space,
-                    holder_control=session is not None and session.holder is not None,
-                    holder_busy=self._holder_busy,
-                    next_strip=self._next_strip,
-                    jobs_running=bool(self._long_jobs or self._job_futures),
-                    batch_session=self._batch_session if session else 0,
-                    runner_busy=bool(
-                        self._lifecycle_pending
-                        or (session and session.runner and session.runner.work_pending())
-                    ),
-                    holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
-                    raw_pending=raw_pending,
-                    raw_recoverable=raw_recoverable,
-                )
+            self._publish_state(
+                session=session,
+                manifest=manifest,
+                selected=selected,
+                status=status,
+                tokens=tokens,
+                raw_pending=raw_pending,
+                raw_recoverable=raw_recoverable,
             )
+
+    def _publish_state(
+        self, *, session, manifest, selected, status, tokens, raw_pending, raw_recoverable
+    ):
+        """Build an immutable snapshot while holding the lock; no storage access."""
+        self._state = self._with_first_load(
+            build_state(
+                manifest,
+                preview_tokens=tokens,
+                scanner=status,
+                scan_pending=bool(
+                    self._scans_queued
+                    or (session and session.runner and session.runner.scan_pending())
+                ),
+                readonly=bool(session and session.runner is None),
+                selected=selected,
+                selection=self._selection,
+                updating=self._updating,
+                progress=self._progress,
+                scan_started=self._scan_started,
+                now=self._clock(),
+                banner=self._banner,
+                export=self._export,
+                free_space=self._free_space,
+                holder_control=session is not None and session.holder is not None,
+                holder_busy=self._holder_busy,
+                next_strip=self._next_strip,
+                jobs_running=bool(self._long_jobs or self._job_futures),
+                batch_session=self._batch_session if session else 0,
+                runner_busy=bool(
+                    self._lifecycle_pending
+                    or (session and session.runner and session.runner.work_pending())
+                ),
+                holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
+                raw_pending=raw_pending,
+                raw_recoverable=raw_recoverable,
+            )
+        )
+        self._state = dataclasses.replace(self._state, undo_label=self._selection_undo_label())
 
     @staticmethod
     def _poll_status(session):
@@ -662,8 +680,17 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
 
     def _prune_selection(self, manifest):
         self._manifest = manifest
-        self._selection_order = selectable_keys(manifest) if manifest else ()
+        self._selection_order = self._sheet_selection_order(manifest)
         self._selection = prune(self._selection, self._selection_order)
+        available = {tray.number for tray in manifest.trays} if manifest else set()
+        self._selection = dataclasses.replace(
+            self._selection, trays=self._selection.trays & available
+        )
+
+    @staticmethod
+    def _sheet_selection_order(manifest):
+        keys = selectable_keys(manifest) if manifest else ()
+        return tuple(sorted(keys, key=lambda key: (-key[0], key[1])))
 
     @staticmethod
     def _raw_recoverable(session, manifest, pending) -> frozenset[int]:
@@ -703,32 +730,11 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             self._save_holder_latch()
 
     @staticmethod
-    def _preview_tokens(session, manifest, selected) -> dict[tuple[int, int], int]:
+    def _preview_tokens(session, manifest) -> dict[tuple[int, int], int]:
         if session is None or manifest is None:
             return {}
-        from opticfilm_linux.batch.empty import is_empty_confirmed
-
-        tokens = {}
-        for tray in manifest.trays:
-            confirmation = not tray.raw_removed and any(
-                s.status is SlideStatus.BLANK and not is_empty_confirmed(tray, s)
-                for s in tray.slides
-            )
-            if tray.number != selected and not confirmation:
-                continue
-            for slide in tray.slides:
-                for kind in ("before", "after"):
-                    path = session.store.preview_path(tray.number, slide.position, kind)
-                    key = (
-                        (tray.number, slide.position)
-                        if kind == "after"
-                        else (tray.number, slide.position, kind)
-                    )
-                    try:
-                        tokens[key] = path.stat().st_mtime_ns
-                    except OSError:
-                        continue
-        return tokens
+        cache = getattr(session, "previews", None) or PreviewTokens()
+        return cache.read(session.store, manifest)
 
 
 def _check_export_directory(batch: Path, directory: Path) -> None:

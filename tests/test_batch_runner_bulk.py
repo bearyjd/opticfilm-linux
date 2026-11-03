@@ -207,3 +207,34 @@ def test_bulk_status_queues_stale_previews_and_emits_updates(bulk, monkeypatch):
     assert slide.status is SlideStatus.ACCEPTED and slide.owner_decided
     assert not slide.preview_stale
     assert any(isinstance(event, SlideUpdated) for event in list(runner.events.queue))
+
+
+def test_toggle_acceptance_uses_atomic_editable_subset(bulk, monkeypatch):
+    from opticfilm_linux.batch.model import SlideStatus
+
+    store, runner = bulk
+    store.update_tray(
+        1, slides=(SlideRecord(1, SlideStatus.ACCEPTED), SlideRecord(2, SlideStatus.BLANK))
+    )
+    store.update_tray(2, raw_removed=True)
+    store.update_tray(3, stage=TrayStage.SCANNING)
+    keys = {(1, 1), (1, 2), (2, 1), (3, 1), (99, 1)}
+    update = store.update
+    calls = []
+
+    def atomic_update(change):
+        calls.append(change)
+        return update(change)
+
+    monkeypatch.setattr(store, "update", atomic_update)
+    result = runner.toggle_many_accepted(keys)
+    assert len(calls) == 1
+    assert set(result.before) == {(1, 1)}
+    assert dict(result.skipped) == {
+        (1, 2): "blank",
+        (2, 1): "raw_removed",
+        (3, 1): "not_editable",
+        (99, 1): "missing",
+    }
+    assert store.snapshot().trays[0].slides[0].status is SlideStatus.PENDING
+    assert any(isinstance(event, SlideUpdated) for event in list(runner.events.queue))
