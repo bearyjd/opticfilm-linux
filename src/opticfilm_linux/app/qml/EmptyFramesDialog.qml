@@ -5,6 +5,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    preferredWidth: Math.min(44 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 44 * Kirigami.Units.gridUnit)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
 
     Kirigami.Theme.inherit: false
     Kirigami.Theme.backgroundColor: Theme.card
@@ -90,7 +95,6 @@ Kirigami.Dialog {
 
     ColumnLayout {
         spacing: Theme.spacing
-        implicitWidth: Kirigami.Units.gridUnit * 44
         QQC2.Label {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
@@ -99,8 +103,9 @@ Kirigami.Dialog {
             text: qsTr("Check every frame below. Confirm only if all are empty; their raw scans may then be removed.")
         }
         GridLayout {
+            id: frameGrid
             Layout.fillWidth: true
-            columns: 2
+            columns: width >= 2 * 14 * Kirigami.Units.gridUnit ? 2 : 1
             Repeater {
                 id: frames
                 model: dialog.previews
@@ -121,7 +126,7 @@ Kirigami.Dialog {
                     Image {
                         id: preview
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Kirigami.Units.gridUnit * 8
+                        Layout.preferredHeight: Math.min(Kirigami.Units.gridUnit * 8, width / 1.5)
                         fillMode: Image.PreserveAspectFit
                         source: modelData.url
                     }
@@ -143,9 +148,16 @@ Kirigami.Dialog {
             visible: dialog.previews.some(item => item.fingerprint === "" || item.url === "")
             text: qsTr("Some empty frames have no current scan evidence or preview. Rescan this tray to review and confirm them.")
         }
-        RowLayout {
-            spacing: Theme.spacingSmall
+    }
+    footer: QQC2.Control {
+        id: footer
+        padding: Theme.spacing
+        contentItem: GridLayout {
+            columns: footer.availableWidth >= confirmButton.implicitWidth + cancelButton.implicitWidth + columnSpacing ? 2 : 1
+            columnSpacing: Theme.spacingSmall
             PillButton {
+                id: confirmButton
+                Layout.alignment: Qt.AlignRight
                 objectName: "confirmReviewedEmptyFrames"
                 text: qsTr("Confirm all these frames are empty")
                 icon.name: "dialog-ok-apply"
@@ -157,6 +169,8 @@ Kirigami.Dialog {
                 }
             }
             PillButton {
+                id: cancelButton
+                Layout.alignment: Qt.AlignRight
                 text: qsTr("Cancel")
                 flat: true
                 icon.name: "dialog-cancel"

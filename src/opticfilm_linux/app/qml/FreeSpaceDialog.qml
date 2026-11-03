@@ -5,6 +5,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    preferredWidth: Math.min(28 * Kirigami.Units.gridUnit, parent ? parent.width * 0.9 : 28 * Kirigami.Units.gridUnit)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
 
     Kirigami.Theme.inherit: false
     Kirigami.Theme.backgroundColor: Theme.card
@@ -29,7 +34,6 @@ Kirigami.Dialog {
         bridge.dismissFreeSpace()
     ColumnLayout {
         spacing: Theme.spacing
-        implicitWidth: Kirigami.Units.gridUnit * 28
         QQC2.Label {
             color: Theme.text
             font.pixelSize: Theme.fontBody
@@ -50,9 +54,16 @@ Kirigami.Dialog {
             visible: bridge.freeSpaceRunning
             indeterminate: true
         }
-        RowLayout {
-            Layout.alignment: Qt.AlignRight
+    }
+    footer: QQC2.Control {
+        id: footer
+        padding: Theme.spacing
+        contentItem: GridLayout {
+            columns: footer.availableWidth >= removeButton.implicitWidth + stopButton.implicitWidth + columnSpacing ? 2 : 1
+            columnSpacing: Theme.spacingSmall
             PillButton {
+                id: removeButton
+                Layout.alignment: Qt.AlignRight
                 visible: bridge.freeSpaceReady
                 text: qsTr("Remove raw scans")
                 icon.name: "edit-delete"
@@ -60,6 +71,8 @@ Kirigami.Dialog {
                 onClicked: bridge.confirmFreeSpace()
             }
             PillButton {
+                id: stopButton
+                Layout.alignment: Qt.AlignRight
                 flat: true
                 icon.name: bridge.freeSpaceDone ? "dialog-close" : "dialog-cancel"
                 text: bridge.freeSpaceDone ? qsTr("Close") : (bridge.freeSpaceRunning ? qsTr("Stop after this tray") : qsTr("Cancel"))
