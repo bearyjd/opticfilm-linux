@@ -403,3 +403,23 @@ def test_tray_header_keyboard_control_modifier_keeps_existing_selection(sheet_wi
     QTest.qWait(100)
     bridge.poll()
     assert bridge.selection == [[n, p] for n in (1, 2) for p in range(1, 5)]
+
+
+def test_selection_confirmations_are_owned_by_page(sheet_window):
+    bridge, root, _store, _warnings = sheet_window
+    page = root.findChild(QObject, "mainPage")
+    reexport = root.findChild(QObject, "reexportSelectionDialog")
+    content = page.property("contentItem")
+    assert reexport.parent() == content
+    recover = next(
+        obj
+        for obj in content.children()
+        if str(obj.property("title")).startswith("Recover raw scans of tray ")
+    )
+    assert recover.parent() == content
+    queue = root.findChild(QObject, "trayQueue")
+    queue.recoverRequested.emit(2)
+    _wait(bridge, lambda: recover.property("opened"))
+    assert recover.property("title") == "Recover raw scans of tray 2?"
+    bridge.batchReplaced.emit()
+    _wait(bridge, lambda: not recover.property("visible"))

@@ -5,13 +5,27 @@ import org.kde.kirigami as Kirigami
 Kirigami.ApplicationWindow {
     id: root
 
+    readonly property real gridUnit: Kirigami.Units.gridUnit
+    property int windowedWidth: 0
+    property int windowedHeight: 0
+    signal saveWindowGeometry(int windowWidth, int windowHeight, bool maximized)
+
+    onWidthChanged: if (visibility === Window.Windowed) windowedWidth = width
+    onHeightChanged: if (visibility === Window.Windowed) windowedHeight = height
+    onVisibilityChanged: {
+        if (visibility === Window.Windowed) {
+            width = windowedWidth;
+            height = windowedHeight;
+        }
+    }
+
     property bool closeWhenIdle: false
     property bool firstLoadQuitConfirmed: false
 
     title: bridge.hasBatch ? bridge.batchName + " — OpticFilm Linux" : "OpticFilm Linux"
-    width: 1220
-    height: 780
-    visible: true
+    width: 68 * gridUnit
+    height: 43 * gridUnit
+    visible: false
     color: Theme.window
 
     Binding { target: Theme; property: "dark"; value: bridge.theme === "dark" }
@@ -81,6 +95,9 @@ Kirigami.ApplicationWindow {
             close.accepted = false;
             waitDialog.open();
         }
+        if (close.accepted)
+            root.saveWindowGeometry(root.windowedWidth, root.windowedHeight,
+                                    root.visibility === Window.Maximized);
     }
 
     ConfirmDialog {

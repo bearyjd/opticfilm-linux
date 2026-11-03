@@ -11,6 +11,7 @@ from opticfilm_linux.app.controller import Controller
 from opticfilm_linux.app.eject_watch import EjectWatch
 from opticfilm_linux.app.messages import load_command, runner_note
 from opticfilm_linux.app.provenance import ProvenanceScanner
+from opticfilm_linux.app.qt.window_geometry import initial_geometry, parse_window_size
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -28,6 +29,7 @@ APP_ID = "io.github.bearyjd.OpticFilmLinux"
 APP_NAME = "opticfilm"
 DISPLAY_NAME = "OpticFilm Linux"
 STYLE = "Basic"
+WINDOW_SIZE_ENV = "OPTICFILM_WINDOW_SIZE"
 LOAD_COMMAND_ENV = "OPTICFILM_LOAD_COMMAND"  # replaces the shown first-load terminal command
 MISSING_QT_MESSAGE = (
     "opticfilm: the desktop app needs the distribution's PySide6 and Kirigami (the PyPI PySide6 "
@@ -71,7 +73,9 @@ def load_runner_note() -> str:
     return runner_note()
 
 
-def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
+def create_engine(
+    bridge: Any, provider: Any, size: tuple[int, int] | None = None
+) -> tuple[Any, list[str]]:
     """The QML engine with the window loaded, and the list its warnings are collected in."""
     from PySide6.QtCore import QUrl  # noqa: PLC0415 - Qt is imported only when it runs
     from PySide6.QtQml import QQmlApplicationEngine  # noqa: PLC0415
@@ -83,7 +87,44 @@ def create_engine(bridge: Any, provider: Any) -> tuple[Any, list[str]]:
     engine.addImageProvider("preview", provider)
     engine.rootContext().setContextProperty("bridge", bridge)
     engine.load(QUrl.fromLocalFile(str(qml_main())))
+    if engine.rootObjects():
+        _show_window(engine.rootObjects()[0], size)
     return engine, warnings
+
+
+def _show_window(window: Any, size: tuple[int, int] | None) -> None:
+    """Apply geometry before showing, with deterministic overrides for test/probe windows."""
+    from opticfilm_linux.app.qt.settings import QSettingsPrefs  # noqa: PLC0415
+
+    override = size if size is not None else parse_window_size(os.environ.get(WINDOW_SIZE_ENV, ""))
+    maximized = False
+    if override is not None:
+        width, height = override
+        if width <= 0 or height <= 0:
+            raise ValueError("Window dimensions must be positive")
+    else:
+        screen = window.screen()
+        if screen is None:
+            from PySide6.QtGui import QGuiApplication  # noqa: PLC0415
+
+            screen = QGuiApplication.primaryScreen()
+        available = screen.availableGeometry()
+        prefs = QSettingsPrefs()
+        width, height, maximized, min_w, min_h = initial_geometry(
+            available.width(),
+            available.height(),
+            window.property("gridUnit"),
+            prefs.window_geometry(),
+        )
+        window.setMinimumWidth(min_w)
+        window.setMinimumHeight(min_h)
+        window.saveWindowGeometry.connect(
+            lambda width, height, maximized: prefs.save_window_geometry(width, height, maximized)
+        )
+    window.resize(width, height)
+    window.setProperty("windowedWidth", width)
+    window.setProperty("windowedHeight", height)
+    window.showMaximized() if maximized else window.show()
 
 
 def configure_style() -> None:
