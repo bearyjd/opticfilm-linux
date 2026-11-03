@@ -209,7 +209,7 @@ def _check_pill(root, items, tmp_path, mode):
     assert pill.property("background").property("color") == root.property("pressedAccent")
     assert (
         _contrast(
-            pill.property("contentItem").property("color"),
+            pill.property("labelColor"),
             pill.property("background").property("color"),
         )
         >= 4.5

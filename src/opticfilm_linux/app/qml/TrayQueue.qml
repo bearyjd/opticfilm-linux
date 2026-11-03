@@ -5,6 +5,8 @@ import org.kde.kirigami as Kirigami
 
 ListView {
     id: queue
+    objectName: "trayQueue"
+    signal trayChosen()
 
     clip: true
     model: bridge.trays
@@ -30,12 +32,36 @@ ListView {
         required property string elapsed
         required property string error
         required property int needsLook
+        required property string auto
+        required property string autoFailed
+        required property string autoError
+        required property bool canRecoverRaw
+        required property string autoFlagged
 
         width: ListView.view.width
         highlighted: number === bridge.selectedTray
-        onClicked: bridge.selectTray(number)
+        // Keep error text readable on selected rows in both themes.
+        background: Rectangle {
+            color: row.highlighted ? Theme.track : row.hovered ? Theme.card : "transparent"
+            border.color: row.highlighted || row.visualFocus ? Theme.accent : "transparent"
+            border.width: 1
+        }
+        onClicked: { bridge.selectTray(number, 0); queue.trayChosen(); }
+        MouseArea {
+            anchors.fill: parent
+            z: 1
+            onClicked: mouse => { bridge.selectTray(row.number, mouse.modifiers); queue.trayChosen(); }
+        }
+
+        ConfirmDialog {
+            id: recoverDialog
+            title: qsTr("Recover raw scans of tray %1?").arg(row.number)
+            subtitle: qsTr("Recovery verifies the current raw scans, restores this tray to review and resets its export marks. Incomplete older sweeps are kept and do not need verification for recovery. Review the frames, export them again, and approve raw removal again. Missing or damaged current raw scans require restoring the original folders or rescanning.")
+            onConfirmed: bridge.recoverInterruptedCleanup(row.number)
+        }
 
         contentItem: ColumnLayout {
+            z: 2
             spacing: Kirigami.Units.smallSpacing
 
             RowLayout {
@@ -56,14 +82,35 @@ ListView {
                 value: Math.max(0, row.progress)
             }
             QQC2.Label {
+                objectName: "trayAutoStatus" + row.number
+                visible: row.auto !== ""
+                text: row.auto + (row.autoError !== "" ? ": " + row.autoError : "")
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            QQC2.Label {
+                objectName: "trayAutoSlides" + row.number
+                visible: row.autoFailed !== "" || row.autoFlagged !== ""
+                text: (row.autoFailed !== "" ? qsTr("Failed slides: %1. ").arg(row.autoFailed) : "") + (row.autoFlagged !== "" ? qsTr("Flagged slides: %1").arg(row.autoFlagged) : "")
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            QQC2.Button {
+                objectName: "recoverRaw" + row.number
+                visible: row.canRecoverRaw && !bridge.readonly
+                text: qsTr("Verify remaining scans…")
+                onClicked: recoverDialog.open()
+            }
+            QQC2.Label {
                 visible: row.stage === "review" && row.needsLook > 0
                 text: qsTr("%1 need a look").arg(row.needsLook)
                 color: Kirigami.Theme.neutralTextColor
             }
             QQC2.Label {
-                visible: row.stage === "failed"
+                objectName: "trayError" + row.number
+                visible: row.error !== ""
                 text: row.error
-                color: Kirigami.Theme.negativeTextColor
+                color: Theme.error
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }

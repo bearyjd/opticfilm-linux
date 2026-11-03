@@ -9,13 +9,17 @@ from opticfilm_linux.batch.enhance import RawRemoved
 from opticfilm_linux.batch.events import SlideUpdated
 from opticfilm_linux.batch.model import (
     BatchDefaults,
+    Flag,
+    SlideRecord,
     SlideSettings,
     SlideStatus,
+    TrayRecord,
     TrayStage,
 )
 from opticfilm_linux.batch.review import (
     NoSuchSlide,
     accept_all,
+    accept_tray,
     apply_slide_settings,
     set_slide_status,
     set_tray_mode,
@@ -84,16 +88,31 @@ def test_set_slide_status_marks_the_owner_decision(store):
     assert slide.status is SlideStatus.NEEDS_LOOK and slide.owner_decided
 
 
-@pytest.mark.parametrize("status", [SlideStatus.PENDING, SlideStatus.BLANK])
-def test_set_status_rejects_pending_and_blank(store, status):
+@pytest.mark.parametrize("status", [SlideStatus.PENDING])
+def test_set_status_rejects_pending(store, status):
     with pytest.raises(BatchError):
         set_slide_status(store, 1, 1, status)
 
 
-def test_a_blank_slide_cannot_be_accepted(store):
+def test_owner_can_rescue_a_slide_classified_blank(store):
     _mark(store, 1, 2, status=SlideStatus.BLANK)
-    with pytest.raises(BatchError, match="blank"):
-        set_slide_status(store, 1, 2, SlideStatus.ACCEPTED)
+    set_slide_status(store, 1, 2, SlideStatus.ACCEPTED)
+    assert _slide(store, 1, 2).status is SlideStatus.ACCEPTED
+    assert _slide(store, 1, 2).owner_decided
+
+
+def test_empty_confirmation_preserves_blank_classification(store):
+    from opticfilm_linux.batch.review import confirm_empty_frames
+
+    _mark(store, 1, 2, status=SlideStatus.BLANK, blank_fingerprint="a" * 64, owner_decided=True)
+    before = _slide(store, 1, 1)
+    confirm_empty_frames(
+        store, 1, (2,), expected_fingerprints={2: "a" * 64}, expected_sweep_version=1
+    )
+    assert _slide(store, 1, 2).status is SlideStatus.BLANK
+    assert _slide(store, 1, 2).empty_confirmed
+    assert _slide(store, 1, 2).owner_decided
+    assert _slide(store, 1, 1) == before
 
 
 def test_apply_settings_keeps_status_and_marks_decision(store):
@@ -115,6 +134,48 @@ def test_accept_all_skips_blank_and_non_review_trays(store):
     assert _slide(store, 2, 1).status is SlideStatus.NEEDS_LOOK
 
 
+@pytest.mark.parametrize("status", [SlideStatus.NEEDS_LOOK, SlideStatus.PENDING, SlideStatus.BLANK])
+@pytest.mark.parametrize("automatic", [False, True])
+def test_accept_tray_preserves_owner_nonaccepted_choice(tmp_path, status, automatic):
+    owner_slide = SlideRecord(
+        position=1,
+        status=status,
+        owner_decided=True,
+        flags=(Flag.TOO_DARK,),
+        settings=SlideSettings(brightness_ev=0.5),
+    )
+    automatic_slide = SlideRecord(position=2, status=SlideStatus.PENDING)
+    with BatchStore.create(tmp_path / "batch", name="T") as store:
+        store.update(
+            lambda manifest: dataclasses.replace(
+                manifest,
+                trays=(TrayRecord(1, TrayStage.REVIEW, slides=(owner_slide, automatic_slide)),),
+            )
+        )
+        accept_tray(store, 1, automatic=automatic)
+        assert store.snapshot().trays[0].slides[0] == owner_slide
+        accepted = store.snapshot().trays[0].slides[1]
+        assert accepted.status is SlideStatus.ACCEPTED
+        assert accepted.owner_decided is not automatic
+        assert accepted.auto_accepted is automatic
+
+
+@pytest.mark.parametrize("status", [SlideStatus.BLANK, SlideStatus.NEEDS_LOOK])
+@pytest.mark.parametrize("automatic", [False, True])
+def test_tray_acceptance_preserves_automatic_review_classifications(tmp_path, status, automatic):
+    slide = SlideRecord(position=1, status=status, flags=(Flag.DUST,))
+    tray = TrayRecord(1, TrayStage.REVIEW, slides=(slide,))
+    with BatchStore.create(tmp_path / "batch", name="T") as store:
+        store.update(lambda manifest: dataclasses.replace(manifest, trays=(tray,)))
+        accept_tray(store, 1, automatic=automatic)
+        actual = store.snapshot().trays[0].slides[0]
+        if automatic:
+            assert actual == slide
+        else:
+            assert actual.status is SlideStatus.ACCEPTED
+            assert actual.owner_decided and actual.flags == slide.flags
+
+
 def test_set_tray_mode_changes_the_mode(store):
     set_tray_mode(store, 2, "negative")
     assert store.snapshot().trays[1].mode == "negative"
@@ -129,14 +190,16 @@ def test_unknown_tray_or_slide_raises_nosuchslide(store):
         set_tray_mode(store, 9, "negative")
 
 
-def test_removed_raw_blocks_edits_but_not_accepting(store):
+def test_removed_raw_blocks_edits_and_accepting(store):
     store.update_tray(1, raw_removed=True)
     with pytest.raises(RawRemoved):
         apply_slide_settings(store, 1, 1, SlideSettings(rotation=90))
     with pytest.raises(RawRemoved):
         set_tray_mode(store, 1, "negative")
-    set_slide_status(store, 1, 1, SlideStatus.ACCEPTED)
-    accept_all(store)
+    with pytest.raises(RawRemoved):
+        set_slide_status(store, 1, 1, SlideStatus.ACCEPTED)
+    with pytest.raises(RawRemoved):
+        accept_all(store)
 
 
 def test_edit_slide_re_enhances_in_the_background(store, sweep_dir):
@@ -156,7 +219,7 @@ def test_runner_status_change_and_accept_all_emit_events(store, sweep_dir):
     runner.accept_all()
     events = list(runner.events.queue)
     assert SlideUpdated(1, 2) in events
-    assert _slide(store, 1, 2).status is SlideStatus.ACCEPTED
+    assert _slide(store, 1, 2).status is SlideStatus.NEEDS_LOOK
     runner.close()
 
 
@@ -199,9 +262,7 @@ def test_concurrent_edits_and_enhancement_never_corrupt_the_manifest(store, swee
     assert reopened.snapshot().trays[2].stage is TrayStage.REVIEW
 
 
-@pytest.mark.parametrize(
-    "stage", [TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.FAILED, TrayStage.EXPORTED]
-)
+@pytest.mark.parametrize("stage", [TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.FAILED])
 def test_edits_and_mode_changes_need_a_reviewable_tray(store, stage):
     store.update_tray(1, stage=stage)
     with pytest.raises(BatchError, match="review"):

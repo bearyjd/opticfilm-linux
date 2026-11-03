@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          fetch-depth: 0  # The PR4 function inventory compares against its historical base.
+      - uses: astral-sh/setup-uv@v10.3.3
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run pytest --cov=opticfilm_linux --cov-fail-under=80

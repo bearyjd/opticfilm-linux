@@ -83,6 +83,24 @@ class ExportRecord:
     delivered_dpi: int
     scan_token: str
     raw_sha256: str = ""
+    export_path: str = ""
+    size_bytes: int = 0
+    sha256: str = ""
+    render_signature: str = ""
+
+
+@dataclass(frozen=True)
+class EmptyConfirmation:
+    sweep_version: int
+    fingerprint: str
+
+    def __post_init__(self) -> None:
+        if type(self.sweep_version) is not int or self.sweep_version < 1:
+            raise ValueError("empty confirmation needs a positive sweep version")
+        if not isinstance(self.fingerprint, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", self.fingerprint
+        ):
+            raise ValueError("empty confirmation needs a SHA-256 fingerprint")
 
 
 @dataclass(frozen=True)
@@ -92,8 +110,14 @@ class SlideRecord:
     flags: tuple[Flag, ...] = ()
     settings: SlideSettings = field(default_factory=SlideSettings)
     owner_decided: bool = False
+    auto_accepted: bool = False
+    blank_fingerprint: str = ""
+    empty_confirmed: EmptyConfirmation | None = None
     exported: bool = False
     preview_stale: bool = False  # settings changed but the preview was not redone yet
+    export_path: str = ""
+    export_size: tuple[int, ...] = ()
+    export_sha256: str = ""
     exports: tuple[ExportRecord, ...] = ()
 
 
@@ -140,6 +164,11 @@ class TrayLocation:
             raise ValueError("capacity must be 4 or 6")
 
 
+AutoState = Literal[
+    "", "pending", "exported", "verified", "freed", "held", "failed", "off", "blocked"
+]
+
+
 @dataclass(frozen=True)
 class TrayRecord:
     number: int
@@ -149,6 +178,11 @@ class TrayRecord:
     slides: tuple[SlideRecord, ...] = ()
     error: str | None = None
     raw_removed: bool = False
+    cleanup_sweeps: tuple[int, ...] = ()
+    auto: AutoState = ""
+    auto_error: str = ""
+    auto_failed: tuple[int, ...] = ()
+    auto_flagged: tuple[int, ...] = ()
     location: TrayLocation | None = None
     evidence: ScanEvidence | None = None
 
@@ -198,10 +232,15 @@ class BatchDefaults:
     export_dir: str = ""
     export_format: Format = "jpeg"
     jpeg_size: JpegSize = "full"
+    auto_export: bool = False
+    keep_raw: bool = False
 
     def __post_init__(self) -> None:
         _check_orientation(self.rotation, self.mirror)
         _check_slots(self.slots)
+        for name in ("auto_export", "keep_raw"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
         if not isinstance(self.export_dir, str):
             raise ValueError("export_dir must be a string")
         if self.export_format not in ("tiff16", "png8", "jpeg"):
@@ -218,12 +257,16 @@ class BatchManifest:
     defaults: BatchDefaults = field(default_factory=BatchDefaults)
     trays: tuple[TrayRecord, ...] = ()
     version: int = 1
+    first_tray_released: bool = False
+    released_render: BatchDefaults | None = None
     collection: str = ""
     box: int = 1
     section: str = "a"
     section_size: int = 140
 
     def __post_init__(self) -> None:
+        if type(self.first_tray_released) is not bool:
+            raise ValueError("first_tray_released must be a boolean")
         object.__setattr__(
             self, "collection", _check_location(self.collection, self.box, self.section)
         )

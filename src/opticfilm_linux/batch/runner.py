@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 
-from opticfilm_linux.batch import review
+from opticfilm_linux.batch import export, review
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
 from opticfilm_linux.batch.events import BatchEvent, SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.layout import allocate_location, location_is_active
@@ -45,6 +45,38 @@ IN_FLIGHT = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
 log = logging.getLogger(__name__)
 
 
+def _restart_rescan(manifest: BatchManifest, tray: TrayRecord) -> BatchManifest:
+    number = tray.number
+    current = next(t for t in manifest.trays if t.number == number)
+    if current.raw_removed and not current.cleanup_sweeps:
+        review._require_raw(current)
+    if not location_is_active(manifest, current):
+        raise BatchError("This tray belongs to a closed section; scan a fresh tray.")
+    if current != tray:
+        raise BatchError(f"tray {number} changed meanwhile; try again")
+    updated = dataclasses.replace(
+        current,
+        stage=TrayStage.SCANNING,
+        sweep_version=current.sweep_version + 1,
+        slides=tuple(SlideRecord(position=s.position, exports=s.exports) for s in current.slides),
+        error=None,
+        raw_removed=False,
+        cleanup_sweeps=(),
+        auto=("pending" if manifest.defaults.auto_export else "held")
+        if current.auto not in ("", "off")
+        else current.auto,
+        auto_error="",
+        auto_failed=(),
+        auto_flagged=(),
+    )
+    return dataclasses.replace(
+        manifest,
+        first_tray_released=(False if current.raw_removed else manifest.first_tray_released),
+        released_render=None if current.raw_removed else manifest.released_render,
+        trays=tuple(updated if t.number == number else t for t in manifest.trays),
+    )
+
+
 class BatchRunner:
     def __init__(self, store: BatchStore, scanner: Scanner) -> None:
         self._store = store
@@ -60,6 +92,9 @@ class BatchRunner:
         self._scan_guard = threading.Lock()
         self.operation_sequence = 0
         self._operation = threading.local()
+        self._stale_drain_queued = False
+        self._stale_requested = False
+        self._stopping = False
 
     # -- requests from the caller (never block) ------------------------------------------
 
@@ -85,46 +120,36 @@ class BatchRunner:
         return number
 
     def rescan_tray(self, number: int) -> int:
-        """Scan a tray again, keeping the old sweep. The tray must be in review or failed."""
+        """Scan a tray again, retaining any remaining old sweeps."""
         manifest = self._store.snapshot()
         tray = next((t for t in manifest.trays if t.number == number), None)
         if tray is None:
             raise BatchError(f"no tray {number} in this batch")
+        if tray.raw_removed and not tray.cleanup_sweeps:
+            review._require_raw(tray)
         if not location_is_active(manifest, tray):
             raise BatchError(
                 "This tray belongs to a closed section; scan a fresh tray in the current section."
             )
-        if tray.stage not in RESCANNABLE:
+        if tray.stage not in RESCANNABLE and not (
+            tray.raw_removed and tray.stage is TrayStage.EXPORTED
+        ):
             raise BatchError(
                 f"tray {number} is {tray.stage}; it can only be re-scanned from review"
             )
         self._require_ready()
+
         with self._scan_guard:
             self._require_no_scan_pending()
-
-            def restart(manifest: BatchManifest) -> BatchManifest:
-                current = next(t for t in manifest.trays if t.number == number)
-                if not location_is_active(manifest, current):
-                    raise BatchError("This tray belongs to a closed section; scan a fresh tray.")
-                if current.stage not in RESCANNABLE or current.sweep_version != tray.sweep_version:
-                    raise BatchError(f"tray {number} changed meanwhile; try again")
-                updated = dataclasses.replace(
-                    current,
-                    stage=TrayStage.SCANNING,
-                    sweep_version=current.sweep_version + 1,
-                    slides=tuple(
-                        SlideRecord(position=s.position, exports=s.exports) for s in current.slides
-                    ),
-                    error=None,
-                )
-                return dataclasses.replace(
-                    manifest,
-                    trays=tuple(updated if t.number == number else t for t in manifest.trays),
-                )
-
-            self._store.update(restart)
-            self._emit(TrayStageChanged(number, TrayStage.SCANNING))
-            self._submit(self._scan_pool, self._scan_job, number, scan=True)
+            if not export._CLEANUP_LOCK.acquire(blocking=False):
+                raise BatchError("raw scans are being removed; try rescan after cleanup finishes")
+            try:
+                export._retry_cleanup_resets(self._store)
+                self._store.update(lambda manifest: _restart_rescan(manifest, tray))
+                self._emit(TrayStageChanged(number, TrayStage.SCANNING))
+                self._submit(self._scan_pool, self._scan_job, number, scan=True)
+            finally:
+                export._CLEANUP_LOCK.release()
         return number
 
     def resume(self) -> None:
@@ -147,8 +172,33 @@ class BatchRunner:
         review.apply_slide_settings(self._store, number, position, settings)
         self._submit(self._enhance_pool, self._reenhance_job, number, position)
 
+    def edit_many(self, keys, changes=None, *, status=None) -> review.BulkEditResult:
+        """Apply one atomic bulk edit and queue a yielding preview drain.
+
+        The result contains skipped reasons and the inverse snapshot for undo.
+        """
+        if status is not None:
+            if changes is not None:
+                raise ValueError("provide settings or status, not both")
+            result = review.set_status_many(self._store, keys, status)
+        else:
+            result = review.apply_settings_many(self._store, keys, changes)
+        self._queue_stale_previews()
+        if status is not None:
+            for number, position in result.before:
+                self._emit(SlideUpdated(number, position))
+        return result
+
+    def toggle_many_accepted(self, keys) -> review.BulkEditResult:
+        result = review.toggle_accepted_many(self._store, keys)
+        self._queue_stale_previews()
+        for number, position in result.before:
+            self._emit(SlideUpdated(number, position))
+        return result
+
     def set_slide_status(self, number: int, position: int, status: SlideStatus) -> None:
         review.set_slide_status(self._store, number, position, status)
+        self._queue_stale_previews()
         self._emit(SlideUpdated(number, position))
 
     def accept_all(self) -> None:
@@ -185,12 +235,15 @@ class BatchRunner:
 
         Trays left half-done are picked up by ``resume()`` the next time the batch is opened.
         """
+        with self._lock:
+            self._stopping = True
         self._scan_pool.shutdown(wait=True, cancel_futures=True)
         self._enhance_pool.shutdown(wait=True, cancel_futures=True)
 
     def close(self) -> None:
         """Finish running work, then stop both workers. Queued enhancement still runs."""
         self._scan_pool.shutdown(wait=True)
+        self.wait_idle()
         self._enhance_pool.shutdown(wait=True)
 
     # -- worker jobs ---------------------------------------------------------------------
@@ -244,13 +297,75 @@ class BatchRunner:
     # -- helpers -------------------------------------------------------------------------
 
     def _queue_stale_previews(self) -> None:
+        with self._lock:
+            if self._stopping:
+                return
+            self._stale_requested = True
+            if self._stale_drain_queued:
+                return
+            self._stale_drain_queued = True
+        self._submit_stale_drain(frozenset())
+
+    def _submit_stale_drain(self, attempted: frozenset) -> None:
+        with self._lock:
+            if self._stopping:
+                self._stale_drain_queued = False
+                return
+        try:
+            self._submit(self._enhance_pool, self._drain_stale_job, 0, attempted)
+        except RuntimeError:
+            with self._lock:
+                self._stale_drain_queued = False
+                stopping = self._stopping
+            if not stopping:
+                raise
+        except BaseException:
+            with self._lock:
+                self._stale_drain_queued = False
+            raise
+
+    def _drain_stale_job(self, _number: int, attempted: frozenset) -> None:
+        try:
+            self._drain_stale_step(attempted)
+        except BaseException:
+            with self._lock:
+                self._stale_drain_queued = False
+            raise
+
+    def _drain_stale_step(self, attempted: frozenset) -> None:
+        """Render once, then yield to tray enhancement already waiting in the pool.
+
+        Failed slides remain stale for resume, but are attempted only once per drain.
+        A request arriving during a render starts a fresh pass, including newer edits.
+        """
+        with self._lock:
+            if self._stale_requested:
+                attempted = frozenset()
+            self._stale_requested = False
+            stopping = self._stopping
+        key = None if stopping else self._next_stale(attempted)
+        if key is not None:
+            self._reenhance_job(*key)
+            self._submit_stale_drain(attempted | {key})
+            return
+        with self._lock:
+            self._stale_drain_queued = False
+            requested = self._stale_requested and not self._stopping
+        if requested:
+            self._queue_stale_previews()
+
+    def _next_stale(self, attempted: frozenset) -> tuple[int, int] | None:
         for tray in self._store.snapshot().trays:
-            if tray.stage in (TrayStage.REVIEW, TrayStage.EXPORTED) and not tray.raw_removed:
-                for slide in tray.slides:
-                    if slide.preview_stale:
-                        self._submit(
-                            self._enhance_pool, self._reenhance_job, tray.number, slide.position
-                        )
+            if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED) or tray.raw_removed:
+                continue
+            for slide in tray.slides:
+                key = (tray.number, slide.position)
+                if slide.preview_stale or (
+                    slide.status is SlideStatus.BLANK and not slide.blank_fingerprint
+                ):
+                    if key not in attempted:
+                        return key
+        return None
 
     def _require_ready(self) -> None:
         status = self._scanner.status()

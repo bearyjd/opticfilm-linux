@@ -6,42 +6,91 @@ import org.kde.kirigami as Kirigami
 Kirigami.Page {
     id: page
 
-    property int currentSlide: 1
-
     objectName: "mainPage"
     padding: 0
     title: bridge.collection !== "" ? qsTr("%1 — Box %2, section %3").arg(bridge.batchName).arg(bridge.box).arg(bridge.section) : bridge.batchName
-
-    // Keyboard use for the review loop.
-    Keys.onLeftPressed: currentSlide = Math.max(1, currentSlide - 1)
-    Keys.onRightPressed: currentSlide = Math.min(4, currentSlide + 1)
-    Keys.onSpacePressed: page.toggleAccepted()
-    Keys.onPressed: event => {
-        if (event.key === Qt.Key_BracketLeft)
-            bridge.rotate(bridge.selectedTray, currentSlide, -1);
-        else if (event.key === Qt.Key_BracketRight)
-            bridge.rotate(bridge.selectedTray, currentSlide, 1);
-        else if (event.key === Qt.Key_M && !bridge.readonly && bridge.selectedTray >= 0)
-            bridge.mirror(bridge.selectedTray, currentSlide);
-    }
     focus: true
 
-    function toggleAccepted() {
-        if (bridge.readonly || bridge.selectedTray < 0)
-            return;
-        for (let i = 0; i < slideRepeater.count; ++i) {
-            const card = slideRepeater.itemAt(i);
-            if (card && card.position === currentSlide && card.status !== "blank")
-                bridge.setAccepted(bridge.selectedTray, currentSlide, card.status !== "accepted");
-        }
+    function focusReview() {
+        const active = page.Window.window ? page.Window.window.activeFocusItem : null;
+        if (active && active !== page)
+            active.focus = false;
+        page.forceActiveFocus();
     }
+
+    function primaryAction() {
+        if (bridge.canScan)
+            bridge.scan();
+        else if (bridge.canLoadNext)
+            bridge.loadNextHolder();
+        else if (bridge.canFirstLoad)
+            bridge.firstLoad();
+        else if (bridge.canConfirmScanner)
+            confirmScannerDialog.open();
+    }
+
+    function handleKey(event) {
+        const active = page.Window.window ? page.Window.window.activeFocusItem : null;
+        if (active && typeof active.cursorPosition === "number") return;
+        const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
+        const shift = (event.modifiers & Qt.ShiftModifier) !== 0;
+        if (ctrl && event.key === Qt.Key_A) bridge.selectAll();
+        else if (ctrl && event.key === Qt.Key_Z) bridge.undo();
+        else if (ctrl || (event.modifiers & Qt.AltModifier)) return;
+        else if (event.key === Qt.Key_Left) bridge.moveSelectionFocus(-1, shift);
+        else if (event.key === Qt.Key_Right) bridge.moveSelectionFocus(1, shift);
+        else if (event.key === Qt.Key_Up) bridge.moveSelectionFocus(-4, shift);
+        else if (event.key === Qt.Key_Down) bridge.moveSelectionFocus(4, shift);
+        else if (event.key === Qt.Key_Escape) bridge.clearSelection();
+        else if (bridge.readonly) return;
+        else if (event.key === Qt.Key_Space) bridge.toggleSelectionAccepted();
+        else if (event.key === Qt.Key_A) bridge.setSelectionStatus("accepted");
+        else if (event.key === Qt.Key_R) bridge.setSelectionStatus("rejected");
+        else if (event.key === Qt.Key_N) bridge.setSelectionStatus("needs_look");
+        else if (event.key === Qt.Key_BracketLeft) bridge.rotateSelection(-1);
+        else if (event.key === Qt.Key_BracketRight) bridge.rotateSelection(1);
+        else if (event.key === Qt.Key_M) bridge.mirrorSelection();
+        else return;
+        event.accepted = true;
+        sheet.scrollToFocus();
+    }
+
+    Keys.priority: Keys.AfterItem
+    Keys.onPressed: event => handleKey(event)
 
     ConfirmDialog {
         id: rescanDialog
-
-        title: qsTr("Re-scan tray %1?").arg(bridge.selectedTray)
+        objectName: "rescanSelectionDialog"
+        title: qsTr("Re-scan tray %1?").arg(inspector.singleTray)
         subtitle: qsTr("The old scan is kept on disk, but this tray's slide settings and choices are reset and it is enhanced again.")
-        onConfirmed: bridge.rescan(bridge.selectedTray)
+        onConfirmed: bridge.rescan(inspector.singleTray)
+    }
+    ConfirmDialog {
+        id: heldReleaseDialog
+        objectName: "heldReleaseDialog"
+        property int tray: 0
+        property string rawBytes: "0"
+        title: qsTr("Release raw cleanup for tray %1?").arg(tray)
+        subtitle: qsTr("This will remove approximately %1 bytes of raw scans from tray %2. Later trays will be freed automatically after verification. Raw scans can no longer be adjusted or exported again. Choosing Yes confirms that you have opened the delivered JPEGs for this tray and checked the results and settings.").arg(rawBytes).arg(tray)
+        onConfirmed: {
+            if (tray === bridge.heldTray && !bridge.readonly)
+                bridge.confirmFreeHeld(tray);
+        }
+    }
+    Connections {
+        target: bridge
+        function onHeldReleaseReady(number, size) {
+            heldReleaseDialog.tray = number;
+            heldReleaseDialog.rawBytes = size;
+            heldReleaseDialog.open();
+        }
+        function onBatchReplaced() {
+            heldReleaseDialog.close();
+        }
+        function onChanged() {
+            if (heldReleaseDialog.tray !== bridge.heldTray)
+                heldReleaseDialog.close();
+        }
     }
     ConfirmDialog {
         id: confirmScannerDialog
@@ -53,6 +102,9 @@ Kirigami.Page {
     }
     ExportDialog {
         id: exportDialog
+    }
+    EmptyFramesDialog {
+        id: emptyFramesDialog
     }
     FreeSpaceDialog {
         id: freeSpaceDialog
@@ -69,12 +121,13 @@ Kirigami.Page {
             anchors.fill: parent
             spacing: Kirigami.Units.largeSpacing
 
-            QQC2.Button {
-                text: bridge.scanPending ? qsTr("Scanning…") : qsTr("Scan")
+            PillButton {
+                objectName: "primaryActionButton"
+                text: bridge.scanPending ? qsTr("Scanning…") : bridge.canScan ? qsTr("Scan") : bridge.canLoadNext ? qsTr("Load next holder") : bridge.canFirstLoad ? qsTr("First load…") : bridge.canConfirmScanner ? qsTr("Restart scanner…") : qsTr("Scan")
                 icon.name: "scanner"
                 highlighted: true
-                enabled: bridge.canScan
-                onClicked: bridge.scan()
+                enabled: bridge.canScan || bridge.canLoadNext || bridge.canFirstLoad || bridge.canConfirmScanner
+                onClicked: page.primaryAction()
             }
             QQC2.Button {
                 objectName: "nextSectionButton"
@@ -137,6 +190,40 @@ Kirigami.Page {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            visible: bridge.batchAutoExport || bridge.autoStatus !== "" || bridge.emptyConfirmationCount > 0
+
+            QQC2.Label {
+                objectName: "autoPipelineStatus"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
+            }
+            QQC2.Button {
+                objectName: "confirmEmptyFrames"
+                visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
+                text: qsTr("Review %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
+                onClicked: {
+                    emptyFramesDialog.tray = bridge.emptyConfirmationTray;
+                    emptyFramesDialog.sweepVersion = bridge.emptyConfirmationSweepVersion;
+                    emptyFramesDialog.previews = bridge.emptyConfirmationPreviews.slice();
+                    emptyFramesDialog.open();
+                }
+            }
+            QQC2.Button {
+                objectName: "freeHeldRaw"
+                visible: bridge.heldTray > 0 && !bridge.readonly
+                text: qsTr("Approve settings and release raw cleanup")
+                onClicked: bridge.requestHeldRelease(bridge.heldTray)
+            }
+        }
+
+        FirstLoadCard {
+            onTerminalHelp: loadHelpDialog.open()
+        }
 
         QQC2.Label {
             objectName: "holderLatchText"
@@ -203,7 +290,7 @@ Kirigami.Page {
                 implicitHeight: loadNextButton.implicitHeight
                 QQC2.ToolTip.visible: loadNextHover.hovered
                 QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Experimental: loading without a terminal is not yet proven on this scanner.") : qsTr("Switched off: loading without a terminal is not yet proven on this scanner. Start the app with OPTICFILM_NEXT_STRIP=1 to try it.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
+                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Load the next holder after the first terminal load.") : qsTr("Switched off by OPTICFILM_NEXT_STRIP. Unset it and restart the app to enable loading the next holder.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
 
                 HoverHandler {
                     id: loadNextHover
@@ -232,80 +319,62 @@ Kirigami.Page {
             Layout.fillHeight: true
             spacing: 0
 
-            TrayQueue {
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                Layout.fillHeight: true
-            }
-            Kirigami.Separator {
-                Layout.fillHeight: true
-            }
-
             ColumnLayout {
-                Layout.fillWidth: true
+                Layout.preferredWidth: 230
+                Layout.maximumWidth: 230
+                Layout.minimumWidth: 180
                 Layout.fillHeight: true
-                Layout.margins: Kirigami.Units.largeSpacing
-                spacing: Kirigami.Units.largeSpacing
-
-                RowLayout {
-                    visible: bridge.selectedTray >= 0
-                    Kirigami.Heading {
-                        level: 2
-                        text: qsTr("Tray %1").arg(bridge.selectedTray)
-                        Layout.fillWidth: true
-                    }
-                    QQC2.Button {
-                        text: qsTr("Re-scan this tray…")
-                        icon.name: "view-refresh"
-                        enabled: bridge.canScan
-                        onClicked: rescanDialog.open()
-                    }
-                }
-
+                spacing: Theme.spacingSmall
                 QQC2.Label {
-                    visible: bridge.selectedTray < 0
-                    Layout.alignment: Qt.AlignCenter
-                    opacity: 0.7
-                    text: qsTr("Select a tray to see its slides.")
+                    text: qsTr("TRAYS")
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSmall
+                    Layout.margins: Theme.spacing
                 }
-
-                GridLayout {
+                TrayQueue {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    columns: 2
-                    rowSpacing: Kirigami.Units.smallSpacing
-                    columnSpacing: Kirigami.Units.smallSpacing
-
-                    Repeater {
-                        id: slideRepeater
-
-                        model: bridge.slides
-
-                        delegate: SlideCard {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            Layout.preferredHeight: 1
-                            current: position === page.currentSlide
-                            onChosen: page.currentSlide = position
-                        }
-                    }
+                    onTrayChosen: { sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
                 }
-
-                Item {
+                PillButton {
+                    objectName: "selectFlagged"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Kirigami.Units.gridUnit * 11
-                    visible: bridge.selectedTray >= 0
-
-                    Repeater {
-                        model: bridge.slides
-
-                        delegate: AdjustPanel {
-                            anchors.fill: parent
-                            visible: position === page.currentSlide
-                            tray: bridge.selectedTray
-                        }
-                    }
+                    Layout.margins: Theme.spacingSmall
+                    text: qsTr("Select flagged (%1)").arg(bridge.flaggedCount)
+                    onClicked: { bridge.selectFlagged(); sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
+                }
+                PillButton {
+                    objectName: "selectFailed"
+                    Layout.fillWidth: true
+                    Layout.margins: Theme.spacingSmall
+                    text: qsTr("Select failed (%1)").arg(bridge.failedCount)
+                    onClicked: { bridge.selectFailed(); sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
                 }
             }
+            Kirigami.Separator { Layout.fillHeight: true }
+            SheetView {
+                id: sheet
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                onReviewFocusRequested: page.focusReview()
+            }
+            Kirigami.Separator { Layout.fillHeight: true }
+            InspectorPanel {
+                id: inspector
+                Layout.preferredWidth: Math.min(360, page.width * 0.3)
+                Layout.maximumWidth: 360
+                Layout.minimumWidth: 270
+                Layout.fillHeight: true
+                onRescanRequested: rescanDialog.open()
+            }
+        }
+        QQC2.Label {
+            Layout.fillWidth: true
+            Layout.margins: Theme.spacingSmall
+            text: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo")
+            color: Theme.muted
+            font.pixelSize: Theme.fontSmall
+            wrapMode: Text.Wrap
         }
     }
 }

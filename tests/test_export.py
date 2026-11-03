@@ -110,7 +110,7 @@ def test_blank_slides_are_never_exported(store, tmp_path):
 
 def _export_everything(store, tmp_path):
     accept_all(store)
-    export_batch(store, tmp_path / "out")
+    export_batch(store, tmp_path / "out", "jpeg")
 
 
 def test_cleanup_refused_for_a_tray_in_review(store):
@@ -131,6 +131,7 @@ def test_cleanup_frees_bytes_and_marks_raw_removed(store, tmp_path):
 
 def test_cleanup_removes_all_sweep_versions(store, tmp_path):
     shutil.copytree(store.sweep_dir(1, 1), store.sweep_dir(1, 2))
+    store.update_tray(1, sweep_version=2)
     _export_everything(store, tmp_path)
     cleanup_raw(store, 1)
     assert not store.sweep_dir(1, 1).exists() and not store.sweep_dir(1, 2).exists()

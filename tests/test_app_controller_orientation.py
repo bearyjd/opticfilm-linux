@@ -66,7 +66,14 @@ def test_set_batch_orientation_re_enhances_every_slide(reviewed):
 def test_set_batch_orientation_names_the_trays_it_could_not_change(reviewed):
     reviewed._session.store.update_tray(1, stage=TrayStage.EXPORTED, raw_removed=True)
     reviewed.set_batch_orientation(180, False)
-    wait_until(reviewed, lambda: reviewed.state().banner is not None)
+    wait_until(
+        reviewed,
+        lambda: (
+            reviewed.state().default_rotation == 180
+            and reviewed.state().banner is not None
+            and "kept the old one" in reviewed.state().banner.message
+        ),
+    )
     assert "tray 1" in reviewed.state().banner.message
     assert reviewed.state().default_rotation == 180
 

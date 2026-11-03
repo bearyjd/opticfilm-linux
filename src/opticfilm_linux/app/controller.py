@@ -13,15 +13,31 @@ import stat
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+from opticfilm_linux.app.auto import MISSING_DESTINATION
+from opticfilm_linux.app.auto import AutoPipeline as AutoPipeline
+from opticfilm_linux.app.commands import ReviewCommands
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
-from opticfilm_linux.app.holder import WAIT_BATCH, HolderCommands
-from opticfilm_linux.app.jobs import free_space_candidates, run_export, run_free_space
+from opticfilm_linux.app.first_load import FirstLoadCommands
+from opticfilm_linux.app.holder import HolderCommands
+from opticfilm_linux.app.jobs import (
+    free_space_candidates as free_space_candidates,
+)
+from opticfilm_linux.app.jobs import (
+    run_export as run_export,
+)
+from opticfilm_linux.app.jobs import (
+    run_free_space as run_free_space,
+)
 from opticfilm_linux.app.messages import failure_text
+from opticfilm_linux.app.preview_tokens import PreviewTokens
+from opticfilm_linux.app.recovery_checks import RecoveryChecks
+from opticfilm_linux.app.selection import Selection, prune, selectable_keys
+from opticfilm_linux.app.selection_commands import SelectionCommands
 from opticfilm_linux.app.state import (
     EMPTY_STATE,
     AppState,
@@ -32,13 +48,9 @@ from opticfilm_linux.app.state import (
 )
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
-from opticfilm_linux.batch.export import clear_exported
-from opticfilm_linux.batch.layout import advance_section
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     BatchDefaults,
-    SlideSettings,
-    SlideStatus,
     SlotOrientation,
     TrayStage,
 )
@@ -47,6 +59,7 @@ from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.scanner.select import next_strip_enabled
 from opticfilm_linux.worker import lower_worker_priority
 
 SLIDES_PER_TRAY = 4
@@ -68,22 +81,66 @@ class _Session:
     poller: StatusPoller | None
     holder: HolderControl | None = None  # None: the scanner cannot move the holder
     scanner: Scanner | None = None  # identity may become known only after the first status poll
+    auto_export: bool = False  # batch setting is immutable throughout this session
+    previews: PreviewTokens = dataclasses.field(default_factory=PreviewTokens)
 
 
-class Controller(HolderCommands):
+class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCommands):
     def __init__(
         self,
         scanner_factory: Callable[[int], Scanner],
         clock: Callable[[], float] = time.monotonic,
-        next_strip: bool = False,
+        next_strip: bool | None = None,
         eject_button: bool = True,
         eject_watch: EjectWatch | None = None,
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
-        self._next_strip = next_strip  # the experimental non-interactive load is allowed
+        self._next_strip = next_strip_enabled() if next_strip is None else next_strip
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
+        self._init_holder_workers()
+        self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
+        self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._command = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-command")
+        self._refresher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-status")
+        self._refreshing = False
+        self._recovery_checks = RecoveryChecks()
+        self._session: _Session | None = None
+        self._batch_session = 0
+        self._closing = threading.Event()
+        self._initialize_jobs()
+        self._state = EMPTY_STATE
+        self._reported = EMPTY_STATE
+
+    def _initialize_jobs(self) -> None:
+        self._job_futures: set[Future] = set()
+        self._jobs_idle = threading.Condition(self._lock)
+        self._selected: int | None = None
+        self._selection = Selection()
+        self._selection_order = ()
+        self._manifest = None  # last manifest a refresh read; selection gestures patch from it
+        self._updating: frozenset[tuple[int, int]] = frozenset()
+        self._progress: dict[int, float] = {}
+        self._scan_started: dict[int, float] = {}
+        self._enhancing: set[int] = set()
+        self._banner: Banner | None = None
+        self._export: ExportView | None = None
+        self._free_space: FreeSpaceView | None = None
+        self._cancel_export = threading.Event()
+        self._cancel_free = threading.Event()
+        self._cancel_auto = threading.Event()
+        self._auto_due: set[int] = set()
+        self._auto_active: set[int] = set()
+        self._auto_retried: set[int] = set()
+        self._jobs = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
+        )
+
+    def _init_holder_workers(self) -> None:
+        self._init_first_load()
         self._holder_busy = False  # an eject or load is queued or running
         self._lifecycle_pending = 0  # accepted batch changes exclude new holder movements
         self._holder_latch = HolderLatch.UNKNOWN
@@ -95,33 +152,6 @@ class Controller(HolderCommands):
         self._latch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-latch")
         self._holder_future: Future | None = None  # that eject or load, while it may not start
         self._holder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-holder")
-        self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
-        self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker
-        self._clock = clock
-        self._lock = threading.Lock()
-        self._command = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-command")
-        self._refresher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-status")
-        self._refreshing = False
-        self._session: _Session | None = None
-        self._batch_session = 0
-        self._closing = threading.Event()
-        self._job_futures: set[Future] = set()
-        self._jobs_idle = threading.Condition(self._lock)
-        self._selected: int | None = None
-        self._updating: frozenset[tuple[int, int]] = frozenset()
-        self._progress: dict[int, float] = {}
-        self._scan_started: dict[int, float] = {}
-        self._enhancing: set[int] = set()
-        self._banner: Banner | None = None
-        self._export: ExportView | None = None
-        self._free_space: FreeSpaceView | None = None
-        self._cancel_export = threading.Event()
-        self._cancel_free = threading.Event()
-        self._jobs = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
-        )
-        self._state = EMPTY_STATE
-        self._reported = EMPTY_STATE
 
     # -- what the UI thread uses (never blocks) ------------------------------------------
 
@@ -136,15 +166,18 @@ class Controller(HolderCommands):
         if session is not None and session.poller is not None:
             session.poller.poll()
             self._act_on_eject_button(session.poller)
+        self._kick_refresh()
+        with self._lock:
+            changed = self._state is not self._reported
+            self._reported = self._state
+        return changed
+
+    def _kick_refresh(self) -> None:
         with self._lock:
             start = not self._refreshing
             self._refreshing = True
         if start:
             self._refresher.submit(self._refresh)
-        with self._lock:
-            changed = self._state is not self._reported
-            self._reported = self._state
-        return changed
 
     def _act_on_eject_button(self, poller: StatusPoller) -> None:
         # A press is always taken and handled now, never queued behind a scan.
@@ -186,12 +219,16 @@ class Controller(HolderCommands):
         export_dir: str = "",
         export_format: Format = "jpeg",
         jpeg_size: JpegSize = "full",
+        auto_export: bool = False,
+        keep_raw: bool = False,
         collection: str = "",
         box: int = 1,
         section: str = "a",
         section_size: int = 140,
     ) -> None:
         def job() -> None:
+            if auto_export and not export_dir.strip():
+                raise BatchError(MISSING_DESTINATION)
             if export_dir:
                 _check_export_directory(directory, Path(export_dir))
             defaults = BatchDefaults(
@@ -202,19 +239,14 @@ class Controller(HolderCommands):
                 export_dir=export_dir,
                 export_format=export_format,
                 jpeg_size=jpeg_size,
+                auto_export=auto_export,
+                keep_raw=keep_raw,
+            )
+            layout = dict(
+                collection=collection, box=box, section=section, section_size=section_size
             )
             self._replace_batch(
-                lambda: BatchStore.create(
-                    directory,
-                    name,
-                    album,
-                    date,
-                    defaults,
-                    collection=collection,
-                    box=box,
-                    section=section,
-                    section_size=section_size,
-                )
+                lambda: BatchStore.create(directory, name, album, date, defaults, **layout)
             )
 
         self._run_lifecycle(job, "Could not create the batch")
@@ -230,278 +262,13 @@ class Controller(HolderCommands):
 
     # -- scanning ------------------------------------------------------------------------
 
-    def scan(self) -> None:
-        self._reserved_scan(lambda runner: runner.scan_tray(), "Could not start a scan")
-
-    def rescan(self, number: int) -> None:
-        def job(runner: BatchRunner) -> None:
-            self._drop_progress(number)
-            return runner.rescan_tray(number)
-
-        self._reserved_scan(job, f"Could not re-scan tray {number}")
-
-    def _section_refusal(self, reserved: bool = False) -> str | None:
-        """Called under the controller lock before reserving the transition."""
-        if self._lifecycle_pending or self._closing.is_set():
-            return WAIT_BATCH
-        session = self._session
-        runner = session.runner if session is not None else None
-        if self._holder_busy:
-            return "Wait for the eject/load to finish"
-        if self._scans_queued > int(reserved) or (runner is not None and runner.scan_pending()):
-            return "Wait for the scan or section change to finish"
-        if self._long_jobs or self._job_futures:
-            return "Wait for the export or disk-space job to finish"
-        if self._updating or self._enhancing or (runner is not None and runner.work_pending()):
-            return "Wait for enhancement to finish"
-        return None
-
-    def finish_box(self, next_box: bool = True) -> None:
-        with self._lock:
-            refusal = self._section_refusal()
-            if refusal is None:
-                self._scans_queued += 1  # reserve while queued, including against holder moves
-        if refusal is not None:
-            self._set(_banner=Banner(refusal))
-            return
-        reserved = True
-
-        def release() -> None:
-            nonlocal reserved
-            with self._lock:
-                if reserved:
-                    self._scans_queued -= 1
-                    reserved = False
-
-        def job(_runner: BatchRunner) -> None:
-            try:
-                with self._lock:
-                    refusal = self._section_refusal(reserved=True)
-                    session = self._session
-                if refusal is not None:
-                    raise BatchError(refusal)
-                if session is None:
-                    raise BatchError("no batch is open")
-                advance_section(session.store, next_box=next_box)
-                self._set(_selected=None)
-            finally:
-                release()
-
-        future = None
-        try:
-            future = self._run_writer(job, "Could not finish the section")
-        finally:
-            self._track(future, release)  # also release when writer validation skips the job
-
-    def select_tray(self, number: int) -> None:
-        self._set(_selected=number)
-
-    # -- review --------------------------------------------------------------------------
-
-    def set_status(self, number: int, position: int, status: SlideStatus) -> None:
-        self._run_writer(
-            lambda runner: runner.set_slide_status(number, position, status),
-            f"Could not change slide {position} of tray {number}",
-        )
-
-    def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
-        self._run_writer(
-            lambda runner: self._edit(runner, number, position, settings),
-            f"Could not adjust slide {position} of tray {number}",
-        )
-
-    def adjust_slide(
-        self, number: int, position: int, changes: Mapping[str, float | int | None]
-    ) -> None:
-        """Change only the named ``SlideSettings`` fields, merged with what is stored now."""
-
-        def job(runner: BatchRunner) -> None:
-            current = self._slide_settings(number, position)
-            self._edit(runner, number, position, dataclasses.replace(current, **changes))
-
-        self._run_writer(job, f"Could not adjust slide {position} of tray {number}")
-
-    def rotate(self, number: int, position: int, quarter_turns: int) -> None:
-        def job(runner: BatchRunner) -> None:
-            current = self._slide_settings(number, position)
-            # the slide is flipped after it is turned: on screen, a flipped turn runs backwards
-            step = -90 if current.mirror else 90
-            turned = (current.rotation + step * quarter_turns) % 360
-            self._edit(runner, number, position, dataclasses.replace(current, rotation=turned))
-
-        self._run_writer(job, f"Could not rotate slide {position} of tray {number}")
-
-    def mirror(self, number: int, position: int) -> None:
-        """Flip the slide left-right, or back: toggles what is stored when the job runs."""
-
-        def job(runner: BatchRunner) -> None:
-            current = self._slide_settings(number, position)
-            flipped = dataclasses.replace(current, mirror=not current.mirror)
-            self._edit(runner, number, position, flipped)
-
-        self._run_writer(job, f"Could not mirror slide {position} of tray {number}")
-
-    def set_batch_orientation(self, rotation: int, mirror: bool) -> None:
-        """Turn and flip every slide of the batch; trays that cannot follow are named."""
-
-        def job(runner: BatchRunner) -> None:
-            skipped = runner.set_batch_orientation(rotation, mirror)
-            if skipped:
-                self._set(_banner=Banner(_skipped_text(skipped)))
-
-        self._run_writer(job, "Could not change the batch orientation")
-
-    def reset_slide(self, number: int, position: int) -> None:
-        self.edit_slide(number, position, SlideSettings())
-
-    def accept_all(self) -> None:
-        self._run_writer(lambda runner: runner.accept_all(), "Could not accept all slides")
-
-    def _edit(
-        self, runner: BatchRunner, number: int, position: int, settings: SlideSettings
-    ) -> None:
-        key = (number, position)
-        with self._lock:
-            self._updating = self._updating | {key}
-        try:
-            runner.edit_slide(number, position, settings)
-        except Exception:
-            with self._lock:
-                self._updating = self._updating - {key}
-            raise
-
-    def _slide_settings(self, number: int, position: int) -> SlideSettings:
-        session = self._session
-        if session is None:
-            raise BatchError("no batch is open")
-        for tray in session.store.snapshot().trays:
-            for slide in tray.slides:
-                if (tray.number, slide.position) == (number, position):
-                    return slide.settings
-        raise BatchError(f"no slide {position} in tray {number}")
-
-    # -- export and free disk space ------------------------------------------------------
-
-    def set_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
-        self._run_writer(
-            lambda _runner: self._save_export_settings(directory, fmt, jpeg_size),
-            "Could not save export settings",
-        )
-
-    def _save_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
-        store = self._open_store()
-        _check_export_directory(store.directory, directory)
-        store.update(
-            lambda manifest: dataclasses.replace(
-                manifest,
-                defaults=dataclasses.replace(
-                    manifest.defaults,
-                    export_dir=str(directory),
-                    export_format=fmt,
-                    jpeg_size=jpeg_size,
-                ),
-            )
-        )
-
-    def export(self, directory: Path, fmt: Format, jpeg_size: JpegSize = "full") -> None:
-        def job(_runner: BatchRunner) -> None:
-            run_export(
-                self._open_store(),
-                directory,
-                fmt,
-                self._cancel_export,
-                lambda view: self._set(_export=view),
-                jpeg_size=jpeg_size,
-            )
-
-        if not self._closing.is_set():
-            self._cancel_export.clear()  # at submit: a queued job must not undo a later cancel
-        self._after_pending_commands(
-            job,
-            "Could not export",
-            prepare=lambda _runner: self._save_export_settings(directory, fmt, jpeg_size),
-        )
-
-    def reexport_all_accepted(self) -> None:
-        """After confirmation, let the next export rewrite accepted slides."""
-
-        def job(_runner: BatchRunner) -> None:
-            clear_exported(self._open_store())
-            self._set(_export=None)
-
-        self._after_pending_commands(job, "Could not prepare re-export")
-
-    def cancel_export(self) -> None:
-        self._cancel_export.set()
-
-    def dismiss_export(self) -> None:
-        self._set(_export=None)
-
-    def request_free_space(self) -> None:
-        self._after_pending_commands(
-            lambda _runner: self._set(_free_space=free_space_candidates(self._open_store())),
-            "Could not check disk space",
-        )
-
-    def confirm_free_space(self) -> None:
-        """Remove the raw scans of exactly the trays the owner was shown, once."""
-
-        def job(_runner: BatchRunner) -> None:
-            view = self._free_space
-            if view is None or not view.trays:
-                raise BatchError("check which trays can be freed before removing anything")
-            if view.running or view.freed is not None:
-                return  # a second click: already running or done
-            run_free_space(
-                self._open_store(),
-                self._cancel_free,
-                lambda update: self._set(_free_space=update),
-                tuple(number for number, _ in view.trays),
-            )
-
-        if not self._closing.is_set():
-            self._cancel_free.clear()
-        self._after_pending_commands(job, "Could not free disk space")
-
-    def _after_pending_commands(
-        self,
-        job: Callable[[BatchRunner], None],
-        message: str,
-        prepare: Callable[[BatchRunner], None] | None = None,
-    ) -> None:
-        """Queue a long job behind every command already submitted (an edit made a moment
-        ago must be stored before an export reads the slides), then run it on the jobs worker."""
-        with self._lock:
-            self._long_jobs += 1  # count the job before it reaches the jobs worker
-
-        def handover(runner: BatchRunner) -> None:
-            if prepare is not None:
-                prepare(runner)
-            self._run_writer(job, message, pool=self._jobs)
-
-        future = self._run_writer(handover, message)
-        self._track(future, self._long_job_handed_over)
-
-    def _long_job_handed_over(self) -> None:
-        with self._lock:
-            self._long_jobs -= 1
-
-    def cancel_free_space(self) -> None:
-        self._cancel_free.set()
-
-    def dismiss_free_space(self) -> None:
-        self._set(_free_space=None)
-
-    def _open_store(self) -> BatchStore:
-        session = self._session
-        if session is None:
-            raise BatchError("no batch is open")
-        return session.store
-
     # -- closing the window --------------------------------------------------------------
 
-    def shutdown_decision(self) -> Literal["ok", "scan_running"]:
-        session = self._session
+    def shutdown_decision(self) -> Literal["ok", "scan_running", "first_load_running"]:
+        with self._lock:
+            if self._holder_busy and self._load_phase in ("jogging", "await_reinsert", "loading"):
+                return "first_load_running"
+            session = self._session
         if session is not None and session.runner is not None and session.runner.scan_pending():
             return "scan_running"
         return "ok"
@@ -509,13 +276,16 @@ class Controller(HolderCommands):
     def shutdown(self) -> None:
         """Cancel an export, finish the job running now, drop queued work, release the batch."""
         self._closing.set()
+        self._load_cancel.set()
         self._cancel_export.set()
         self._cancel_free.set()
+        self._cancel_auto.set()
         self._holder_pool.shutdown(wait=True, cancel_futures=True)  # a running move completes
         self._jobs.shutdown(wait=True, cancel_futures=True)
         self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
         self._detach()
         self._refresher.shutdown(wait=True)
+        self._recovery_checks.close()
         self._latch_pool.shutdown(wait=True)
 
     # -- internals shared with the other controller modules ------------------------------
@@ -651,18 +421,36 @@ class Controller(HolderCommands):
             store.close()  # never leave the writer lock held after a failed open
             self._restore_eject_watch()
             raise
-        first = store.snapshot().trays[0].number if store.snapshot().trays else None
+        self._attach_session(
+            _Session(store, runner, poller, holder, scanner, store.snapshot().defaults.auto_export)
+        )
+        if not readonly:
+            due = self._auto_pipeline(store).resume()
+            with self._lock:
+                self._auto_due.update(due)
+            self._submit_auto_due()
+        if readonly:
+            self._restore_eject_watch()  # no scanner is opened for a read-only batch
+
+    def _attach_session(self, session: _Session) -> None:
+        manifest = session.store.snapshot()
+        trays = manifest.trays
+        order = self._sheet_selection_order(manifest)
         with self._lock:
             self._next_latch_sequence()
             self._latch_applied = self._latch_sequence
-            self._session = _Session(store, runner, poller, holder, scanner)
+            self._session = session
             self._batch_session += 1
+            self._reset_load_phase()
             self._holder_latch = HolderLatch.UNKNOWN
             self._latch_address = None
             self._latch_loss = None
             self._latch_invalidated = True
-            self._sync_holder_latch(scanner)
-            self._selected = first
+            self._sync_holder_latch(session.scanner)
+            self._selected = trays[0].number if trays else None
+            self._selection = Selection()
+            self._selection_order = order
+            self._manifest = manifest
             self._banner = None
             self._updating = frozenset()
             self._progress = {}
@@ -670,8 +458,10 @@ class Controller(HolderCommands):
             self._enhancing = set()
             self._export = None
             self._free_space = None
-        if readonly:
-            self._restore_eject_watch()  # no scanner is opened for a read-only batch
+            self._auto_due = set()
+            self._auto_active = set()
+            self._auto_retried = set()
+            self._cancel_auto = threading.Event()
 
     def _scanner_problem(self, message: str, detail: str) -> None:
         self._set(_banner=Banner(message, detail))
@@ -680,6 +470,7 @@ class Controller(HolderCommands):
         """Cancel a running export or free-space job and wait until every job has ended."""
         self._cancel_export.set()
         self._cancel_free.set()
+        self._cancel_auto.set()
         with self._jobs_idle:
             self._jobs_idle.wait_for(lambda: not self._job_futures)
 
@@ -690,6 +481,7 @@ class Controller(HolderCommands):
             self._remember_holder_latch(HolderLatch.UNKNOWN)
         with self._lock:
             session, self._session = self._session, None
+            self._reset_load_phase()
         if session is not None:
             if session.poller is not None:
                 self._watch_poller = session.poller  # a read-only session keeps the earlier one
@@ -708,6 +500,9 @@ class Controller(HolderCommands):
             self._restore_eject_watch()
         with self._lock:
             self._selected = None
+            self._selection = Selection()
+            self._selection_order = ()
+            self._manifest = None
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
 
     def _scanner_idle(self) -> bool:
@@ -751,6 +546,10 @@ class Controller(HolderCommands):
     # -- events and refresh --------------------------------------------------------------
 
     def _drain_events(self, session: _Session | None = None) -> None:
+        while not self._load_events.empty():
+            event = self._load_events.get_nowait()
+            with self._lock:
+                self._apply_load_event(event)
         session = session or self._session
         if session is None or session.runner is None:
             return
@@ -763,11 +562,16 @@ class Controller(HolderCommands):
                 )
             with self._lock:
                 self._apply_event(event)
+        if session is self._session:
+            self._submit_auto_due()
 
     def _apply_event(self, event) -> None:
         if isinstance(event, TrayStageChanged):
             self._on_stage(event.number, event.stage)
         elif isinstance(event, SlideUpdated):
+            if self._session is not None:
+                self._session.previews.invalidate(event.number, event.position)
+            self._auto_due.add(event.number)
             self._updating = self._updating - {(event.number, event.position)}
             if event.number in self._enhancing:
                 self._progress = {
@@ -780,6 +584,8 @@ class Controller(HolderCommands):
             self._updating = frozenset(k for k in self._updating if k[0] != event.number)
 
     def _on_stage(self, number: int, stage: TrayStage) -> None:
+        if stage is TrayStage.REVIEW:
+            self._auto_due.add(number)
         if stage is TrayStage.SCANNING:
             self._scan_started = {**self._scan_started, number: self._clock()}
             if self._selected is None:
@@ -803,17 +609,36 @@ class Controller(HolderCommands):
 
     def _rebuild(self) -> None:
         session = self._session
-        status, sequence = (
-            session.poller.snapshot() if session and session.poller else (ScannerStatus.UNKNOWN, 0)
-        )
+        status, sequence = self._poll_status(session)
         manifest = session.store.snapshot() if session is not None else None
         with self._lock:
-            if session is not self._session:
-                return  # the batch changed while we were polling; the next refresh will do
-            self._update_holder_status(session, status, sequence)
             selected = self._selected
-            tokens = self._preview_tokens(session, manifest, selected)
-            self._state = build_state(
+        tokens = self._preview_tokens(session, manifest)
+        raw_pending = self._raw_pending(session, manifest)
+        raw_recoverable = self._recovery_checks.poll(
+            session, manifest, raw_pending, self._raw_recoverable
+        )
+        with self._lock:
+            if session is not self._session or selected != self._selected:
+                return  # the batch or tray changed while we were polling; the next refresh will do
+            self._prune_selection(manifest)
+            self._update_holder_status(session, status, sequence)
+            self._publish_state(
+                session=session,
+                manifest=manifest,
+                selected=selected,
+                status=status,
+                tokens=tokens,
+                raw_pending=raw_pending,
+                raw_recoverable=raw_recoverable,
+            )
+
+    def _publish_state(
+        self, *, session, manifest, selected, status, tokens, raw_pending, raw_recoverable
+    ):
+        """Build an immutable snapshot while holding the lock; no storage access."""
+        self._state = self._with_first_load(
+            build_state(
                 manifest,
                 preview_tokens=tokens,
                 scanner=status,
@@ -823,6 +648,7 @@ class Controller(HolderCommands):
                 ),
                 readonly=bool(session and session.runner is None),
                 selected=selected,
+                selection=self._selection,
                 updating=self._updating,
                 progress=self._progress,
                 scan_started=self._scan_started,
@@ -840,7 +666,54 @@ class Controller(HolderCommands):
                     or (session and session.runner and session.runner.work_pending())
                 ),
                 holder_latch=self._holder_latch if session else HolderLatch.UNKNOWN,
+                raw_pending=raw_pending,
+                raw_recoverable=raw_recoverable,
             )
+        )
+        self._state = dataclasses.replace(self._state, undo_label=self._selection_undo_label())
+
+    @staticmethod
+    def _poll_status(session):
+        return (
+            session.poller.snapshot() if session and session.poller else (ScannerStatus.UNKNOWN, 0)
+        )
+
+    def _prune_selection(self, manifest):
+        self._manifest = manifest
+        self._selection_order = self._sheet_selection_order(manifest)
+        self._selection = prune(self._selection, self._selection_order)
+        available = {tray.number for tray in manifest.trays} if manifest else set()
+        self._selection = dataclasses.replace(
+            self._selection, trays=self._selection.trays & available
+        )
+
+    @staticmethod
+    def _sheet_selection_order(manifest):
+        keys = selectable_keys(manifest) if manifest else ()
+        return tuple(sorted(keys, key=lambda key: (-key[0], key[1])))
+
+    @staticmethod
+    def _raw_recoverable(session, manifest, pending) -> frozenset[int]:
+        from opticfilm_linux.batch.cleanup_recovery import can_recover_interrupted_cleanup
+
+        if session is None or manifest is None:
+            return frozenset()
+        return frozenset(
+            tray.number
+            for tray in manifest.trays
+            if tray.number in pending
+            and can_recover_interrupted_cleanup(session.store, manifest, tray)
+        )
+
+    @staticmethod
+    def _raw_pending(session, manifest) -> frozenset[int]:
+        if session is None or manifest is None:
+            return frozenset()
+        return frozenset(
+            t.number
+            for t in manifest.trays
+            if t.raw_removed and any(session.store.tray_dir(t.number).glob("sweep-*"))
+        )
 
     def _update_holder_status(self, session, status: ScannerStatus, sequence: int) -> None:
         """Apply the scanner status while the controller lock is held."""
@@ -857,20 +730,11 @@ class Controller(HolderCommands):
             self._save_holder_latch()
 
     @staticmethod
-    def _preview_tokens(session, manifest, selected) -> dict[tuple[int, int], int]:
+    def _preview_tokens(session, manifest) -> dict[tuple[int, int], int]:
         if session is None or manifest is None:
             return {}
-        tray = next((t for t in manifest.trays if t.number == selected), None)
-        if tray is None:
-            return {}
-        tokens = {}
-        for slide in tray.slides:
-            path = session.store.preview_path(tray.number, slide.position, "after")
-            try:
-                tokens[(tray.number, slide.position)] = path.stat().st_mtime_ns
-            except OSError:
-                continue
-        return tokens
+        cache = getattr(session, "previews", None) or PreviewTokens()
+        return cache.read(session.store, manifest)
 
 
 def _check_export_directory(batch: Path, directory: Path) -> None:

@@ -215,8 +215,13 @@ def test_re_applying_the_current_orientation_is_a_no_op_even_while_a_tray_is_bus
 
 
 def _exported(store, number):
-    store.update_tray(number, stage=TrayStage.EXPORTED)
-    _mark(store, number, status=SlideStatus.ACCEPTED, exported=True)
+    unrelated = [t for t in store.snapshot().trays if t.number != number]
+    _mark(store, number, status=SlideStatus.ACCEPTED, exported=False)
+    keys = frozenset((number, s.position) for s in _tray(store, number).slides)
+    export_batch(store, store.directory.parent / "out", "jpeg", keys=keys)
+    for tray in unrelated:  # exporting also finishes all-blank trays; preserve this fixture's setup
+        store.update_tray(tray.number, stage=tray.stage)
+    assert _tray(store, number).stage is TrayStage.EXPORTED
 
 
 def test_orientation_changed_just_before_cleanup_commits_keeps_the_raw_scans(store, monkeypatch):
@@ -262,8 +267,9 @@ def test_a_failed_deletion_keeps_the_tray_marked_removed_and_says_so(store, monk
         raise OSError("disk went away")
 
     monkeypatch.setattr(export_module.shutil, "rmtree", broken)
-    with pytest.raises(BatchError, match="can no longer be used"):
+    with pytest.raises(BatchError, match="Verify remaining scans before recovery") as refused:
         export_module.cleanup_raw(store, 1)
+    assert "can no longer be used" not in str(refused.value)
     assert _tray(store, 1).raw_removed
 
 

@@ -7,10 +7,12 @@ from opticfilm_linux.batch.manifest import ManifestFormatError, from_json, to_js
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
+    ExportRecord,
     Flag,
     SlideRecord,
     SlideSettings,
     SlideStatus,
+    TrayLocation,
     TrayRecord,
     TrayStage,
 )
@@ -136,6 +138,58 @@ def test_old_manifest_without_dpi_keeps_historical_3600():
     assert json.loads(to_json(loaded))["defaults"]["dpi"] == 3600
 
 
+POLICY_FIELDS = ("auto_export", "keep_raw", "first_tray_released")
+INVALID_POLICY_VALUES = ("false", "true", "", 0, 1, None, [], {})
+
+
+@pytest.mark.parametrize("key", POLICY_FIELDS)
+@pytest.mark.parametrize("value", INVALID_POLICY_VALUES)
+def test_invalid_policy_value_is_rejected(key, value):
+    data = json.loads(to_json(_manifest()))
+    data["defaults"].update(auto_export=True, keep_raw=False)
+    data["first_tray_released"] = True
+    target = data if key == "first_tray_released" else data["defaults"]
+    target[key] = value
+
+    with pytest.raises(ManifestFormatError, match=key):
+        from_json(json.dumps(data))
+
+
+@pytest.mark.parametrize("key", POLICY_FIELDS)
+@pytest.mark.parametrize("value", INVALID_POLICY_VALUES)
+def test_model_rejects_invalid_policy_boolean(key, value):
+    with pytest.raises(ValueError, match=key):
+        if key == "first_tray_released":
+            BatchManifest(name="Trips", first_tray_released=value)
+        else:
+            BatchDefaults(**{key: value})
+
+
+def test_legacy_manifest_without_policy_preserves_defaults(caplog):
+    data = json.loads(to_json(_manifest()))
+    for key in POLICY_FIELDS:
+        target = data if key == "first_tray_released" else data["defaults"]
+        target.pop(key, None)
+    loaded = from_json(json.dumps(data))
+    assert loaded.defaults.auto_export is False
+    assert loaded.defaults.keep_raw is False
+    assert loaded.first_tray_released is False
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("auto_export", [False, True])
+@pytest.mark.parametrize("keep_raw", [False, True])
+@pytest.mark.parametrize("released", [False, True])
+def test_boolean_policy_roundtrip(auto_export, keep_raw, released, caplog):
+    manifest = replace(
+        _manifest(),
+        defaults=BatchDefaults(auto_export=auto_export, keep_raw=keep_raw),
+        first_tray_released=released,
+    )
+    assert from_json(to_json(manifest)) == manifest
+    assert not caplog.records
+
+
 def test_tray_scan_evidence_roundtrips_and_old_trays_remain_unknown():
     from opticfilm_linux.provenance import ScanEvidence
 
@@ -150,3 +204,60 @@ def test_tray_scan_evidence_roundtrips_and_old_trays_remain_unknown():
     custom = replace(original, trays=(replace(original.trays[0], evidence=evidence),))
     assert from_json(to_json(custom)) == custom
     assert from_json(to_json(original)).trays[0].evidence is None
+
+
+def test_collection_and_pipeline_receipts_roundtrip_together():
+    receipt = ExportRecord(
+        path="family/box-2/b/005.jpg",
+        width=100,
+        height=80,
+        scan_dpi=7200,
+        delivered_dpi=3600,
+        scan_token="T001S1",
+        raw_sha256="a" * 64,
+        export_path="/photos/family/box-2/b/005.jpg",
+        size_bytes=1234,
+        sha256="b" * 64,
+    )
+    slide = SlideRecord(
+        position=1,
+        exported=True,
+        export_path=receipt.export_path,
+        export_size=(100, 80),
+        export_sha256=receipt.sha256,
+        exports=(receipt,),
+    )
+    tray = TrayRecord(
+        number=1,
+        stage=TrayStage.EXPORTED,
+        slides=(slide,),
+        auto="held",
+        auto_error="check slide",
+        auto_failed=(2,),
+        auto_flagged=(3,),
+        location=TrayLocation("family", 2, "b", 5, 4),
+    )
+    manifest = BatchManifest(
+        name="Family",
+        collection="family",
+        box=2,
+        section="b",
+        section_size=100,
+        defaults=BatchDefaults(auto_export=True, keep_raw=True),
+        first_tray_released=True,
+        trays=(tray,),
+    )
+    assert from_json(to_json(manifest)) == manifest
+
+    data = json.loads(to_json(manifest))
+    data["defaults"]["keep_raw"] = "false"
+    with pytest.raises(ManifestFormatError, match="keep_raw"):
+        from_json(json.dumps(data))
+
+
+@pytest.mark.parametrize("value", [None, 42, [], {}])
+def test_invalid_auto_error_type_rejected(value):
+    data = json.loads(to_json(_manifest()))
+    data["trays"][0]["auto_error"] = value
+    with pytest.raises(ManifestFormatError, match="auto_error"):
+        from_json(json.dumps(data))

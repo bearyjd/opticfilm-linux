@@ -17,6 +17,7 @@ import fcntl
 import logging
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -69,6 +70,8 @@ POWER_CYCLE_HINT = (
     "eject, load the holder again and retry."
 )
 TERMINAL_LOAD_HINT = "The first load after power-on must be done in a terminal (of135i load)."
+HUMAN_WAIT_S = 600.0
+REINSERT_MARKER = b"Press Enter when it is at the stop"
 HOLDER_TIMEOUT_S = STATUS_TIMEOUT_S * 6
 MARKED_COMMANDS = frozenset({"scan", "eject", "load"})  # they move the scanner: see interrupted
 SIGNAL_EXIT_BASE = 128  # exit status 128 + n: the program ended because of signal n
@@ -556,10 +559,91 @@ class DriverScanner:
 
     def load_next_strip(self) -> None:
         """Load the next holder without a terminal (``load --next-strip``): only after the
-        first, interactive load since power-on."""
+        first, interactive load since power-on. Enabled by default in the app and batch CLI;
+        OPTICFILM_NEXT_STRIP provides their operator kill switch."""
         self._holder_command(
             ["load", "--next-strip"], f"loading the next holder failed. {TERMINAL_LOAD_HINT}"
         )
+
+    def load_interactive(
+        self, on_prompt: Callable[[], None], done: threading.Event, cancel: threading.Event
+    ) -> int:
+        """Run the unchanged first-load CLI; keep stdin open until it has exited."""
+        self._require_driver()
+        self._status_cache = None
+        try:
+            with self._hw_lock:
+                self._require_file_lock()
+                interrupted.require_clear()
+                interrupted.begin("load")
+                result = self._run_first_load(on_prompt, done, cancel)
+                if not result.stopped:
+                    _ended_by_itself()
+                if result.stopped or result.returncode:
+                    raise ScanError(
+                        f"First load failed (exit code {result.returncode}). {POWER_CYCLE_HINT} "
+                        f"Driver said: {_tail(result.output)}"
+                    )
+                return result.returncode
+        except (ScannerInUse, ScannerRefused):
+            raise
+        except BaseException:
+            self._note_failure()
+            raise
+        finally:
+            self._status_cache = None
+
+    def _spawn_first_load(self) -> subprocess.Popen:
+        env = dict(os.environ)
+        if self._config.driver_dir is not None:
+            env["PYTHONPATH"] = (
+                str(self._config.driver_dir) + os.pathsep + env.get("PYTHONPATH", "")
+            )
+        lock_fd = self._hw_lock.file_descriptor()
+        return subprocess.Popen(
+            [self._config.python, "-m", "of135i", "load"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+            pass_fds=(lock_fd,) if lock_fd is not None else (),
+            env=env,
+            start_new_session=True,
+        )
+
+    def _run_first_load(self, on_prompt, done, cancel) -> "_Result":
+        path, temporary = self._output_file("load", keep_log=True)
+        proc = None
+        try:
+            with path.open("wb") as sink:
+                proc = self._spawn_first_load()
+                with _LIVE_LOCK:
+                    _LIVE.add(proc)
+                _note_driver("load", proc.pid)
+                stopped = _stream_first_load(proc, sink, on_prompt, done, cancel)
+                with _LIVE_LOCK:
+                    stopped = stopped or proc in _SIGNALLED
+                output = _read_tail(path)
+                self._latch_output = output
+                return _Result(proc.wait(), output, stopped)
+        except ScanError:
+            raise
+        except Exception as exc:
+            if proc is None:
+                raise
+            _close_first_load(proc)
+            raise ScanError(f"First load failed (exit code {proc.returncode}): {exc}") from exc
+        finally:
+            if proc is not None:
+                _close_first_load(proc)
+            self._last_address = _address_in(path) or self._last_address
+            if temporary:
+                path.unlink(missing_ok=True)
+            elif self._config.log_dir is not None:
+                try:
+                    _prune_logs(self._config.log_dir)
+                except OSError:
+                    log.warning("could not prune the driver logs", exc_info=True)
 
     def _holder_command(self, args: list[str], failure: str) -> None:
         """Run a holder movement under the hardware lock; any failure needs a power cycle."""
@@ -715,6 +799,76 @@ class DriverScanner:
         handle, path = tempfile.mkstemp(prefix="opticfilm-driver-", suffix=".log")
         os.close(handle)
         return Path(path), True
+
+
+def _stream_first_load(proc, sink, on_prompt, done, cancel) -> bool:
+    """Read raw chunks: the reinsert prompt deliberately has no newline."""
+    deadline = time.monotonic() + HOLDER_TIMEOUT_S
+    prompt, sent, suffix = False, False, b""
+    while proc.poll() is None:
+        if cancel.is_set():
+            _stop_group(proc)
+            proc.wait()
+            return True
+        if time.monotonic() >= deadline:
+            _stop_group(proc)
+            proc.wait()
+            raise ScanInterrupted(
+                f"First load timed out (exit code {proc.returncode}). {POWER_CYCLE_HINT}"
+            )
+        if prompt and done.is_set() and not sent:
+            sent = True
+            _send_load_enter(proc)
+            deadline = time.monotonic() + HOLDER_TIMEOUT_S
+        if not select.select([proc.stdout], [], [], 0.05)[0]:
+            continue
+        chunk = os.read(proc.stdout.fileno(), 8192)
+        if not chunk:
+            time.sleep(0.05)  # EOF can arrive before the process itself exits
+            continue
+        sink.write(chunk)
+        sink.flush()
+        combined = suffix + chunk
+        suffix = combined[-(len(REINSERT_MARKER) - 1) :]
+        if not prompt and REINSERT_MARKER in combined:
+            prompt = True
+            deadline = time.monotonic() + HUMAN_WAIT_S
+            on_prompt()
+    _drain_load_output(proc, sink)
+    return proc.returncode < 0 or proc.returncode >= SIGNAL_EXIT_BASE
+
+
+def _drain_load_output(proc, sink) -> None:
+    while select.select([proc.stdout], [], [], 0)[0]:
+        chunk = os.read(proc.stdout.fileno(), 8192)
+        if not chunk:
+            break
+        sink.write(chunk)
+    sink.flush()
+
+
+def _send_load_enter(proc) -> None:
+    try:
+        proc.stdin.write(b"\n")
+        proc.stdin.flush()
+    except BrokenPipeError:
+        pass  # the child exited between detecting the prompt and Done
+
+
+def _close_first_load(proc) -> None:
+    # EOF aborts this hardware command: stop/reap BEFORE releasing either pipe.
+    if proc.poll() is None:
+        _stop_group(proc)
+    proc.wait()
+    with _LIVE_LOCK:
+        _LIVE.discard(proc)
+        _SIGNALLED.discard(proc)
+    for stream in (proc.stdin, proc.stdout):
+        if stream is not None:
+            try:
+                stream.close()
+            except BrokenPipeError:
+                pass
 
 
 @dataclasses.dataclass(frozen=True)
