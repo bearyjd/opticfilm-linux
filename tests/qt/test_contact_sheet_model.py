@@ -40,8 +40,9 @@ def test_newest_tray_inserts_without_reset_or_replacing_existing_rows():
     assert list(inserted.at(0)[1:]) == [0, 0]
     assert first.isValid() and first.row() == 1
     assert model.data(first, FIRST_ROLE) == 2
-    assert changed.count() == 1
-    assert changed.at(0)[0].row() == 2
+    assert changed.count() == 0
+    child = model.data(model.index(2), FIRST_ROLE + 1)
+    assert child.data(child.index(0), FIRST_ROLE)["previewToken"] == 91
     assert model.indexOfTray(1) == 2
 
 
@@ -76,3 +77,33 @@ def test_bridge_sheet_contains_all_trays_and_the_focused_slide():
     assert bridge.focusedSlide["tray"] == 2
     assert bridge.sheet.get(1)["slides"][0]["previewToken"] == 10
     assert app is not None
+
+
+def test_child_model_survives_selection_preview_and_placeholder_updates():
+    model = SheetModel(("number", "slides", "stage", "stageText"))
+    row = {"number": 1, "slides": [], "stage": "scanning", "stageText": "Scanning"}
+    model.set_rows([row])
+    child = model.data(model.index(0), FIRST_ROLE + 1)
+    assert child.rowCount() == 4
+    reset = QSignalSpy(child.modelReset)
+    changed = QSignalSpy(child.dataChanged)
+    slides = [dict(child.data(child.index(i), FIRST_ROLE)) for i in range(4)]
+    slides[0].update(selected=True, focused=True, afterUrl="image://preview/1/1/after/2")
+    model.set_rows([{**row, "slides": slides, "stage": "review"}])
+    assert model.data(model.index(0), FIRST_ROLE + 1) is child
+    assert reset.count() == 0 and changed.count() == 1
+    assert child.data(child.index(0), FIRST_ROLE)["selected"]
+    assert model.get(0)["slides"] == slides
+
+
+def test_child_remains_available_during_tray_removal_notification():
+    model = SheetModel(("number", "slides"))
+    model.set_rows([{"number": 1, "slides": []}])
+    child = model.data(model.index(0), FIRST_ROLE + 1)
+    observed = []
+    model.rowsAboutToBeRemoved.connect(
+        lambda *_: observed.append(model.data(model.index(0), FIRST_ROLE + 1))
+    )
+    model.set_rows([])
+    assert observed == [child]
+    assert model.rowCount() == 0

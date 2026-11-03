@@ -199,6 +199,8 @@ def test_sidebar_filters_scroll_to_old_trays_and_keep_review_keys(sheet_window):
     store.update(lambda m: dataclasses.replace(m, trays=trays))
     bridge._controller._rebuild()
     _wait(bridge, lambda: bridge.sheet.rowCount() == 12)
+    assert _visual(root, "selectFlagged").property("text") == "Select flagged (1)"
+    assert _visual(root, "selectFailed").property("text") == "Select failed (1)"
     _tap(root, "selectFlagged")
     _wait(bridge, lambda: bridge.selection == [[1, 1]])
     sheet = _visual(root, "sheetView")
@@ -210,3 +212,115 @@ def test_sidebar_filters_scroll_to_old_trays_and_keep_review_keys(sheet_window):
     _wait(bridge, lambda: bridge.selection == [[2, 2]])
     assert bridge.selectionFocus == [2, 2]
     assert sheet.property("contentY") > 1000
+
+
+def test_slider_drag_commits_once_on_release_and_undo_restores_start(sheet_window):
+    bridge, root, store, _warnings = sheet_window
+    bridge.selectAll()
+    _wait(bridge, lambda: len(bridge.selection) == 8)
+    slider = _visual(root, "brightnessSlider")
+    start = slider.mapToScene(QPointF(slider.width() / 2, slider.height() / 2)).toPoint()
+    QTest.mousePress(root, Qt.MouseButton.LeftButton, pos=start)
+    for fraction in (0.6, 0.7, 0.8):
+        end = slider.mapToScene(QPointF(slider.width() * fraction, slider.height() / 2))
+        QTest.mouseMove(root, end.toPoint(), delay=30)
+        QCoreApplication.processEvents()
+        bridge.poll()
+    assert not bridge.undoLabel
+    assert all(s.settings.brightness_ev == 0 for t in store.snapshot().trays for s in t.slides)
+    QTest.mouseRelease(root, Qt.MouseButton.LeftButton, pos=end.toPoint())
+    _wait(bridge, lambda: bool(bridge.undoLabel))
+    assert len(bridge._controller._undo) == 1
+    assert all(s.settings.brightness_ev > 0 for t in store.snapshot().trays for s in t.slides)
+    bridge.undo()
+    _wait(bridge, lambda: not bridge.undoLabel)
+    assert all(s.settings.brightness_ev == 0 for t in store.snapshot().trays for s in t.slides)
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter])
+def test_bare_enter_does_not_dispatch_hardware_actions(sheet_window, monkeypatch, key):
+    from unittest.mock import Mock
+
+    bridge, root, _store, _warnings = sheet_window
+    _wait(bridge, lambda: bridge.canScan)
+    dispatch = Mock()
+    monkeypatch.setattr(bridge._controller, "scan", dispatch)
+    root.findChild(QQuickItem, "mainPage").forceActiveFocus()
+    QTest.keyClick(root, key)
+    QCoreApplication.processEvents()
+    dispatch.assert_not_called()
+    assert QMetaObject.invokeMethod(root.findChild(QObject, "primaryActionButton"), "click")
+    dispatch.assert_called_once_with()
+
+
+def test_mirror_checked_state_tracks_model_after_click_and_undo(sheet_window):
+    bridge, root, _store, _warnings = sheet_window
+    bridge.selectAll()
+    _wait(bridge, lambda: len(bridge.selection) == 8)
+    button = root.findChild(QObject, "mirrorSelection")
+    assert not button.property("checked")
+    assert QMetaObject.invokeMethod(button, "click")
+    _wait(bridge, lambda: bridge.selectionSummary["settings"]["mirror"] is True)
+    assert button.property("checked")
+    bridge.undo()
+    _wait(bridge, lambda: bridge.selectionSummary["settings"]["mirror"] is False)
+    assert not button.property("checked")
+
+
+def test_mirror_does_not_toggle_before_model_confirms_edit(sheet_window, monkeypatch):
+    from unittest.mock import Mock
+
+    bridge, root, _store, _warnings = sheet_window
+    bridge.selectAll()
+    _wait(bridge, lambda: len(bridge.selection) == 8)
+    dispatch = Mock()
+    monkeypatch.setattr(bridge._controller, "mirror_selection", dispatch)
+    button = root.findChild(QObject, "mirrorSelection")
+    assert QMetaObject.invokeMethod(button, "click")
+    dispatch.assert_called_once_with()
+    assert not button.property("checked")
+
+
+def test_slider_keyboard_arrow_commits_without_pointer_release(sheet_window):
+    bridge, root, store, _warnings = sheet_window
+    bridge.selectAll()
+    _wait(bridge, lambda: len(bridge.selection) == 8)
+    slider = _visual(root, "brightnessSlider")
+    slider.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key.Key_Right)
+    _wait(bridge, lambda: bool(bridge.undoLabel))
+    assert len(bridge._controller._undo) == 1
+    assert all(s.settings.brightness_ev > 0 for t in store.snapshot().trays for s in t.slides)
+
+
+def test_empty_failed_tray_header_enables_rescan_confirmation(sheet_window):
+    bridge, root, store, _warnings = sheet_window
+    store.update(lambda m: dataclasses.replace(m, trays=(TrayRecord(1, TrayStage.FAILED),)))
+    bridge._controller._rebuild()
+    _wait(bridge, lambda: bridge.sheet.rowCount() == 1 and bridge.canScan)
+    _tap(root, "sheetTray_1")
+    panel = root.findChild(QObject, "inspectorPanel")
+    _wait(bridge, lambda: panel.property("singleTray") == 1)
+    assert panel.property("count") == 0
+    button = root.findChild(QQuickItem, "rescanSelectionTray")
+    assert button.isEnabled()
+    _tap(root, "rescanSelectionTray")
+    dialog = root.findChild(QObject, "rescanSelectionDialog")
+    _wait(bridge, lambda: dialog.property("opened"))
+    assert "tray 1" in dialog.property("title")
+    assert "old scan is kept on disk" in dialog.property("subtitle")
+    assert QMetaObject.invokeMethod(dialog, "reject")
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Space, Qt.Key.Key_Return])
+def test_tray_header_keyboard_control_modifier_keeps_existing_selection(sheet_window, key):
+    bridge, root, _store, _warnings = sheet_window
+    _tap(root, "sheetTray_1")
+    _wait(bridge, lambda: bridge.selection == [[1, p] for p in range(1, 5)])
+    header = _visual(root, "sheetTray_2")
+    header.forceActiveFocus()
+    QTest.keyClick(root, key, Qt.KeyboardModifier.ControlModifier)
+    _wait(bridge, lambda: len(bridge.selection) == 8)
+    QTest.qWait(100)
+    bridge.poll()
+    assert bridge.selection == [[n, p] for n in (1, 2) for p in range(1, 5)]

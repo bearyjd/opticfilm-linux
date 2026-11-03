@@ -141,7 +141,7 @@ def selection_fields(manifest, selection: Selection) -> dict:
                     for slide in slides
                 )
             ),
-            tuple(sorted({number for number, _ in selection.keys}, reverse=True)),
+            tuple(sorted({number for number, _ in selection.keys} | selection.trays, reverse=True)),
         ),
     }
 

@@ -347,11 +347,11 @@ def test_preview_file_access_does_not_hold_controller_lock(sweep600_dir, tmp_pat
         original = c._preview_tokens
         checked = threading.Event()
 
-        def preview_tokens(session, manifest, selected):
+        def preview_tokens(session, manifest):
             assert c._lock.acquire(timeout=2), "preview file access ran under state lock"
             c._lock.release()
             checked.set()
-            return original(session, manifest, selected)
+            return original(session, manifest)
 
         monkeypatch.setattr(c, "_preview_tokens", preview_tokens)
         c._rebuild()

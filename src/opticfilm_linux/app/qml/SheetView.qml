@@ -26,12 +26,6 @@ ListView {
     boundsBehavior: Flickable.StopAtBounds
     QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
 
-    function placeholder(tray, position, text, busy) {
-        return {tray: tray, position: position, status: "pending", statusText: text,
-                flags: [], selected: false, focused: false, selectable: false,
-                beforeUrl: "", afterUrl: "", updating: busy};
-    }
-
     function scrollToFocus() {
         if (bridge.selectionFocus.length < 2)
             return;
@@ -72,20 +66,25 @@ ListView {
         spacing: Theme.spacingSmall
 
         QQC2.ItemDelegate {
+            id: header
+            function choose(modifiers) {
+                bridge.selectTray(row.number, modifiers);
+                sheet.reviewFocusRequested();
+            }
             objectName: "sheetTray_" + row.number
             Layout.fillWidth: true
             text: qsTr("Tray %1 · %2").arg(row.number).arg(row.stageText) + (row.elapsed ? " · " + row.elapsed : "")
-            onClicked: {
-                bridge.selectTray(row.number, headerMouse.modifiers);
-                sheet.reviewFocusRequested();
+            onClicked: choose(0)
+            Keys.onPressed: event => {
+                if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    choose(event.modifiers);
+                    event.accepted = true;
+                }
             }
             MouseArea {
-                id: headerMouse
-                property int modifiers: 0
                 anchors.fill: parent
                 onClicked: mouse => {
-                    bridge.selectTray(row.number, mouse.modifiers);
-                    sheet.reviewFocusRequested();
+                    header.choose(mouse.modifiers);
                 }
             }
         }
@@ -100,13 +99,13 @@ ListView {
             Layout.fillWidth: true
             spacing: Theme.spacingSmall
             Repeater {
-                model: row.slides.length ? row.slides : [1, 2, 3, 4].map(p => sheet.placeholder(row.number, p, row.stageText, row.stage === "scanning" || row.stage === "enhancing"))
+                model: row.slides
                 delegate: SlideThumb {
-                    required property var modelData
+                    required property var slideData
                     Layout.fillWidth: true
                     Layout.preferredWidth: 1
                     Layout.preferredHeight: Math.max(130, Math.min(200, sheet.width * 0.28))
-                    slide: modelData
+                    slide: slideData
                     onChosen: modifiers => {
                         bridge.selectSlide(slide.tray, slide.position, modifiers);
                         sheet.reviewFocusRequested();

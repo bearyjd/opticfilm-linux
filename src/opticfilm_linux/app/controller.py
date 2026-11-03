@@ -613,7 +613,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         manifest = session.store.snapshot() if session is not None else None
         with self._lock:
             selected = self._selected
-        tokens = self._preview_tokens(session, manifest, selected)
+        tokens = self._preview_tokens(session, manifest)
         raw_pending = self._raw_pending(session, manifest)
         raw_recoverable = self._recovery_checks.poll(
             session, manifest, raw_pending, self._raw_recoverable
@@ -624,11 +624,17 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             self._prune_selection(manifest)
             self._update_holder_status(session, status, sequence)
             self._publish_state(
-                session, manifest, selected, status, tokens, raw_pending, raw_recoverable
+                session=session,
+                manifest=manifest,
+                selected=selected,
+                status=status,
+                tokens=tokens,
+                raw_pending=raw_pending,
+                raw_recoverable=raw_recoverable,
             )
 
     def _publish_state(
-        self, session, manifest, selected, status, tokens, raw_pending, raw_recoverable
+        self, *, session, manifest, selected, status, tokens, raw_pending, raw_recoverable
     ):
         """Build an immutable snapshot while holding the lock; no storage access."""
         self._state = self._with_first_load(
@@ -676,6 +682,10 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         self._manifest = manifest
         self._selection_order = self._sheet_selection_order(manifest)
         self._selection = prune(self._selection, self._selection_order)
+        available = {tray.number for tray in manifest.trays} if manifest else set()
+        self._selection = dataclasses.replace(
+            self._selection, trays=self._selection.trays & available
+        )
 
     @staticmethod
     def _sheet_selection_order(manifest):
@@ -720,7 +730,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             self._save_holder_latch()
 
     @staticmethod
-    def _preview_tokens(session, manifest, selected) -> dict[tuple[int, int], int]:
+    def _preview_tokens(session, manifest) -> dict[tuple[int, int], int]:
         if session is None or manifest is None:
             return {}
         cache = getattr(session, "previews", None) or PreviewTokens()

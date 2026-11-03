@@ -140,3 +140,66 @@ def test_reexport_refuses_missing_destination_without_clearing_marks(selected, m
     wait_until(selected, lambda: selected.state().banner is not None)
     assert "folder" in selected.state().banner.message
     assert not exported.called
+
+
+def test_failed_empty_tray_can_be_selected_and_cleared(selected):
+    from opticfilm_linux.app.qt.sheet import filter_count, selection_summary
+
+    store = selected._session.store
+    store.update_tray(2, stage=TrayStage.FAILED, slides=(), error="scan failed")
+    wait_until(selected, lambda: not selected._manifest.trays[1].slides)
+    selected.select_tray_slides(2)
+    assert selected.state().selected == 2
+    assert selection_summary(selected.state())["trays"] == [2]
+    assert selected.state().selection_summary.count == 0
+    selected._rebuild()
+    assert selection_summary(selected.state())["trays"] == [2]
+    assert filter_count(selected.state(), "failed") == 1
+    selected.clear_selection()
+    assert selection_summary(selected.state())["trays"] == []
+    selected.select_where("failed")
+    assert selection_summary(selected.state())["trays"] == [2]
+    store.update(
+        lambda manifest: dataclasses.replace(
+            manifest, trays=tuple(tray for tray in manifest.trays if tray.number != 2)
+        )
+    )
+    selected._rebuild()
+    assert selection_summary(selected.state())["trays"] == []
+
+
+def test_toggle_accept_ignores_blank_freed_and_busy_slides(selected):
+    from opticfilm_linux.batch.model import SlideRecord
+
+    store = selected._session.store
+    selected.select_all()
+    store.update_tray(
+        1, slides=(SlideRecord(1, SlideStatus.ACCEPTED), SlideRecord(2, SlideStatus.BLANK))
+    )
+    store.update_tray(2, raw_removed=True)
+    store.update_tray(3, stage=TrayStage.SCANNING)
+    selected.toggle_selection_accepted()
+    selected._command.submit(lambda: None).result(5)
+    slides = _slides(selected)
+    assert slides[1, 1].status is SlideStatus.PENDING
+    assert slides[1, 2].status is SlideStatus.BLANK
+    assert slides[2, 1].status is SlideStatus.PENDING
+    assert slides[3, 1].status is SlideStatus.PENDING
+    wait_until(selected, lambda: selected.state().banner is not None)
+    assert "left unchanged" in selected.state().banner.message
+
+
+def test_additive_gestures_keep_explicit_tray_selection(selected):
+    selected._session.store.update_tray(2, stage=TrayStage.FAILED, slides=())
+    wait_until(selected, lambda: not selected._manifest.trays[1].slides)
+    selected.select_tray_slides(2)
+    selected.select_slide(1, 1, control=True)
+    assert selected.state().selection_summary.trays == (2, 1)
+    selected.select_tray_slides(3, additive=True)
+    assert selected.state().selection_summary.trays == (3, 2, 1)
+    selected.select_slide(1, 2, control=True, shift=True)
+    assert selected.state().selection_summary.trays == (3, 2, 1)
+    selected.select_tray_slides(1, additive=True, shift=True)
+    assert selected.state().selection_summary.trays == (3, 2, 1)
+    selected.select_slide(1, 1)
+    assert selected.state().selection_summary.trays == (1,)

@@ -53,6 +53,7 @@ QQC2.ScrollView {
             text: settingControl.label + ": " + (panel.mixed(settingControl.settingField) ? qsTr("mixed") : Number(panel.setting(settingControl.settingField, settingControl.fallback)).toFixed(1))
         }
         QQC2.Slider {
+            property bool pendingEdit: false
             objectName: settingControl.field + "Slider"
             Layout.fillWidth: true
             from: settingControl.minimum
@@ -60,7 +61,18 @@ QQC2.ScrollView {
             stepSize: 0.05
             value: panel.setting(settingControl.settingField, settingControl.fallback)
             Accessible.name: settingControl.label
-            onMoved: bridge.adjustSelection(settingControl.field, value)
+            onMoved: {
+                if (pressed)
+                    pendingEdit = true;
+                else
+                    bridge.adjustSelection(settingControl.field, value);
+            }
+            onPressedChanged: {
+                if (!pressed && pendingEdit) {
+                    pendingEdit = false;
+                    bridge.adjustSelection(settingControl.field, value);
+                }
+            }
         }
     }
 
@@ -196,7 +208,7 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "mirrorSelection"
                     text: qsTr("Mirror")
-                    checkable: true
+                    checkable: false
                     checked: panel.setting("mirror", false)
                     onClicked: bridge.mirrorSelection()
                 }
@@ -217,13 +229,15 @@ QQC2.ScrollView {
                 text: qsTr("Re-export selected")
                 onClicked: reexportDialog.open()
             }
-            QQC2.Button {
-                objectName: "rescanSelectionTray"
-                Layout.fillWidth: true
-                text: qsTr("Re-scan tray…")
-                enabled: panel.singleTray > 0 && bridge.canScan
-                onClicked: panel.rescanRequested()
-            }
+        }
+        QQC2.Button {
+            objectName: "rescanSelectionTray"
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            text: qsTr("Re-scan tray…")
+            enabled: panel.singleTray > 0 && bridge.canScan && !bridge.readonly
+            onClicked: panel.rescanRequested()
         }
         QQC2.Button {
             objectName: "undoSelection"

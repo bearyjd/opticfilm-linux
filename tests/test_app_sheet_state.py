@@ -33,7 +33,7 @@ def test_preview_tokens_include_unselected_trays(tmp_path):
     store.preview_path.side_effect = preview_path
     for number in (1, 2):
         preview_path(number, 1, "after").write_bytes(b"preview")
-    tokens = Controller._preview_tokens(SimpleNamespace(store=store), _manifest(), 1)
+    tokens = Controller._preview_tokens(SimpleNamespace(store=store), _manifest())
     assert {(1, 1), (2, 1)} <= tokens.keys()
 
 

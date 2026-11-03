@@ -13,17 +13,16 @@ pytest_plugins = ("test_app_auto",)
 
 
 def test_before_preview_uses_own_file_version(store):
-    tray = store.snapshot().trays[0]
     for kind, timestamp in (("before", 4_000_000), ("after", 8_000_000)):
         path = store.preview_path(1, 1, kind)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"preview")
         os.utime(path, ns=(timestamp, timestamp))
-    tokens = Controller._preview_tokens(SimpleNamespace(store=store), store.snapshot(), tray.number)
+    tokens = Controller._preview_tokens(SimpleNamespace(store=store), store.snapshot())
     assert tokens[(1, 1)] == 8_000_000
     assert tokens[(1, 1, "before")] == 4_000_000
     store.preview_path(1, 1, "after").unlink()
-    tokens = Controller._preview_tokens(SimpleNamespace(store=store), store.snapshot(), tray.number)
+    tokens = Controller._preview_tokens(SimpleNamespace(store=store), store.snapshot())
     assert tokens[(1, 1, "before")] == 4_000_000
     assert (1, 1) not in tokens
 

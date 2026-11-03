@@ -3,8 +3,9 @@
 from typing import Any
 
 from opticfilm_linux.app.messages import slide_status_text
+from opticfilm_linux.app.selection import failed_empty_trays, filter_matches
 from opticfilm_linux.app.state import AppState, SlideCard, TrayRow
-from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayStage
+from opticfilm_linux.batch.model import BatchDefaults, TrayStage
 
 DEFAULTS = BatchDefaults()
 
@@ -98,12 +99,6 @@ def selection_summary(state: AppState) -> dict:
 
 
 def filter_count(state: AppState, name: str) -> int:
-    return sum(
-        bool(card.flags) or card.status is SlideStatus.BLANK or card.position in tray.auto_flagged
-        if name == "flagged"
-        else card.position in tray.auto_failed
-        or tray.stage is TrayStage.FAILED
-        or (tray.auto == "failed" and not tray.auto_failed)
-        for tray in state.trays
-        for card in tray.slides
+    return sum(filter_matches(tray, card, name) for tray in state.trays for card in tray.slides) + (
+        len(failed_empty_trays(state.trays)) if name == "failed" else 0
     )

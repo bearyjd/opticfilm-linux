@@ -4,7 +4,6 @@ import dataclasses
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
 
 from opticfilm_linux.app import selection
 from opticfilm_linux.app.state import Banner, selection_fields
@@ -47,14 +46,26 @@ class SelectionCommands:
         with self._lock:
             order = self._selection_order
             if not any(key[0] == number for key in order):
-                return
-            anchor = self._selection.anchor
-            if shift and anchor in order:
+                if not self._manifest or not any(
+                    tray.number == number for tray in self._manifest.trays
+                ):
+                    return
+                trays = self._selection.trays | {number}
+                new = (
+                    dataclasses.replace(self._selection, trays=trays)
+                    if additive
+                    else selection.Selection(trays=frozenset({number}))
+                )
+            elif shift and self._selection.anchor in order:
+                anchor = self._selection.anchor
                 low, high = sorted((anchor[0], number))
                 keys = frozenset(key for key in order if low <= key[0] <= high)
                 focus = next(key for key in order if key[0] == number)
                 new = selection.Selection(
-                    keys | self._selection.keys if additive else keys, anchor, focus
+                    keys | self._selection.keys if additive else keys,
+                    anchor,
+                    focus,
+                    self._selection.trays if additive else frozenset(),
                 )
             else:
                 new = selection.select_tray(self._selection, number, order, additive)
@@ -67,26 +78,26 @@ class SelectionCommands:
         with self._lock:
             matches = self._filter_selection_keys(name)
             new = selection.select_where(self._selection_order, matches.__contains__)
-            self._publish_selection(new, new.focus[0] if new.focus else None)
+            empty = (
+                selection.failed_empty_trays(self._manifest.trays)
+                if name == "failed" and self._manifest
+                else frozenset()
+            )
+            new = dataclasses.replace(new, trays=empty)
+            self._publish_selection(new, new.focus[0] if new.focus else next(iter(empty), None))
         self._kick_refresh()
 
     def _filter_selection_keys(self, name):
-        matches = set()
-        for tray in self._manifest.trays if self._manifest else ():
-            for slide in tray.slides:
-                flagged = (
-                    bool(slide.flags)
-                    or slide.position in tray.auto_flagged
-                    or slide.status is SlideStatus.BLANK
-                )
-                failed = (
-                    slide.position in tray.auto_failed
-                    or tray.stage is TrayStage.FAILED
-                    or (tray.auto == "failed" and not tray.auto_failed)
-                )
-                if flagged if name == "flagged" else failed:
-                    matches.add((tray.number, slide.position))
-        return matches
+        return (
+            {
+                (tray.number, slide.position)
+                for tray in self._manifest.trays
+                for slide in tray.slides
+                if selection.filter_matches(tray, slide, name)
+            }
+            if self._manifest
+            else set()
+        )
 
     def move_focus(self, delta: int, extend: bool = False) -> None:
         with self._lock:
@@ -163,15 +174,7 @@ class SelectionCommands:
             return
 
         def job(runner):
-            slides = (
-                slide
-                for tray in runner._store.snapshot().trays
-                for slide in tray.slides
-                if (tray.number, slide.position) in keys
-            )
-            accepted = all(slide.status is SlideStatus.ACCEPTED for slide in slides)
-            status = SlideStatus.PENDING if accepted else SlideStatus.ACCEPTED
-            result = runner.edit_many(keys, status=status)
+            result = runner.toggle_many_accepted(keys)
             self._record_bulk_result(result, "Change acceptance")
             with self._lock:
                 self._auto_due.update(number for number, _ in result.before)
@@ -243,7 +246,7 @@ class SelectionCommands:
                 self._set(_banner=Banner("Choose an export folder before re-exporting."))
                 return
             chosen, skipped = self._reexport_keys(manifest, keys)
-            self._bulk_result(SimpleNamespace(skipped=skipped))
+            self._bulk_result(review.BulkEditResult(skipped, {}))
             if not chosen:
                 return
             clear_exported(store, chosen)

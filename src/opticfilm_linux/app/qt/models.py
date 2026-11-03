@@ -50,16 +50,59 @@ class DictListModel(QAbstractListModel):
                 self.dataChanged.emit(self.index(i), self.index(i))
 
 
+class SlideModel(DictListModel):
+    """One stable model per tray; updates preserve thumbnail delegates."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(("slideData",), parent)
+
+    def update(self, tray: dict[str, Any]) -> None:
+        slides = tray.get("slides", []) or [
+            {
+                "tray": tray["number"],
+                "position": position,
+                "status": "pending",
+                "statusText": tray.get("stageText", ""),
+                "flags": [],
+                "selected": False,
+                "focused": False,
+                "selectable": False,
+                "beforeUrl": "",
+                "afterUrl": "",
+                "updating": tray.get("stage") in ("scanning", "enhancing"),
+            }
+            for position in range(1, 5)
+        ]
+        self.set_rows([{"slideData": slide} for slide in slides])
+
+
 class SheetModel(DictListModel):
     """Keep tray identities stable as newer trays arrive at the top of the sheet."""
 
+    def __init__(self, keys: tuple[str, ...], parent=None) -> None:
+        super().__init__(keys, parent)
+        self._slides: dict[int, SlideModel] = {}
+
+    def data(self, index: Index, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if index.isValid() and 0 <= index.row() < len(self._rows):
+            if role - FIRST_ROLE == self._keys.index("slides"):
+                return self._slides[self._rows[index.row()]["number"]]
+        return super().data(index, role)
+
     def set_rows(self, rows: list[dict[str, Any]]) -> None:
         wanted = {row["number"] for row in rows}
+        for row in rows:
+            number = row["number"]
+            if number not in self._slides:
+                self._slides[number] = SlideModel(self)
+            self._slides[number].update(row)
         for index in range(len(self._rows) - 1, -1, -1):
             if self._rows[index]["number"] not in wanted:
                 self.beginRemoveRows(QModelIndex(), index, index)
+                number = self._rows[index]["number"]
                 del self._rows[index]
                 self.endRemoveRows()
+                self._slides.pop(number).deleteLater()
         existing = {row["number"] for row in self._rows}
         for index, row in enumerate(rows):
             current = (
@@ -90,10 +133,10 @@ class SheetModel(DictListModel):
         roles = [
             FIRST_ROLE + offset
             for offset, key in enumerate(self._keys)
-            if previous.get(key) != row.get(key)
+            if key != "slides" and previous.get(key) != row.get(key)
         ]
+        self._rows[index] = row
         if roles:
-            self._rows[index] = row
             self.dataChanged.emit(self.index(index), self.index(index), roles)
 
     @Slot(int, result=int)

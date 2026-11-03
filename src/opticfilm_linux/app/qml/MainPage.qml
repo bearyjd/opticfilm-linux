@@ -42,7 +42,6 @@ Kirigami.Page {
         else if (event.key === Qt.Key_Up) bridge.moveSelectionFocus(-4, shift);
         else if (event.key === Qt.Key_Down) bridge.moveSelectionFocus(4, shift);
         else if (event.key === Qt.Key_Escape) bridge.clearSelection();
-        else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) primaryAction();
         else if (bridge.readonly) return;
         else if (event.key === Qt.Key_Space) bridge.toggleSelectionAccepted();
         else if (event.key === Qt.Key_A) bridge.setSelectionStatus("accepted");
@@ -61,7 +60,7 @@ Kirigami.Page {
 
     ConfirmDialog {
         id: rescanDialog
-
+        objectName: "rescanSelectionDialog"
         title: qsTr("Re-scan tray %1?").arg(inspector.singleTray)
         subtitle: qsTr("The old scan is kept on disk, but this tray's slide settings and choices are reset and it is enhanced again.")
         onConfirmed: bridge.rescan(inspector.singleTray)
@@ -341,14 +340,14 @@ Kirigami.Page {
                     objectName: "selectFlagged"
                     Layout.fillWidth: true
                     Layout.margins: Theme.spacingSmall
-                    text: qsTr("Flagged (%1)").arg(bridge.flaggedCount)
+                    text: qsTr("Select flagged (%1)").arg(bridge.flaggedCount)
                     onClicked: { bridge.selectFlagged(); sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
                 }
                 PillButton {
                     objectName: "selectFailed"
                     Layout.fillWidth: true
                     Layout.margins: Theme.spacingSmall
-                    text: qsTr("Failed (%1)").arg(bridge.failedCount)
+                    text: qsTr("Select failed (%1)").arg(bridge.failedCount)
                     onClicked: { bridge.selectFailed(); sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
                 }
             }

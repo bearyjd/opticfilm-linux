@@ -158,14 +158,16 @@ def test_gestures_publish_the_state_immediately_without_waiting_for_a_tick(selec
     assert not selected.state().selection and selected.state().selection_summary.count == 0
 
 
-def test_select_tray_without_selectable_slides_keeps_tray_and_selection(selected):
+def test_select_tray_without_selectable_slides_selects_tray_only(selected):
     selected.select_slide(1, 1)
     selected._session.store.update_tray(2, stage=TrayStage.ENHANCING)
     wait_until(selected, lambda: (2, 1) not in selected._selection_order)
-    before = selected._selected
     selected.select_tray_slides(2)
     selected.select_tray_slides(9)
-    assert selected._selected == before and selected._selection.keys == {(1, 1)}
+    assert selected._selected == 2 and not selected._selection.keys
+    assert selected.state().selection_summary.trays == (2,)
+    selected._rebuild()
+    assert selected.state().selection_summary.trays == (2,)
 
 
 def test_rotate_and_mirror_are_one_atomic_store_update(selected, monkeypatch):

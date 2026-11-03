@@ -1,4 +1,4 @@
-"""Event-driven preview versions; file metadata is read only by status workers."""
+"""Event-invalidated preview versions; status workers stat newly discovered or dirty slides."""
 
 import threading
 
