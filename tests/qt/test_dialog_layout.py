@@ -232,3 +232,23 @@ def test_empty_preview_grid_reflows_with_available_width(popup_window):
     assert grid.property("columns") == 2
     assert dialog.property("loaded") == 8
     assert warnings == []
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_enlarged_empty_frame_dialog_fits_the_window(popup_window, size):
+    _, _, root, warnings = popup_window
+    open_dialog(root, "EmptyFrames", size)
+    zoom = root.findChild(QObject, "enlargedEmptyFrame")
+    assert QMetaObject.invokeMethod(zoom, "open")
+    for _ in range(100):
+        QTest.qWait(20)
+        if zoom.property("opened"):
+            break
+    assert zoom.property("opened")
+    window = QRectF(0, 0, root.width(), root.height())
+    rect = popup_rect(zoom)
+    assert_inside(rect, window)
+    assert rect.width() <= window.width() * 0.9 + 1
+    assert rect.height() <= window.height() * 0.9 + 1
+    QMetaObject.invokeMethod(zoom, "close")
+    assert warnings == []

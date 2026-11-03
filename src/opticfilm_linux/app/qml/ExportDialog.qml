@@ -151,14 +151,6 @@ Kirigami.Dialog {
             columns: footer.availableWidth >= reexportButton.implicitWidth + Math.max(startButton.implicitWidth, exportStateButton.implicitWidth) + columnSpacing ? 2 : 1
             columnSpacing: Theme.spacingSmall
             PillButton {
-                id: reexportButton
-                Layout.alignment: Qt.AlignRight
-                objectName: "reexportAllAccepted"
-                text: qsTr("Re-export all accepted")
-                visible: !bridge.exportRunning
-                onClicked: reexportConfirm.open()
-            }
-            PillButton {
                 id: startButton
                 visible: !bridge.hasExport
                 objectName: "startExport"
@@ -177,6 +169,15 @@ Kirigami.Dialog {
                 flat: true
                 icon.name: bridge.exportFinished ? "dialog-close" : "dialog-cancel"
                 onClicked: bridge.exportFinished ? dialog.close() : bridge.cancelExport()
+            }
+            PillButton {
+                id: reexportButton
+                Layout.alignment: Qt.AlignRight
+                flat: true
+                objectName: "reexportAllAccepted"
+                text: qsTr("Re-export all accepted")
+                visible: !bridge.exportRunning
+                onClicked: reexportConfirm.open()
             }
         }
     }
