@@ -11,6 +11,7 @@ pytestmark = pytest.mark.qt
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QMetaObject, QObject, QPointF, Qt, QUrl
+from PySide6.QtGui import QAccessible
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from shiboken6 import isValid
@@ -159,6 +160,84 @@ def test_inspector_preview_segments_and_tray_selection(sheet_window):
     _tap(root, "sheetTray_1", Qt.KeyboardModifier.ControlModifier)
     _wait(bridge, lambda: len(bridge.selection) == 8)
     assert panel.property("singleTray") == -1
+
+
+def test_select_all_keeps_inspector_and_queue_on_focused_tray(sheet_window):
+    bridge, root, store, _warnings = sheet_window
+    store.update(
+        lambda manifest: dataclasses.replace(
+            manifest,
+            trays=tuple(TrayRecord(n, TrayStage.REVIEW, slides=(SlideRecord(1),)) for n in (4, 5)),
+        )
+    )
+    bridge._controller._rebuild()
+    _wait(bridge, lambda: _visual(root, "slideThumb_4_1") is not None)
+    _tap(root, "slideThumb_4_1")
+    _wait(bridge, lambda: bridge.selectedTray == 4)
+    QTest.keyClick(root, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    _wait(bridge, lambda: bridge.selectionFocus == [5, 1])
+    assert bridge.selectedTray == 5
+    assert bridge.focusedSlide["tray"] == 5
+    card = root.findChild(QQuickItem, "inspectorPreviewCard")
+    content = card.property("contentItem")
+    assert content.x() == card.property("leftPadding")
+    assert content.y() == card.property("topPadding")
+    assert content.width() + content.x() <= card.width() - card.property("rightPadding")
+    assert content.height() + content.y() <= card.height() - card.property("bottomPadding")
+
+
+def test_rotate_buttons_are_legible_named_and_rotate_selection(sheet_window):
+    bridge, root, store, _warnings = sheet_window
+    _tap(root, "slideThumb_2_1")
+    _wait(bridge, lambda: bridge.selection == [[2, 1]])
+    for name, label, rotation in [
+        ("rotateSelectionLeft", "Rotate left", 270),
+        ("rotateSelectionRight", "Rotate right", 0),
+    ]:
+        button = root.findChild(QQuickItem, name)
+        assert button.property("font").pixelSize() >= 24
+        assert button.height() >= 44
+        accessible = QAccessible.queryAccessibleInterface(button)
+        assert accessible.text(QAccessible.Text.Name) == label
+        assert QMetaObject.invokeMethod(button, "click")
+        _wait(
+            bridge,
+            lambda expected=rotation: (
+                store.snapshot().trays[1].slides[0].settings.rotation == expected
+            ),
+        )
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_queue_error_tracks_theme_with_readable_contrast(sheet_window, selected):
+    bridge, root, store, _warnings = sheet_window
+    store.update_tray(2, error="Scanner disconnected")
+    bridge._controller._rebuild()
+    bridge.selectSlide(2 if selected else 1, 1, 0)
+    _wait(bridge, lambda: bridge.selectedTray == (2 if selected else 1))
+    queue = root.findChild(QQuickItem, "trayQueue")
+    _wait(bridge, lambda: _visual(queue, "trayError2") is not None)
+    error = _visual(queue, "trayError2")
+    for theme, expected, background in [
+        ("dark", "#ff9a9a", "#39465b" if selected else "#171b24"),
+        ("light", "#a8201a", "#dce4ef" if selected else "#f1f4f9"),
+    ]:
+        bridge.setTheme(theme)
+        QTest.qWait(50)
+        assert error.property("color").name() == expected
+        if selected:
+            row = error.parentItem().parentItem()
+            assert row.property("background").property("color").name() == background
+
+        def luminance(rgb):
+            channels = [int(rgb[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+            linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return sum(
+                c * weight for c, weight in zip(linear, (0.2126, 0.7152, 0.0722), strict=True)
+            )
+
+        values = sorted((luminance(expected), luminance(background)))
+        assert (values[1] + 0.05) / (values[0] + 0.05) >= 4.5
 
 
 def test_reexport_confirmation_can_cancel_and_dispatches_once(sheet_window, monkeypatch):

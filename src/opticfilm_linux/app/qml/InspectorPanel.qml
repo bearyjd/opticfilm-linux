@@ -96,6 +96,7 @@ QQC2.ScrollView {
             font.pixelSize: Theme.fontHeading
         }
         Card {
+            objectName: "inspectorPreviewCard"
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spacing
             Layout.rightMargin: Theme.spacing
@@ -196,13 +197,21 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "rotateSelectionLeft"
                     text: "↶"
+                    font.pixelSize: Theme.fontHeading + 4
+                    implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate left")
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.text: qsTr("Rotate left")
                     onClicked: bridge.rotateSelection(-1)
                 }
                 QQC2.Button {
                     objectName: "rotateSelectionRight"
                     text: "↷"
+                    font.pixelSize: Theme.fontHeading + 4
+                    implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate right")
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.text: qsTr("Rotate right")
                     onClicked: bridge.rotateSelection(1)
                 }
                 QQC2.Button {
