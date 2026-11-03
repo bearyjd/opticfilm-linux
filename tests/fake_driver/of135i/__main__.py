@@ -82,11 +82,13 @@ def _scan_body(args: argparse.Namespace) -> int:
         return 1
     if mode == "hang":  # a driver stuck mid-scan, with a helper child of its own
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        pids = os.environ.get("FAKE_DRIVER_PIDS")
-        if pids:
-            Path(pids).write_text(json.dumps([os.getpid(), child.pid]))
         print("scanning frame 1 ...", flush=True)
         try:
+            pids = os.environ.get("FAKE_DRIVER_PIDS")
+            if pids:  # published last and atomically: a reader may signal as soon as it sees it
+                tmp = Path(pids).with_name(Path(pids).name + ".tmp")
+                tmp.write_text(json.dumps([os.getpid(), child.pid]))
+                tmp.replace(pids)
             time.sleep(120)
         except KeyboardInterrupt:  # as the real driver: Ctrl-C fails closed and exits by itself
             print("ERROR of135i: interrupted; failing closed", flush=True)
