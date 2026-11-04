@@ -1,9 +1,4 @@
-"""Opt-in DPR/theme matrix plus a normal-tier system-font regression probe.
-
-The checked-in baseline records historical layout debt by object name, state,
-dimensions, theme, DPR and font. Remaining pane and toolbar work is PR5. Any
-additional occurrence fails normally.
-"""
+"""DPR/theme matrix and system-font probes require zero layout violations."""
 
 import json
 import os
@@ -12,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from responsive_matrix_baseline import BASELINE
 
 WORKER = Path(__file__).with_name("responsive_matrix_worker.py")
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,15 +53,13 @@ def matrix_run(tmp_path_factory, sweep600_dir):
     return run
 
 
-def assert_no_new_issues(result, dpr, font):
-    expected = BASELINE[f"{float(dpr):g}:{float(font):g}"]
-    failures = []
-    for case in result["cases"]:
-        baseline = expected[case["key"]]
-        for issue, count in case["issues"].items():
-            if count > baseline.get(issue, 0):
-                failures.append(f"{case['key']}: {issue} ({count} > {baseline.get(issue, 0)})")
-    assert not failures, "New layout regressions:\n" + "\n".join(failures)
+def assert_no_layout_issues(result):
+    failures = [
+        f"{case['key']}: {issue} ({count})"
+        for case in result["cases"]
+        for issue, count in case["issues"].items()
+    ]
+    assert not failures, "Layout violations:\n" + "\n".join(failures)
 
 
 def assert_readable(result, dpr):
@@ -86,7 +78,7 @@ def test_full_responsive_matrix(matrix_run, dpr, font):
     expected_cases = 36 if font != 1 else 162
     assert len(result["cases"]) == expected_cases
     assert_readable(result, dpr)
-    assert_no_new_issues(result, dpr, font)
+    assert_no_layout_issues(result)
 
 
 @pytest.mark.qt
@@ -94,7 +86,7 @@ def test_system_font_probe_remains_readable_without_new_overflow(matrix_run):
     for font in (1, 1.5):
         result = matrix_run(1, font, compact=True)
         assert_readable(result, 1)
-        assert_no_new_issues(result, 1, font)
+        assert_no_layout_issues(result)
 
 
 @pytest.mark.qt

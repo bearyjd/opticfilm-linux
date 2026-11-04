@@ -272,10 +272,23 @@ def test_the_batch_orientation_dialog_shows_the_current_orientation_and_applies(
 
 def _prop(root, name, prop):
     """Looked up each time: the page holding the toolbar may be rebuilt meanwhile."""
-    item = root.findChild(QQuickItem, name)
-    return (
-        None if item is None else (item.isVisible() if prop == "visible" else item.property(prop))
-    )
+    item = root.findChild(QObject, name)
+    if item is None:
+        return None
+    if prop == "visible" and isinstance(item, QQuickItem):
+        return item.isVisible()
+    return item.property(prop)
+
+
+def _trigger_action(engine, root, name):
+    from PySide6.QtQml import QQmlExpression
+
+    action = root.findChild(QObject, name)
+    assert action is not None and not isinstance(action, QQuickItem), name
+    assert action.property("visible") and action.property("enabled"), name
+    expression = QQmlExpression(engine.rootContext(), action, "trigger()")
+    expression.evaluate()
+    assert not expression.hasError(), expression.error().toString()
 
 
 def test_holder_buttons_follow_the_flags_on_a_ready_scanner(loaded, tmp_path):
@@ -287,6 +300,11 @@ def test_holder_buttons_follow_the_flags_on_a_ready_scanner(loaded, tmp_path):
     assert bridge.canEject and not bridge.canLoadNext and bridge.nextStripEnabled
     assert _prop(root, "loadNextButton", "enabled") is False
     assert _prop(root, "loadHelpButton", "visible") and not _prop(root, "loadHelpLink", "visible")
+    _trigger_action(engine, root, "loadHelpButton")
+    dialog = root.findChild(QObject, "loadHelpDialog")
+    _wait(bridge, lambda: dialog.property("opened"))
+    QMetaObject.invokeMethod(dialog, "close")
+    _wait(bridge, lambda: not dialog.property("opened"))
     _click(root, "ejectButton")
     _wait(bridge, lambda: bridge.canEject)
     assert not bridge.hasBanner and warnings == []
@@ -328,7 +346,7 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         _wait(bridge, lambda: _prop(root, "loadHelpLink", "visible"))
         _wait(bridge, lambda: "not loaded" in (_prop(root, "scannerStatusText", "text") or ""))
         assert _prop(root, "scannerStatusText", "truncated") is False
-        for name in ("loadHelpLink", "ejectButton", "loadNextButton", "loadHelpButton"):
+        for name in ("loadHelpLink", "ejectButton", "loadNextButton"):
             item = root.findChild(QQuickItem, name)
             assert item.width() >= item.implicitWidth() - 0.5, name
         _click(root, "loadNextButton")
@@ -336,7 +354,7 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         _wait(bridge, lambda: _prop(root, "ejectButton", "enabled") is True)
         _click(root, "ejectButton")
         _wait(bridge, lambda: calls == ["load", "eject"])
-        _click(root, "loadHelpLink")
+        _trigger_action(engine, root, "loadHelpButton")
         dialog = root.findChild(QObject, "loadHelpDialog")
         _wait(bridge, lambda: dialog.property("opened"))
         field = root.findChild(QObject, "loadCommandField")

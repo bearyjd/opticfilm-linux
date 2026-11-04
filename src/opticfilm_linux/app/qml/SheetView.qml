@@ -7,6 +7,11 @@ ListView {
     objectName: "sheetView"
     signal reviewFocusRequested()
     property string lastFocus: ""
+    readonly property real availableCellWidth: Math.max(0, width - 2 * Theme.spacing)
+    readonly property int columns: availableCellWidth >= 4 * Theme.minCell + 3 * Theme.spacingSmall ? 4 : 2
+    readonly property real cellWidth: Math.min(Theme.maxCell, Math.max(0, (availableCellWidth - (columns - 1) * Theme.spacingSmall) / columns))
+    readonly property real captionHeight: Theme.fontBody + 3 * Theme.spacingSmall
+    readonly property real cellHeight: cellWidth / 1.5 + captionHeight
     Connections {
         target: bridge
         function onChanged() {
@@ -95,17 +100,21 @@ ListView {
             color: Theme.text
             wrapMode: Text.Wrap
         }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingSmall
+        GridLayout {
+            Layout.alignment: Qt.AlignLeft
+            columns: sheet.columns
+            columnSpacing: Theme.spacingSmall
+            rowSpacing: Theme.spacingSmall
             Repeater {
                 model: row.slides
                 delegate: SlideThumb {
                     required property var slideData
-                    implicitHeight: Theme.gu * 170 / 18
-                    Layout.fillWidth: true
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: Math.max(Theme.gu * 130 / 18, Math.min(Theme.gu * 200 / 18, sheet.width * 0.28))
+                    Layout.preferredWidth: sheet.cellWidth
+                    Layout.minimumWidth: sheet.cellWidth
+                    Layout.maximumWidth: sheet.cellWidth
+                    Layout.preferredHeight: sheet.cellHeight
+                    Layout.minimumHeight: sheet.cellHeight
+                    Layout.maximumHeight: sheet.cellHeight
                     slide: slideData
                     onChosen: modifiers => {
                         bridge.selectSlide(slide.tray, slide.position, modifiers);

@@ -41,6 +41,22 @@ QtObject {
     readonly property real paneMax: 15 * gu
     readonly property real inspectorMin: 16 * gu
     readonly property real inspectorMax: 22 * gu
+    // Responsive breakpoints: width classes (compact / medium / expanded) and the short-height class.
+    readonly property real compactMax: 50 * gu
+    readonly property real expandedMin: 68 * gu
+    readonly property real shortMax: 45 * gu
+    // Docked pane widths are these fractions of the page width, clamped by pane/inspector Min/Max.
+    readonly property real paneFraction: 0.16
+    readonly property real inspectorFraction: 0.25
+    // Modal side drawers and centred popups never exceed this share of the window.
+    readonly property real overlayFraction: 0.9
+    readonly property real drawerMax: 22 * gu
+    readonly property real popupMax: 32 * gu
+
+    // Width of a side drawer hosting a review pane inside a page of the given width.
+    function drawerWidth(pageWidth: real): real {
+        return Math.min(drawerMax, overlayFraction * pageWidth);
+    }
 
     function reviewMin(height: real): real {
         return Math.max(17 * gu, 0.5 * height);
