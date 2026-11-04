@@ -222,6 +222,13 @@ def rig(tmp_path: Path):
             stderr=subprocess.STDOUT,
             text=True,
             env={**env, **extra},
+            # An ignored signal is inherited across exec and bash cannot trap it, so the signal
+            # tests would depend on how pytest itself was launched (nohup and some CI wrappers
+            # ignore SIGHUP; background shells ignore SIGINT). Give the script default dispositions.
+            preexec_fn=lambda: [
+                signal.signal(s, signal.SIG_DFL)
+                for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+            ],
         )
 
     return SimpleNamespace(
