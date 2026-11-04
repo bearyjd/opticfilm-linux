@@ -17,6 +17,7 @@ Kirigami.ScrollablePage {
         color: Theme.window
     }
     padding: Theme.spacing
+    verticalScrollBarPolicy: QQC2.ScrollBar.AlwaysOn
 
     title: qsTr("OpticFilm Linux")
     FolderDialog {

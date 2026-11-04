@@ -17,6 +17,9 @@ QtObject {
     readonly property color line: dark ? "#4b5d78" : "#acbbcf"
     readonly property color warn: dark ? "#f2c14e" : "#8a5a00"
     readonly property color error: dark ? "#ff9a9a" : "#a8201a"
+    readonly property color danger: error
+    readonly property color pressedDanger: dark ? "#ffb6b6" : "#861914"
+    readonly property color dangerText: dark ? "#43130f" : "#ffffff"
     readonly property color track: dark ? "#39465b" : "#dce4ef"
 
     readonly property FontMetrics applicationFontMetrics: FontMetrics {
@@ -48,6 +51,7 @@ QtObject {
     // Docked pane widths are these fractions of the page width, clamped by pane/inspector Min/Max.
     readonly property real paneFraction: 0.16
     readonly property real inspectorFraction: 0.25
+    readonly property real inspectorPreviewFraction: 0.3
     // Modal side drawers and centred popups never exceed this share of the window.
     readonly property real overlayFraction: 0.9
     readonly property real drawerMax: 22 * gu

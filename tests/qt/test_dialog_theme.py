@@ -80,7 +80,9 @@ def test_dialog_surfaces_and_buttons_follow_live_theme(dialogs, name):
         for button in buttons:
             assert button.property("implicitHeight") == metrics["controlHeight"]
             if button.isEnabled() and not button.property("flat"):
-                assert button.property("background").property("color").name() == accent
+                danger = "#ff9a9a" if theme == "dark" else "#a8201a"
+                expected = danger if button.property("danger") else accent
+                assert button.property("background").property("color").name() == expected
     QMetaObject.invokeMethod(dialog, "close")
     assert warnings == []
 

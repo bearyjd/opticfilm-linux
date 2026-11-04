@@ -67,13 +67,14 @@ QQC2.Frame {
                 enabled: bridge.canFirstLoad
                 onClicked: bridge.firstLoad()
             }
-            QQC2.Button {
+            PillButton {
                 objectName: "firstLoadDoneButton"
                 text: qsTr("Done")
                 visible: bridge.loadPhase === "await_reinsert"
                 onClicked: bridge.firstLoadDone()
             }
-            QQC2.Button {
+            PillButton {
+                flat: true
                 objectName: "firstLoadCancelButton"
                 text: qsTr("Cancel")
                 visible: card.active

@@ -66,8 +66,7 @@ ListView {
         required property string error
         required property string auto
         required property var slides
-        width: sheet.width - Theme.spacing * 2
-        x: Theme.spacing
+        width: sheet.width
         spacing: Theme.spacingSmall
 
         QQC2.ItemDelegate {
@@ -78,6 +77,8 @@ ListView {
             }
             objectName: "sheetTray_" + row.number
             Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
             text: qsTr("Tray %1 · %2").arg(row.number).arg(row.stageText) + (row.elapsed ? " · " + row.elapsed : "")
             onClicked: choose(0)
             Keys.onPressed: event => {
@@ -95,13 +96,15 @@ ListView {
         }
         QQC2.Label {
             Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
             visible: row.error !== ""
             text: row.error
             color: Theme.text
             wrapMode: Text.Wrap
         }
         GridLayout {
-            Layout.alignment: Qt.AlignLeft
+            Layout.alignment: Qt.AlignHCenter
             columns: sheet.columns
             columnSpacing: Theme.spacingSmall
             rowSpacing: Theme.spacingSmall
@@ -124,6 +127,8 @@ ListView {
             }
         }
         QQC2.Label {
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
             visible: row.auto !== ""
             Layout.fillWidth: true
             text: row.auto

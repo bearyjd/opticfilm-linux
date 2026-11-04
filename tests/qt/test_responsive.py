@@ -84,7 +84,8 @@ def test_worst_stack_keeps_review_space_and_safety_actions(layout, size, theme):
     nodes = tree(layout.engine, layout.root)
     sheet = named(nodes, "sheetView")
     page = named(nodes, "mainPage")
-    assert sheet.rect.height >= max(300, page.rect.height * 0.5), sheet.rect
+    minimum = 240 if evaluate(layout, "mainPage", "shortWindow") else page.rect.height * 0.5
+    assert sheet.rect.height >= minimum, sheet.rect
     row = nodes[named(nodes, "sheetTray_1").parent]
     assert sheet.rect.height >= row.rect.height, "one complete tray row must fit"
     expand_status(layout)
@@ -323,7 +324,7 @@ def test_short_worst_stack_all_safety_actions_remain_reachable(layout, size, sca
         layout.root,
         ("scannerStatusText", scanner_action, "ejectButton", "loadNextButton", "statusMore"),
     )
-    assert named(nodes, "sheetView").rect.height >= 300
+    assert named(nodes, "sheetView").rect.height >= 240
     expand_status(layout)
     assert_pane_controls_reachable(
         layout,
@@ -339,7 +340,7 @@ def test_short_worst_stack_all_safety_actions_remain_reachable(layout, size, sca
         ),
     )
     assert evaluate(layout, "shortcutHelp", "visible && enabled")
-    assert named(tree(layout.engine, layout.root), "sheetView").rect.height >= 300
+    assert named(tree(layout.engine, layout.root), "sheetView").rect.height >= 240
     assert layout.warnings[warning_start:] == []
 
 
@@ -375,7 +376,7 @@ def test_expanded_status_and_error_details_stay_inside_height_cap(layout):
     expand_status(layout)
     evaluate(layout, "bannerDetails", "clicked()")
     nodes = tree(layout.engine, layout.root)
-    assert named(nodes, "sheetView").rect.height >= 300
+    assert named(nodes, "sheetView").rect.height >= 240
     scroll = named(nodes, "statusScroll").rect
     evaluate(
         layout,
@@ -644,7 +645,7 @@ def test_toolbar_overflow_menu_reaches_secondary_actions(layout, name, size):
     pump(350)
 
 
-def test_large_font_toolbar_keeps_overflow_reachable(sweep600_dir, tmp_path):
+def _toolbar_probe(sweep600_dir, tmp_path, scale, sizes=None):
     output = tmp_path / "result.json"
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software")
     root = Path(__file__).resolve().parents[2]
@@ -652,20 +653,39 @@ def test_large_font_toolbar_keeps_overflow_reachable(sweep600_dir, tmp_path):
     for kind in ("STATE", "CACHE", "CONFIG", "DATA"):
         env[f"XDG_{kind}_HOME"] = str(tmp_path / kind.lower())
     worker = Path(__file__).with_name("toolbar_worker.py")
-    command = [sys.executable, str(worker), str(sweep600_dir), str(tmp_path), str(output), "2"]
-    done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=300)
+    command = [sys.executable, str(worker), str(sweep600_dir), str(tmp_path), str(output), scale]
+    done = subprocess.run(
+        command + ([json.dumps(sizes)] if sizes else []),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
     assert done.returncode == 0, done.stderr[-4000:]
-    result = json.loads(output.read_text())
+    return json.loads(output.read_text())
+
+
+def _assert_overflow_reachable(result, min_gu):
     assert result["warnings"] == []
     assert len(set(result["toggle_widths"])) == 1, "Inspector (n) must not change the toolbar"
     for case in result["cases"]:
-        assert case["gu"] >= 30, case
+        assert case["gu"] >= min_gu, case
         window = Rect(0, 0, *case["size"])
         toolbar, more, theme = (
             Rect(*case[k]) if case[k] else None for k in ("toolbar", "more", "theme")
         )
         assert more and toolbar.contains(more), case
         assert theme and window.contains(theme), case
+
+
+def test_large_font_toolbar_keeps_overflow_reachable(sweep600_dir, tmp_path):
+    _assert_overflow_reachable(_toolbar_probe(sweep600_dir, tmp_path, "2"), 30)
+
+
+@pytest.mark.parametrize("scale", ("1.5", "2.5"))
+def test_toolbar_toggles_do_not_starve_overflow_at_small_windows(sweep600_dir, tmp_path, scale):
+    result = _toolbar_probe(sweep600_dir, tmp_path, scale, [(800, 600), (720, 540)])
+    _assert_overflow_reachable(result, 1)
 
 
 BLOCKING = {

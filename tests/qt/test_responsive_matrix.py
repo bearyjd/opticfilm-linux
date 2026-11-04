@@ -10,44 +10,51 @@ import pytest
 
 WORKER = Path(__file__).with_name("responsive_matrix_worker.py")
 ROOT = Path(__file__).resolve().parents[2]
+SIZES = (
+    (800, 600),
+    (1024, 600),
+    (1024, 768),
+    (1280, 720),
+    (1366, 768),
+    (1440, 900),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+)
+FONT_SIZES = ((1024, 600), (1366, 768))
+
+
+def run_worker(sweep, directory, dpr, font, compact, size):
+    output = directory / "result.json"
+    env = dict(
+        os.environ,
+        QT_SCALE_FACTOR=str(dpr),
+        QT_QPA_PLATFORM="offscreen",
+        QT_QUICK_BACKEND="software",
+        PYTHONDONTWRITEBYTECODE="1",
+    )
+    env["PYTHONPATH"] = os.pathsep.join(str(ROOT / part) for part in ("src", "tests", "tests/qt"))
+    for kind in ("STATE", "CACHE", "CONFIG", "DATA"):
+        env[f"XDG_{kind}_HOME"] = str(directory / kind.lower())
+    command = [sys.executable, str(WORKER), str(sweep), str(directory), str(output), str(font)]
+    if compact:
+        command.append("--compact")
+    if size:
+        command.extend(("--size", f"{size[0]}x{size[1]}"))
+    completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=300)
+    assert completed.returncode == 0, completed.stderr[-6000:]
+    return json.loads(output.read_text())
 
 
 @pytest.fixture(scope="module")
 def matrix_run(tmp_path_factory, sweep600_dir):
     cache = {}
 
-    def run(dpr, font, compact=False):
-        key = (str(dpr), str(font), compact)
+    def run(dpr, font, compact=False, size=None):
+        key = (str(dpr), str(font), compact, size)
         if key not in cache:
             directory = tmp_path_factory.mktemp("matrix")
-            output = directory / "result.json"
-            env = dict(
-                os.environ,
-                QT_SCALE_FACTOR=str(dpr),
-                QT_QPA_PLATFORM="offscreen",
-                QT_QUICK_BACKEND="software",
-                PYTHONDONTWRITEBYTECODE="1",
-            )
-            env["PYTHONPATH"] = os.pathsep.join(
-                str(ROOT / part) for part in ("src", "tests", "tests/qt")
-            )
-            for kind in ("STATE", "CACHE", "CONFIG", "DATA"):
-                env[f"XDG_{kind}_HOME"] = str(directory / kind.lower())
-            command = [
-                sys.executable,
-                str(WORKER),
-                str(sweep600_dir),
-                str(directory),
-                str(output),
-                str(font),
-            ]
-            if compact:
-                command.append("--compact")
-            completed = subprocess.run(
-                command, env=env, capture_output=True, text=True, timeout=300
-            )
-            assert completed.returncode == 0, completed.stderr[-6000:]
-            cache[key] = json.loads(output.read_text())
+            cache[key] = run_worker(sweep600_dir, directory, dpr, font, compact, size)
         return cache[key]
 
     return run
@@ -72,11 +79,16 @@ def assert_readable(result, dpr):
 
 
 @pytest.mark.qt_matrix
-@pytest.mark.parametrize("dpr,font", ((1, 1), (1.5, 1), (2, 1), (1, 1.5)))
-def test_full_responsive_matrix(matrix_run, dpr, font):
-    result = matrix_run(dpr, font)
-    expected_cases = 36 if font != 1 else 162
-    assert len(result["cases"]) == expected_cases
+@pytest.mark.parametrize(
+    "dpr,font,size",
+    [(dpr, 1, size) for dpr in (1, 1.5, 2) for size in SIZES]
+    + [(1, 1.5, size) for size in FONT_SIZES],
+    ids=lambda value: f"{value[0]}x{value[1]}" if isinstance(value, tuple) else str(value),
+)
+def test_full_responsive_matrix(matrix_run, dpr, font, size):
+    result = matrix_run(dpr, font, size=size)
+    assert len(result["cases"]) == 18
+    assert all(case["size"] == list(size) for case in result["cases"])
     assert_readable(result, dpr)
     assert_no_layout_issues(result)
 

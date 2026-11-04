@@ -86,6 +86,24 @@ QQC2.ScrollView {
             color: Theme.text
             font.pixelSize: Theme.fontHeading
         }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            enabled: panel.count > 0 && !bridge.readonly
+            PillButton {
+                objectName: "acceptSelection"
+                Layout.fillWidth: true
+                implicitWidth: 5.5 * Theme.gu
+                text: qsTr("Accept")
+                onClicked: bridge.setSelectionAccepted(true)
+            }
+            QQC2.Button {
+                objectName: "unacceptSelection"
+                text: qsTr("Unaccept")
+                onClicked: bridge.setSelectionAccepted(false)
+            }
+        }
         Card {
             objectName: "inspectorPreviewCard"
             Layout.fillWidth: true
@@ -100,7 +118,8 @@ QQC2.ScrollView {
                 }
                 Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.max(Theme.minCell, panel.width * 0.7)
+                    Layout.preferredHeight: Math.max(Theme.minCell * 0.5, Math.min(panel.width * 0.7, panel.height * Theme.inspectorPreviewFraction))
+                    Layout.maximumHeight: Math.max(Theme.minCell * 0.5, panel.height * Theme.inspectorPreviewFraction)
                     Image {
                         objectName: "inspectorPreview"
                         anchors.fill: parent
@@ -157,21 +176,6 @@ QQC2.ScrollView {
             Layout.rightMargin: Theme.spacing
             enabled: panel.count > 0 && !bridge.readonly
             spacing: Theme.spacingSmall
-            RowLayout {
-                Layout.fillWidth: true
-                PillButton {
-                    objectName: "acceptSelection"
-                    Layout.fillWidth: true
-                    implicitWidth: 5.5 * Theme.gu
-                    text: qsTr("Accept")
-                    onClicked: bridge.setSelectionAccepted(true)
-                }
-                QQC2.Button {
-                    objectName: "unacceptSelection"
-                    text: qsTr("Unaccept")
-                    onClicked: bridge.setSelectionAccepted(false)
-                }
-            }
             RowLayout {
                 QQC2.Button {
                     objectName: "rejectSelection"

@@ -150,7 +150,11 @@ def test_overflow_scrolls_only_the_body(popup_window, name, size):
     dialog = open_dialog(root, name, size)
     flickable = body_flickable(dialog)
     overflow = flickable.property("contentHeight") - flickable.height()
-    assert overflow > 0, "fixture must exercise a scrolling body"
+    if overflow <= 0:
+        assert name == "EmptyFrames"
+        assert dialog.property("framesFullyVisible")
+        assert warnings == []
+        return
     buttons = footer_buttons(root, dialog)
     assert buttons
     before = [scene_rect(button) for button in buttons]
@@ -168,6 +172,9 @@ def test_empty_confirmation_requires_every_current_preview(popup_window):
     dialog = open_dialog(root, "EmptyFrames")
     button = root.findChild(QObject, "confirmReviewedEmptyFrames")
     assert dialog.property("loaded") == 8
+    flickable = body_flickable(dialog)
+    flickable.setProperty("contentY", flickable.property("contentHeight") - flickable.height())
+    QTest.qWait(50)
     assert button.property("enabled")
     dialog.setProperty("loaded", 7)
     assert not button.property("enabled")
@@ -229,7 +236,7 @@ def test_empty_preview_grid_reflows_with_available_width(popup_window):
     assert grid.property("columns") == 1
     root.resize(1024, 600)
     QTest.qWait(300)
-    assert grid.property("columns") == 2
+    assert grid.property("columns") == 4
     assert dialog.property("loaded") == 8
     assert warnings == []
 

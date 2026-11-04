@@ -39,6 +39,7 @@ Kirigami.PromptDialog {
         value: Theme.card
     }
 
+    property bool destructive: false
     signal confirmed
     standardButtons: Kirigami.Dialog.Yes | Kirigami.Dialog.Cancel
     onAccepted: confirmed()
@@ -57,12 +58,14 @@ Kirigami.PromptDialog {
     footer: QQC2.DialogButtonBox {
         id: buttonBox
         standardButtons: dialog.standardButtons
+        buttonLayout: QQC2.DialogButtonBox.GnomeLayout
         padding: Theme.spacing
         spacing: Theme.spacingSmall
         background: Item {}
         delegate: PillButton {
             readonly property bool rejecting: QQC2.DialogButtonBox.buttonRole === QQC2.DialogButtonBox.RejectRole
             flat: rejecting
+            danger: dialog.destructive && !rejecting
             highlighted: !rejecting
             icon.name: rejecting ? "dialog-cancel" : "dialog-ok"
         }
