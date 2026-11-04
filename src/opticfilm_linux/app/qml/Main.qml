@@ -75,7 +75,7 @@ Kirigami.ApplicationWindow {
         SegmentedControl {
             id: themeToggle
             objectName: "themeToggle"
-            parent: bridge.hasBatch && pageLoader.item && pageLoader.item.shortWindow ? pageLoader.item.compactThemeHost : themeFooter
+            parent: themeFooter
             anchors.right: parent.right
             anchors.rightMargin: parent === themeFooter ? Theme.spacing : 0
             anchors.verticalCenter: parent.verticalCenter

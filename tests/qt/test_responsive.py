@@ -1,4 +1,4 @@
-"""Small-screen layout contract; strict expected failures track later PRs."""
+"""Small-screen layout, adaptive pane, and keyboard contracts."""
 
 import json
 import os
@@ -12,7 +12,7 @@ pytest.importorskip("PySide6")
 
 from dataclasses import replace
 
-from layout_fixture import create_layout, pump, worst_stack
+from layout_fixture import LayoutDialog, create_layout, pump, worst_stack
 from layout_probe import (
     Rect,
     assert_reachable,
@@ -22,8 +22,8 @@ from layout_probe import (
     thumb_caption_violations,
     tree,
 )
-from PySide6.QtCore import Qt
-from PySide6.QtQml import QQmlExpression
+from PySide6.QtCore import QObject, QPoint, Qt
+from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -33,9 +33,6 @@ from opticfilm_linux.scanner.base import ScannerStatus
 SIZES = ((800, 600), (1024, 600), (1280, 800), (1920, 1080), (720, 540))
 CASES = tuple(pytest.param(size, "dark", id=f"{size[0]}x{size[1]}-dark") for size in SIZES) + (
     pytest.param((800, 600), "light", id="800x600-light"),
-)
-PANES_PENDING = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="PR5: adaptive panes and toolbar overflow"
 )
 
 
@@ -50,25 +47,12 @@ def assert_clear(issues):
     assert not issues, "\n".join(f"{i.kind}: {i.item} {i.text!r} {i.rect}" for i in issues)
 
 
-@pytest.mark.parametrize(
-    "size,theme",
-    tuple(
-        pytest.param(
-            size,
-            theme,
-            marks=PANES_PENDING if size[0] < 1280 else (),
-            id=f"{size[0]}x{size[1]}-{theme}",
-        )
-        for size, theme in ((s, "dark") for s in SIZES)
-    )
-    + (pytest.param((800, 600), "light", marks=PANES_PENDING, id="800x600-light"),),
-)
+@pytest.mark.parametrize("size,theme", CASES)
 def test_contact_sheet_controls_are_reachable(layout, size, theme):
     layout.apply(size=size, theme=theme)
     nodes = tree(layout.engine, layout.root)
-    assert_reachable(
-        nodes,
-        layout.root,
+    assert_pane_controls_reachable(
+        layout,
         (
             "primaryActionButton",
             "ejectButton",
@@ -98,12 +82,11 @@ def test_worst_stack_keeps_review_space_and_safety_actions(layout, size, theme):
     sheet = named(nodes, "sheetView")
     page = named(nodes, "mainPage")
     assert sheet.rect.height >= max(300, page.rect.height * 0.5), sheet.rect
-    row = named(nodes, "sheetTray_1")
+    row = nodes[named(nodes, "sheetTray_1").parent]
     assert sheet.rect.height >= row.rect.height, "one complete tray row must fit"
     expand_status(layout)
-    assert_reachable(
-        tree(layout.engine, layout.root),
-        layout.root,
+    assert_pane_controls_reachable(
+        layout,
         (
             "freeHeldRaw",
             "confirmHolderLatched",
@@ -187,13 +170,60 @@ def test_state_specific_safety_actions_are_reachable(layout, state, names):
 
 
 def evaluate(layout, name, script):
-    item = layout.root.findChild(QQuickItem, name)
+    item = layout.root.findChild(QObject, name)
     assert item is not None, name
-    expression = QQmlExpression(layout.engine.rootContext(), item, script)
+    expression = QQmlExpression(QQmlEngine.contextForObject(item), item, script)
     value, _undefined = expression.evaluate()
     assert not expression.hasError(), expression.error().toString()
     pump(50)
     return value
+
+
+def drawer(layout, side):
+    return LayoutDialog(layout.engine, layout.root, side + "Drawer")
+
+
+def open_drawer(layout, side):
+    assert_reachable(tree(layout.engine, layout.root), layout.root, (side + "DrawerToggle",))
+    evaluate(layout, side + "DrawerToggle", "clicked()")
+    pump(350)
+    popup = drawer(layout, side)
+    assert popup.property("opened"), side
+    return popup
+
+
+def close_drawer(layout, popup):
+    popup.invoke("close")
+    pump(350)
+    assert not popup.property("opened")
+
+
+def assert_pane_controls_reachable(layout, names):
+    groups = {
+        "tray": {"selectFlagged", "selectFailed"},
+        "inspector": {"acceptSelection", "reexportSelection", "undoSelection"},
+    }
+    nodes = tree(layout.engine, layout.root)
+    present = {node.name for node in nodes}
+    direct = tuple(name for name in names if name in present)
+    assert_reachable(nodes, layout.root, direct)
+    missing = set(names) - set(direct)
+    if "themeToggle" in missing:
+        assert evaluate(layout, "themeAction", "visible && enabled")
+        missing.remove("themeToggle")
+    for side, controls in groups.items():
+        wanted = missing & controls
+        if not wanted:
+            continue
+        popup = open_drawer(layout, side)
+        try:
+            nodes = tree(layout.engine, layout.root, popup)
+            assert_reachable(nodes, layout.root, wanted)
+            assert_clear(detect(layout.engine, layout.root, popup, nodes))
+            missing -= wanted
+        finally:
+            close_drawer(layout, popup)
+    assert not missing, missing
 
 
 def expand_status(layout):
@@ -292,9 +322,8 @@ def test_short_worst_stack_all_safety_actions_remain_reachable(layout, size, sca
     )
     assert named(nodes, "sheetView").rect.height >= 300
     expand_status(layout)
-    assert_reachable(
-        tree(layout.engine, layout.root),
-        layout.root,
+    assert_pane_controls_reachable(
+        layout,
         (
             "freeHeldRaw",
             "confirmEmptyFrames",
@@ -304,9 +333,9 @@ def test_short_worst_stack_all_safety_actions_remain_reachable(layout, size, sca
             "bannerDetails",
             "bannerDismiss",
             "themeToggle",
-            "shortcutHelp",
         ),
     )
+    assert evaluate(layout, "shortcutHelp", "visible && enabled")
     assert named(tree(layout.engine, layout.root), "sheetView").rect.height >= 300
     assert layout.warnings[warning_start:] == []
 
@@ -360,9 +389,10 @@ def test_short_theme_and_shortcuts_keep_keyboard_navigation(layout, monkeypatch)
     layout.apply(size=(800, 600))
     collapse_status(layout)
     nodes = tree(layout.engine, layout.root)
-    assert_reachable(nodes, layout.root, ("themeToggle", "shortcutHelp"))
+    for name in ("themeAction", "shortcutHelp"):
+        assert evaluate(layout, name, "visible && enabled")
     assert not any(node.text.startswith("Ctrl+A select all") for node in nodes)
-    evaluate(layout, "shortcutHelp", "clicked()")
+    evaluate(layout, "shortcutHelp", "trigger()")
     pump(100)
     nodes = tree(layout.engine, layout.root)
     assert any(node.text.startswith("Ctrl+A select all") for node in nodes)
@@ -373,7 +403,7 @@ def test_short_theme_and_shortcuts_keep_keyboard_navigation(layout, monkeypatch)
     for key in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
         QTest.keyClick(layout.root, key)
     assert calls == [-1, 1, -4, 4]
-    evaluate(layout, "themeToggle", "activated(bridge.theme === 'dark' ? 1 : 0)")
+    evaluate(layout, "themeAction", "trigger()")
     assert layout.bridge.theme == "light"
 
 
@@ -403,3 +433,205 @@ def test_scanner_action_order_survives_compact_reflow(layout, scanner):
         assert positions == sorted(positions), (width, names, positions)
         assert_reachable(nodes, layout.root, names)
     assert layout.warnings[warning_start:] == []
+
+
+def test_panes_keep_single_instances_and_state_when_reparented(layout):
+    layout.apply(size=(1920, 1080))
+    names = ("trayPane", "inspectorPanel", "trayQueue")
+    originals = {name: layout.root.findChild(QQuickItem, name) for name in names}
+    assert all(originals.values())
+    evaluate(layout, "inspectorPanel", "showBefore = true")
+    parents = {}
+    for width in (1920, 1024, 800, 1920):
+        layout.root.resize(width, 800)
+        pump(150)
+        for name, original in originals.items():
+            assert layout.root.findChildren(QQuickItem, name) == [original], (width, name)
+        assert originals["inspectorPanel"].property("showBefore") is True
+        parents[width] = tuple(originals[name].parentItem() for name in names[:2])
+        nodes = tree(layout.engine, layout.root)
+        for side, visible in (("tray", width == 800), ("inspector", width < 1920)):
+            toggle = layout.root.findChild(QQuickItem, side + "DrawerToggle")
+            assert toggle.isVisible() is visible
+            if visible:
+                assert_reachable(nodes, layout.root, (side + "DrawerToggle",))
+    assert parents[1920][0] is not parents[800][0]
+    assert parents[1920][1] is not parents[1024][1]
+    assert parents[1024][0] is parents[1920][0]
+    evaluate(layout, "inspectorPanel", "showBefore = false")
+
+
+@pytest.mark.parametrize("side", ("tray", "inspector"))
+def test_drawer_escape_restores_the_complete_review_key_map(layout, monkeypatch, side):
+    layout.apply(size=(800, 600))
+    popup = open_drawer(layout, side)
+    QTest.keyClick(layout.root, Qt.Key.Key_Escape)
+    pump(350)
+    assert not popup.property("opened")
+    calls = []
+    methods = (
+        "moveSelectionFocus",
+        "toggleSelectionAccepted",
+        "setSelectionStatus",
+        "rotateSelection",
+        "mirrorSelection",
+        "undo",
+        "selectAll",
+    )
+    for method in methods:
+        monkeypatch.setattr(
+            layout.bridge,
+            method,
+            lambda *args, name=method: calls.append((name, args)),
+        )
+    keys = (
+        Qt.Key.Key_Left,
+        Qt.Key.Key_Right,
+        Qt.Key.Key_Up,
+        Qt.Key.Key_Down,
+        Qt.Key.Key_Space,
+        Qt.Key.Key_A,
+        Qt.Key.Key_R,
+        Qt.Key.Key_N,
+        Qt.Key.Key_BracketLeft,
+        Qt.Key.Key_BracketRight,
+        Qt.Key.Key_M,
+    )
+    for key in keys:
+        QTest.keyClick(layout.root, key)
+    QTest.keyClick(layout.root, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClick(layout.root, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    assert calls == expected_review_calls()
+
+
+def expected_review_calls():
+    return [
+        ("moveSelectionFocus", (-1, False)),
+        ("moveSelectionFocus", (1, False)),
+        ("moveSelectionFocus", (-4, False)),
+        ("moveSelectionFocus", (4, False)),
+        ("toggleSelectionAccepted", ()),
+        ("setSelectionStatus", ("accepted",)),
+        ("setSelectionStatus", ("rejected",)),
+        ("setSelectionStatus", ("needs_look",)),
+        ("rotateSelection", (-1,)),
+        ("rotateSelection", (1,)),
+        ("mirrorSelection", ()),
+        ("undo", ()),
+        ("selectAll", ()),
+    ]
+
+
+@pytest.mark.parametrize(
+    "side,control,dialog_name",
+    (
+        ("tray", "recoverRaw1", "recoverDialog"),
+        ("inspector", "reexportSelection", "reexportSelectionDialog"),
+    ),
+)
+def test_drawer_confirmations_belong_to_page_and_survive_drawer_close(
+    layout, side, control, dialog_name
+):
+    layout.apply(size=(800, 600))
+    trays = tuple(replace(t, can_recover_raw=t.number == 1) for t in layout.main.trays)
+    layout.bridge._apply(replace(layout.main, trays=trays))
+    assert evaluate(
+        layout,
+        "mainPage",
+        """
+        [data, contentData, contentItem.data].some(items =>
+            Array.from(items).some(item => item.objectName === NAME))
+    """.replace("NAME", json.dumps(dialog_name)),
+    )
+    popup = open_drawer(layout, side)
+    assert_reachable(tree(layout.engine, layout.root, popup), layout.root, (control,))
+    click_popup_control(popup, control)
+    confirmation = LayoutDialog(layout.engine, layout.root, dialog_name)
+    pump(350)
+    assert confirmation.property("opened")
+    close_drawer(layout, popup)
+    assert confirmation.property("opened"), "drawer close must keep page confirmation alive"
+    if side == "tray":
+        assert confirmation.property("tray") == 1
+    nodes = tree(layout.engine, layout.root, confirmation)
+    assert_clear(detect(layout.engine, layout.root, confirmation, nodes))
+    controls = tuple(node for node in nodes if node.control and node.prop("inFooter"))
+    assert controls
+    viewport = Rect(0, 0, layout.root.width(), layout.root.height())
+    assert all(viewport.contains(node.rect) for node in controls)
+    confirmation.invoke("close")
+    pump(350)
+
+
+def click_popup_control(popup, control):
+    assert popup.evaluate(
+        """
+        (function() {
+            var pending = [contentItem];
+            while (pending.length) {
+                var item = pending.pop();
+                if (item.objectName === NAME) { item.clicked(); return true; }
+                for (var i = 0; i < item.children.length; ++i)
+                    pending.push(item.children[i]);
+            }
+            return false;
+        })()
+    """.replace("NAME", json.dumps(control))
+    )
+
+
+def action_button_rect(layout, condition):
+    script = """
+        JSON.stringify((function() {
+            var top = contentItem;
+            while (top.parent) top = top.parent;
+            var pending = [top];
+            while (pending.length) {
+                var item = pending.pop();
+                if (!item.visible || item.opacity < 0.01) continue;
+                if (item.action && (CONDITION)) {
+                    var point = item.mapToItem(null, 0, 0);
+                    return [point.x, point.y, item.width, item.height];
+                }
+                for (var i = 0; i < item.children.length; ++i)
+                    pending.push(item.children[i]);
+            }
+            return null;
+        })())
+    """.replace("CONDITION", condition)
+    result = json.loads(evaluate(layout, "mainPage", script))
+    return Rect(*result) if result else None
+
+
+def click_rect(layout, rect):
+    assert rect and Rect(0, 0, layout.root.width(), layout.root.height()).contains(rect)
+    point = QPoint(round(rect.x + rect.width / 2), round(rect.y + rect.height / 2))
+    QTest.mouseClick(layout.root, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    pump(350)
+
+
+@pytest.mark.parametrize("name", ("loadHelpButton", "themeAction", "shortcutHelp"))
+def test_toolbar_overflow_menu_reaches_secondary_actions(layout, name):
+    layout.apply(size=(800, 600))
+    more = action_button_rect(layout, 'item.action.tooltip === "More Actions"')
+    click_rect(layout, more)
+    menu_condition = 'String(item).indexOf("MenuItem") >= 0'
+    assert action_button_rect(layout, menu_condition), "overflow menu must reveal actions"
+    target = "item.action.objectName === " + json.dumps(name)
+    button = action_button_rect(layout, target + " && " + menu_condition)
+    if button is None:
+        QTest.keyClick(layout.root, Qt.Key.Key_Escape)
+        pump(350)
+        button = action_button_rect(layout, target)
+    click_rect(layout, button)
+    if name == "loadHelpButton":
+        assert layout.dialog("load-help").property("opened")
+        layout.dialog("load-help").invoke("close")
+    elif name == "themeAction":
+        assert layout.bridge.theme == "light"
+    else:
+        assert any(
+            node.text.startswith("Ctrl+A select all") for node in tree(layout.engine, layout.root)
+        )
+        QTest.keyClick(layout.root, Qt.Key.Key_Escape)
+    pump(350)

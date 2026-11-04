@@ -12,7 +12,13 @@ Kirigami.Page {
     title: bridge.collection !== "" ? qsTr("%1 — Box %2, section %3").arg(bridge.batchName).arg(bridge.box).arg(bridge.section) : bridge.batchName
     focus: true
     readonly property bool shortWindow: height < 45 * Theme.gu
-    readonly property alias compactThemeHost: statusArea.themeHost
+    readonly property bool compact: width < 50 * Theme.gu
+    readonly property bool expanded: width >= 68 * Theme.gu
+    readonly property string widthClass: compact ? "compact" : expanded ? "expanded" : "medium"
+    readonly property real trayWidth: Math.max(Theme.paneMin, Math.min(width * 0.16, Theme.paneMax))
+    readonly property real inspectorWidth: Math.max(Theme.inspectorMin, Math.min(width * 0.25, Theme.inspectorMax))
+    onCompactChanged: if (!compact) trayDrawer.close()
+    onExpandedChanged: if (expanded) inspectorDrawer.close()
     readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo")
 
     function focusReview() {
@@ -157,7 +163,7 @@ Kirigami.Page {
     header: QQC2.ToolBar {
         RowLayout {
             anchors.fill: parent
-            spacing: Kirigami.Units.largeSpacing
+            spacing: Theme.spacingSmall
 
             PillButton {
                 objectName: "primaryActionButton"
@@ -181,51 +187,132 @@ Kirigami.Page {
                 enabled: bridge.canFinishBox
                 onClicked: bridge.finishBox(true)
             }
-            Item {
+            QQC2.Button {
+                objectName: "trayDrawerToggle"
+                text: qsTr("Trays")
+                icon.name: "view-list-details"
+                visible: page.compact
+                onClicked: trayDrawer.open()
+            }
+            QQC2.Button {
+                objectName: "inspectorDrawerToggle"
+                text: qsTr("Inspector (%1)").arg(inspector.count)
+                icon.name: "document-properties"
+                visible: !page.expanded
+                onClicked: inspectorDrawer.open()
+            }
+            Kirigami.ActionToolBar {
+                objectName: "secondaryActionToolBar"
                 Layout.fillWidth: true
-            }
-            QQC2.Button {
-                objectName: "loadHelpButton"
-                text: qsTr("How to load the scanner")
-                icon.name: "help-contents"
-                onClicked: loadHelpDialog.open()
-            }
-            QQC2.Button {
-                text: qsTr("Accept all")
-                icon.name: "dialog-ok-apply"
-                enabled: !bridge.readonly && bridge.trays.rowCount() > 0
-                onClicked: bridge.acceptAll()
-            }
-            QQC2.Button {
-                text: qsTr("Batch orientation…")
-                icon.name: "object-rotate-right"
-                enabled: !bridge.readonly
-                onClicked: orientationDialog.open()
-            }
-            QQC2.Button {
-                text: qsTr("Export…")
-                icon.name: "document-export"
-                enabled: !bridge.readonly && bridge.trays.rowCount() > 0
-                onClicked: exportDialog.open()
-            }
-            QQC2.Button {
-                text: qsTr("Free disk space…")
-                icon.name: "edit-clear-all"
-                enabled: !bridge.readonly
-                onClicked: {
-                    bridge.requestFreeSpace();
-                    freeSpaceDialog.open();
-                }
-            }
-            QQC2.Button {
-                Layout.minimumWidth: 0
-                Layout.fillWidth: true
-                Layout.maximumWidth: implicitWidth
-                text: qsTr("Close batch")
-                icon.name: "document-close"
-                onClicked: bridge.closeBatch()
+                alignment: Qt.AlignRight
+                actions: [
+                    Kirigami.Action {
+                        objectName: "loadHelpButton"
+                        text: qsTr("How to load the scanner")
+                        icon.name: "help-contents"
+                        onTriggered: loadHelpDialog.open()
+                    },
+                    Kirigami.Action {
+                        objectName: "acceptAllAction"
+                        text: qsTr("Accept all")
+                        icon.name: "dialog-ok-apply"
+                        enabled: !bridge.readonly && bridge.trays.rowCount() > 0
+                        onTriggered: bridge.acceptAll()
+                    },
+                    Kirigami.Action {
+                        objectName: "batchOrientationAction"
+                        text: qsTr("Batch orientation…")
+                        icon.name: "object-rotate-right"
+                        enabled: !bridge.readonly
+                        onTriggered: orientationDialog.open()
+                    },
+                    Kirigami.Action {
+                        objectName: "exportAction"
+                        text: qsTr("Export…")
+                        icon.name: "document-export"
+                        enabled: !bridge.readonly && bridge.trays.rowCount() > 0
+                        onTriggered: exportDialog.open()
+                    },
+                    Kirigami.Action {
+                        objectName: "freeSpaceAction"
+                        text: qsTr("Free disk space…")
+                        icon.name: "edit-clear-all"
+                        enabled: !bridge.readonly
+                        onTriggered: {
+                            bridge.requestFreeSpace();
+                            freeSpaceDialog.open();
+                        }
+                    },
+                    Kirigami.Action {
+                        objectName: "closeBatchAction"
+                        text: qsTr("Close batch")
+                        icon.name: "document-close"
+                        onTriggered: bridge.closeBatch()
+                    },
+                    Kirigami.Action {
+                        objectName: "themeAction"
+                        text: bridge.theme === "dark" ? qsTr("Theme: switch to Light") : qsTr("Theme: switch to Dark")
+                        icon.name: "preferences-desktop-theme"
+                        displayHint: Kirigami.DisplayHint.AlwaysHide
+                        onTriggered: bridge.setTheme(bridge.theme === "dark" ? "light" : "dark")
+                    },
+                    Kirigami.Action {
+                        objectName: "shortcutHelp"
+                        text: qsTr("Keyboard shortcuts…")
+                        icon.name: "input-keyboard"
+                        displayHint: Kirigami.DisplayHint.AlwaysHide
+                        onTriggered: shortcutsPopup.open()
+                    }
+                ]
             }
         }
+    }
+
+    Kirigami.OverlayDrawer {
+        id: trayDrawer
+        objectName: "trayDrawer"
+        edge: Qt.LeftEdge
+        modal: true
+        focus: true
+        handleVisible: false
+        handle.parent: page
+        handle.visible: false
+        width: Math.min(22 * Theme.gu, page.width * 0.9)
+        contentItem: Item {}
+        onClosed: page.focusReview()
+    }
+    Kirigami.OverlayDrawer {
+        id: inspectorDrawer
+        objectName: "inspectorDrawer"
+        edge: Qt.RightEdge
+        modal: true
+        focus: true
+        handleVisible: false
+        handle.parent: page
+        handle.visible: false
+        width: Math.min(22 * Theme.gu, page.width * 0.9)
+        contentItem: Item {}
+        onClosed: page.focusReview()
+    }
+    TrayPane {
+        id: trayPane
+        parent: page.compact ? trayDrawer.contentItem : trayDockSlot
+        anchors.fill: parent
+        shortWindow: page.shortWindow
+        onRecoverRequested: number => { recoverDialog.tray = number; recoverDialog.open(); }
+        onReviewFocusRequested: {
+            if (page.compact)
+                trayDrawer.close();
+            sheet.scrollToFocus();
+            Qt.callLater(() => page.focusReview());
+        }
+    }
+    InspectorPanel {
+        id: inspector
+        parent: page.expanded ? inspectorDockSlot : inspectorDrawer.contentItem
+        anchors.fill: parent
+        onReexportRequested: reexportDialog.open()
+        onRescanRequested: rescanDialog.open()
     }
 
     ColumnLayout {
@@ -251,7 +338,6 @@ Kirigami.Page {
                 emptyFramesDialog.previews = bridge.emptyConfirmationPreviews.slice();
                 emptyFramesDialog.open();
             }
-            onShortcutHelp: shortcutsPopup.open()
         }
 
         RowLayout {
@@ -261,55 +347,31 @@ Kirigami.Page {
             Layout.minimumHeight: Theme.reviewMin(page.height)
             spacing: 0
 
-            ColumnLayout {
-                Layout.preferredWidth: Theme.paneMax
-                Layout.maximumWidth: Theme.paneMax
-                Layout.minimumWidth: Theme.paneMin
+            Item {
+                id: trayDockSlot
+                objectName: "trayDockSlot"
+                visible: !page.compact
+                Layout.preferredWidth: page.trayWidth
+                Layout.minimumWidth: page.trayWidth
+                Layout.maximumWidth: page.trayWidth
                 Layout.fillHeight: true
-                spacing: Theme.spacingSmall
-                QQC2.Label {
-                    text: qsTr("TRAYS")
-                    color: Theme.muted
-                    font.pixelSize: Theme.fontSmall
-                    Layout.margins: Theme.spacing
-                }
-                TrayQueue {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    onRecoverRequested: number => { recoverDialog.tray = number; recoverDialog.open(); }
-                    onTrayChosen: { sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
-                }
-                PillButton {
-                    objectName: "selectFlagged"
-                    Layout.fillWidth: true
-                    Layout.margins: Theme.spacingSmall
-                    text: qsTr("Select flagged (%1)").arg(bridge.flaggedCount)
-                    onClicked: { bridge.selectFlagged(); sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
-                }
-                PillButton {
-                    objectName: "selectFailed"
-                    Layout.fillWidth: true
-                    Layout.margins: Theme.spacingSmall
-                    text: qsTr("Select failed (%1)").arg(bridge.failedCount)
-                    onClicked: { bridge.selectFailed(); sheet.scrollToFocus(); Qt.callLater(() => page.focusReview()); }
-                }
             }
-            Kirigami.Separator { Layout.fillHeight: true }
+            Kirigami.Separator { visible: !page.compact; Layout.fillHeight: true }
             SheetView {
                 id: sheet
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 onReviewFocusRequested: page.focusReview()
             }
-            Kirigami.Separator { Layout.fillHeight: true }
-            InspectorPanel {
-                id: inspector
-                Layout.preferredWidth: Math.min(Theme.inspectorMax, page.width * 0.3)
-                Layout.maximumWidth: Theme.inspectorMax
-                Layout.minimumWidth: Theme.inspectorMin
+            Kirigami.Separator { visible: page.expanded; Layout.fillHeight: true }
+            Item {
+                id: inspectorDockSlot
+                objectName: "inspectorDockSlot"
+                visible: page.expanded
+                Layout.preferredWidth: page.inspectorWidth
+                Layout.minimumWidth: page.inspectorWidth
+                Layout.maximumWidth: page.inspectorWidth
                 Layout.fillHeight: true
-                onReexportRequested: reexportDialog.open()
-                onRescanRequested: rescanDialog.open()
             }
         }
         QQC2.Label {

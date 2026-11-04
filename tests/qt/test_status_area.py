@@ -73,7 +73,7 @@ def test_large_font_keeps_scanner_row(sweep600_dir, tmp_path):
             assert contains(scroll, Rect(*rect)), (case["size"], name)
 
 
-def test_more_button_and_short_row_stay_pinned_when_content_exceeds_cap(layout):
+def test_more_button_stays_pinned_when_content_exceeds_cap(layout):
     layout.apply("worst-stack", (800, 600))
     collapse_status(layout)
     expand_status(layout)
@@ -83,8 +83,7 @@ def test_more_button_and_short_row_stay_pinned_when_content_exceeds_cap(layout):
         scroll = named(nodes, "statusScroll").rect
         assert evaluate(layout, "statusScroll", "contentItem.contentHeight > contentItem.height")
         assert named(nodes, "statusMore").text == "Show less"
-        for name in ("statusMore", "shortcutHelp", "themeToggle"):
-            assert contains(scroll, named(nodes, name).rect), (script, name)
+        assert contains(scroll, named(nodes, "statusMore").rect), script
     collapse_status(layout)
 
 
@@ -161,7 +160,12 @@ def test_empty_auto_status_takes_no_line(layout):
     assert not any(n.name == "autoPipelineStatus" for n in tree(layout.engine, layout.root))
 
 
-def test_theme_host_follows_the_toggle_width(layout):
+def test_short_toolbar_actions_remain_available_outside_status_area(layout):
     layout.apply(size=(800, 600))
-    host = evaluate(layout, "mainPage", "compactThemeHost.implicitWidth")
-    assert host == evaluate(layout, "themeToggle", "implicitWidth") > 0
+    nodes = tree(layout.engine, layout.root)
+    toolbar = named(nodes, "secondaryActionToolBar").rect
+    viewport = Rect(0, 0, layout.root.width(), layout.root.height())
+    assert toolbar.width > 0 and viewport.contains(toolbar)
+    for name in ("themeAction", "shortcutHelp"):
+        assert evaluate(layout, name, "visible && enabled"), name
+    assert not any(node.name == "themeToggle" for node in nodes)

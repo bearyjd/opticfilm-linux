@@ -23,13 +23,11 @@ QQC2.ScrollView {
     ].filter(entry => entry.present).map(entry => entry.key)
     readonly property int hiddenEntryCount: Math.max(0, entryKeys.length - entryLimit)
     readonly property int visibleEntryCount: expanded ? entryKeys.length : Math.min(entryLimit, entryKeys.length)
-    readonly property alias themeHost: compactThemeHost
     onHiddenEntryCountChanged: if (hiddenEntryCount === 0)
         expanded = false
     signal loadHelp()
     signal confirmScanner()
     signal reviewEmptyFrames()
-    signal shortcutHelp()
 
     function entryVisible(key) {
         const index = entryKeys.indexOf(key);
@@ -239,8 +237,7 @@ QQC2.ScrollView {
         }
     }
 
-    // Pinned below the scrolled entries so the "N more" button (a hidden safety entry's only
-    // indication) and the short-window theme/shortcuts row can never scroll out of view.
+    // Keep the hidden safety entries reachable below the scrolled entries.
     ColumnLayout {
         id: pinnedFooter
         parent: area
@@ -256,22 +253,6 @@ QQC2.ScrollView {
             Layout.fillWidth: true
             text: area.expanded ? qsTr("Show less") : qsTr("%1 more: %2").arg(area.hiddenEntryCount).arg(area.entryKeys.slice(area.entryLimit).map(key => area.entryTitle(key)).join(", "))
             onClicked: area.expanded = !area.expanded
-        }
-        Flow {
-            Layout.fillWidth: true
-            visible: area.shortWindow
-            spacing: Theme.spacingSmall
-            Item {
-                id: compactThemeHost
-                implicitWidth: children.length > 0 ? children[0].implicitWidth : 0
-                implicitHeight: Theme.controlHeight
-            }
-            QQC2.Button {
-                objectName: "shortcutHelp"
-                text: qsTr("?")
-                Accessible.name: qsTr("Keyboard shortcuts")
-                onClicked: area.shortcutHelp()
-            }
         }
     }
 }
