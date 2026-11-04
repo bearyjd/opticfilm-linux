@@ -159,6 +159,21 @@ def _add_device(sysfs: Path, name: str, vid: str, pid: str) -> None:
     (dev / "idProduct").write_text(f"{pid}\n")
 
 
+@pytest.fixture(autouse=True)
+def _default_signal_dispositions():
+    """Children must not inherit an ignored signal: bash cannot trap it, so the signal tests
+    would depend on how pytest was launched (nohup ignores SIGHUP, background shells SIGINT)."""
+    handlers = (
+        (signal.SIGHUP, signal.SIG_DFL),
+        (signal.SIGTERM, signal.SIG_DFL),
+        (signal.SIGINT, signal.default_int_handler),
+    )
+    previous = [(sig, signal.signal(sig, handler)) for sig, handler in handlers]
+    yield
+    for sig, handler in previous:
+        signal.signal(sig, handler)
+
+
 @pytest.fixture
 def rig(tmp_path: Path):
     scripts = tmp_path / "scripts"
@@ -222,13 +237,6 @@ def rig(tmp_path: Path):
             stderr=subprocess.STDOUT,
             text=True,
             env={**env, **extra},
-            # An ignored signal is inherited across exec and bash cannot trap it, so the signal
-            # tests would depend on how pytest itself was launched (nohup and some CI wrappers
-            # ignore SIGHUP; background shells ignore SIGINT). Give the script default dispositions.
-            preexec_fn=lambda: [
-                signal.signal(s, signal.SIG_DFL)
-                for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-            ],
         )
 
     return SimpleNamespace(
