@@ -58,14 +58,26 @@ Kirigami.ApplicationWindow {
     Kirigami.Theme.highlightedTextColor: Theme.accentText
     Kirigami.Theme.linkColor: Theme.accent
 
-    footer: QQC2.ToolBar {
+    // Overlay plus page padding keeps page.height stable when the footer hides.
+    // A layout footer would feed its own height back into the short-window breakpoint.
+    readonly property real themeFooterHeight: themeFooter.implicitHeight
+
+    QQC2.ToolBar {
+        id: themeFooter
+        parent: root.contentItem
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        z: 1
+        visible: !bridge.hasBatch || !pageLoader.item || !pageLoader.item.shortWindow
         implicitHeight: themeToggle.implicitHeight + Theme.spacingSmall * 2
         background: Rectangle { color: Theme.window }
         SegmentedControl {
             id: themeToggle
             objectName: "themeToggle"
+            parent: bridge.hasBatch && pageLoader.item && pageLoader.item.shortWindow ? pageLoader.item.compactThemeHost : themeFooter
             anchors.right: parent.right
-            anchors.rightMargin: Theme.spacing
+            anchors.rightMargin: parent === themeFooter ? Theme.spacing : 0
             anchors.verticalCenter: parent.verticalCenter
             model: [qsTr("Dark"), qsTr("Light")]
             currentIndex: bridge.theme === "dark" ? 0 : 1
@@ -79,6 +91,7 @@ Kirigami.ApplicationWindow {
         padding: 0
 
         Loader {
+            id: pageLoader
             anchors.fill: parent
             sourceComponent: bridge.hasBatch ? mainComponent : startComponent
         }
@@ -92,7 +105,7 @@ Kirigami.ApplicationWindow {
     Component {
         id: startComponent
 
-        StartPage {}
+        StartPage { bottomPadding: root.themeFooterHeight }
     }
 
     Connections {

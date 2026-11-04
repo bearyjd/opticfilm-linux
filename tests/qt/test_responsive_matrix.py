@@ -1,7 +1,8 @@
 """Opt-in DPR/theme matrix plus a normal-tier system-font regression probe.
 
-The checked-in baseline records existing PR4/PR5 layout debt by object name,
-state, dimensions, theme, DPR and font. Any additional occurrence fails normally.
+The checked-in baseline records historical layout debt by object name, state,
+dimensions, theme, DPR and font. Remaining pane and toolbar work is PR5. Any
+additional occurrence fails normally.
 """
 
 import json

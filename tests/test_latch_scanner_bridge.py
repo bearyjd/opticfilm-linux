@@ -229,7 +229,8 @@ def test_refused_eject_clears_previous_confirmation(tmp_path, monkeypatch):
 
 def test_confirmation_is_wired_through_bridge_and_qml():
     bridge = Path("src/opticfilm_linux/app/qt/bridge.py").read_text()
-    qml = Path("src/opticfilm_linux/app/qml/MainPage.qml").read_text()
+    page = Path("src/opticfilm_linux/app/qml/MainPage.qml").read_text()
+    qml = Path("src/opticfilm_linux/app/qml/StatusArea.qml").read_text()
     tree = ast.parse(bridge)
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     prop = next(
@@ -241,6 +242,7 @@ def test_confirmation_is_wired_through_bridge_and_qml():
     reader = eval(compile(ast.Expression(prop.value.args[2]), "bridge", "eval"))
     assert reader(EMPTY_STATE, None) is False
     assert "self._controller.confirm_holder_latched()" in bridge
+    assert "StatusArea {" in page
     assert "visible: bridge.holderLatchWarning" in qml
     assert "Reseat and latch the holder before scanning" in qml
     assert "visible: bridge.canConfirmHolderLatched" in qml

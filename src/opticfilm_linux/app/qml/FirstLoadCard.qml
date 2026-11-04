@@ -6,6 +6,7 @@ import org.kde.kirigami as Kirigami
 QQC2.Frame {
     id: card
     objectName: "firstLoadCard"
+    property bool compact: false
     signal terminalHelp()
     readonly property bool active: ["jogging", "await_reinsert", "loading"].indexOf(bridge.loadPhase) >= 0
     visible: bridge.canFirstLoad || active || bridge.loadPhase === "failed" || bridge.loadPhase === "done"
@@ -20,8 +21,7 @@ QQC2.Frame {
         onConfirmed: bridge.firstLoadCancel()
     }
 
-    ColumnLayout {
-        anchors.fill: parent
+    contentItem: ColumnLayout {
         QQC2.Label {
             objectName: "firstLoadText"
             Layout.fillWidth: true
@@ -38,7 +38,9 @@ QQC2.Frame {
             visible: bridge.loadExitCode !== ""
             text: qsTr("Driver exit code: %1").arg(bridge.loadExitCode)
         }
-        RowLayout {
+        Flow {
+            Layout.fillWidth: true
+            spacing: card.compact ? Kirigami.Units.smallSpacing : Kirigami.Units.largeSpacing
             QQC2.Button {
                 objectName: "firstLoadButton"
                 text: qsTr("Load")
