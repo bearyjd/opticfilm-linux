@@ -2,6 +2,9 @@
 
 import json
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -610,10 +613,14 @@ def click_rect(layout, rect):
     pump(350)
 
 
+@pytest.mark.parametrize("size", ((480, 320), (720, 540), (800, 600)))
 @pytest.mark.parametrize("name", ("loadHelpButton", "themeAction", "shortcutHelp"))
-def test_toolbar_overflow_menu_reaches_secondary_actions(layout, name):
-    layout.apply(size=(800, 600))
+def test_toolbar_overflow_menu_reaches_secondary_actions(layout, name, size):
+    layout.apply(size=size)
     more = action_button_rect(layout, 'item.action.tooltip === "More Actions"')
+    assert more, "the overflow button must not be clipped away at compact widths"
+    toolbar = named(tree(layout.engine, layout.root), "secondaryActionToolBar").rect
+    assert toolbar.contains(more), (toolbar, more)
     click_rect(layout, more)
     menu_condition = 'String(item).indexOf("MenuItem") >= 0'
     assert action_button_rect(layout, menu_condition), "overflow menu must reveal actions"
@@ -635,3 +642,113 @@ def test_toolbar_overflow_menu_reaches_secondary_actions(layout, name):
         )
         QTest.keyClick(layout.root, Qt.Key.Key_Escape)
     pump(350)
+
+
+def test_large_font_toolbar_keeps_overflow_reachable(sweep600_dir, tmp_path):
+    output = tmp_path / "result.json"
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software")
+    root = Path(__file__).resolve().parents[2]
+    env["PYTHONPATH"] = os.pathsep.join(str(root / part) for part in ("src", "tests", "tests/qt"))
+    for kind in ("STATE", "CACHE", "CONFIG", "DATA"):
+        env[f"XDG_{kind}_HOME"] = str(tmp_path / kind.lower())
+    worker = Path(__file__).with_name("toolbar_worker.py")
+    command = [sys.executable, str(worker), str(sweep600_dir), str(tmp_path), str(output), "2"]
+    done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-4000:]
+    result = json.loads(output.read_text())
+    assert result["warnings"] == []
+    assert len(set(result["toggle_widths"])) == 1, "Inspector (n) must not change the toolbar"
+    for case in result["cases"]:
+        assert case["gu"] >= 30, case
+        window = Rect(0, 0, *case["size"])
+        toolbar, more, theme = (
+            Rect(*case[k]) if case[k] else None for k in ("toolbar", "more", "theme")
+        )
+        assert more and toolbar.contains(more), case
+        assert theme and window.contains(theme), case
+
+
+BLOCKING = {
+    "first-load": dict(load_phase="await_reinsert"),
+    "empty-frames": dict(empty_confirmation_tray=1, empty_confirmation_count=4),
+    "held-release": dict(held_tray=1),
+    "holder-latch": dict(holder_latch_warning=True, can_confirm_holder_latched=True),
+}
+BLOCKING_CONTROLS = {
+    "first-load": "firstLoadDoneButton",
+    "empty-frames": "confirmEmptyFrames",
+    "held-release": "freeHeldRaw",
+    "holder-latch": "confirmHolderLatched",
+}
+
+
+@pytest.mark.parametrize("side", ("tray", "inspector"))
+@pytest.mark.parametrize("entry", tuple(BLOCKING))
+def test_blocking_entry_closes_open_drawer_and_is_reachable(layout, monkeypatch, side, entry):
+    layout.apply(size=(800, 600))
+    quiet = dict(holder_latch_text="", holder_latch_warning=False, can_confirm_holder_latched=False)
+    layout.bridge._apply(replace(layout.main, **quiet))
+    popup = open_drawer(layout, side)
+    layout.bridge._apply(replace(layout.main, **{**quiet, **BLOCKING[entry]}))
+    pump(350)
+    assert not popup.property("opened"), "a blocking safety entry must not stay behind a drawer"
+    assert evaluate(layout, "mainPage", "activeFocus"), "focus must return to the review"
+    expand_status(layout)
+    assert_reachable(tree(layout.engine, layout.root), layout.root, (BLOCKING_CONTROLS[entry],))
+    calls = []
+    monkeypatch.setattr(layout.bridge, "moveSelectionFocus", lambda step, shift: calls.append(step))
+    QTest.keyClick(layout.root, Qt.Key.Key_Right)
+    assert calls == [1]
+    layout.bridge._apply(layout.main)
+    pump(100)
+
+
+def test_first_load_done_is_clickable_after_drawer_auto_closes(layout, monkeypatch):
+    layout.apply(size=(800, 600))
+    popup = open_drawer(layout, "inspector")
+    layout.bridge._apply(replace(layout.main, load_phase="await_reinsert"))
+    pump(350)
+    assert not popup.property("opened")
+    calls = []
+    monkeypatch.setattr(layout.bridge, "firstLoadDone", lambda: calls.append("done"))
+    expand_status(layout)
+    rect = named(tree(layout.engine, layout.root), "firstLoadDoneButton").rect
+    click_rect(layout, rect)
+    assert calls == ["done"]
+    layout.bridge._apply(layout.main)
+    pump(100)
+
+
+def test_non_blocking_status_leaves_the_drawer_open(layout):
+    layout.apply(size=(800, 600))
+    popup = open_drawer(layout, "inspector")
+    layout.bridge._apply(replace(layout.main, auto_export=True, auto_status="Exporting 3 of 9"))
+    pump(350)
+    assert popup.property("opened")
+    close_drawer(layout, popup)
+    layout.bridge._apply(layout.main)
+    pump(100)
+
+
+def test_width_class_change_returns_focus_to_the_review(layout):
+    layout.apply(size=(1024, 600))
+    evaluate(layout, "selectFlagged", "forceActiveFocus()")
+    assert evaluate(layout, "selectFlagged", "activeFocus")
+    layout.root.resize(1920, 1080)  # medium -> expanded: the Inspector re-parents into its dock
+    pump(350)
+    assert evaluate(layout, "mainPage", "activeFocus")
+    assert not evaluate(layout, "selectFlagged", "activeFocus")
+
+
+def test_theme_control_follows_the_height_class(layout):
+    layout.apply(size=(1366, 1000))
+    nodes = tree(layout.engine, layout.root)
+    assert not evaluate(layout, "mainPage", "shortWindow")
+    assert_reachable(nodes, layout.root, ("themeToggle",))
+    layout.apply(size=(1366, 700))
+    assert evaluate(layout, "mainPage", "shortWindow")
+    assert not any(node.name == "themeToggle" for node in tree(layout.engine, layout.root))
+    assert evaluate(layout, "themeAction", "visible && enabled"), (
+        "short windows keep the theme action"
+    )
+    layout.apply(size=(1366, 1000))

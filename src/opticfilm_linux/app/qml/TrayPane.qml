@@ -28,6 +28,8 @@ ColumnLayout {
         columns: pane.shortWindow ? 2 : 1
         columnSpacing: Theme.spacingSmall
         rowSpacing: Theme.spacingSmall
+        // The short-window labels ("Flagged (n)", "Failed (n)") are abbreviations for the eye only;
+        // Accessible.name keeps the full "Select flagged/failed (n)" strings.
         PillButton {
             objectName: "selectFlagged"
             Layout.fillWidth: true

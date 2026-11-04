@@ -25,6 +25,15 @@ QQC2.ScrollView {
     readonly property int visibleEntryCount: expanded ? entryKeys.length : Math.min(entryLimit, entryKeys.length)
     onHiddenEntryCountChanged: if (hiddenEntryCount === 0)
         expanded = false
+    // Entries that need an answer before the user can carry on; a modal drawer must not hide them.
+    readonly property int blockingCount: entryKeys.filter(key => key !== "firstLoad" && key !== "auto").length
+    property int seenBlockingCount: 0
+    signal blockingGained()
+    onBlockingCountChanged: {
+        if (blockingCount > seenBlockingCount)
+            blockingGained();
+        seenBlockingCount = blockingCount;
+    }
     signal loadHelp()
     signal confirmScanner()
     signal reviewEmptyFrames()

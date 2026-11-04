@@ -11,14 +11,41 @@ Kirigami.Page {
     bottomPadding: shortWindow ? 0 : page.Window.window.themeFooterHeight
     title: bridge.collection !== "" ? qsTr("%1 — Box %2, section %3").arg(bridge.batchName).arg(bridge.box).arg(bridge.section) : bridge.batchName
     focus: true
-    readonly property bool shortWindow: height < 45 * Theme.gu
-    readonly property bool compact: width < 50 * Theme.gu
-    readonly property bool expanded: width >= 68 * Theme.gu
+    readonly property bool shortWindow: height < Theme.shortMax
+    readonly property bool compact: width < Theme.compactMax
+    readonly property bool expanded: width >= Theme.expandedMin
     readonly property string widthClass: compact ? "compact" : expanded ? "expanded" : "medium"
-    readonly property real trayWidth: Math.max(Theme.paneMin, Math.min(width * 0.16, Theme.paneMax))
-    readonly property real inspectorWidth: Math.max(Theme.inspectorMin, Math.min(width * 0.25, Theme.inspectorMax))
+    readonly property real trayWidth: Math.max(Theme.paneMin, Math.min(width * Theme.paneFraction, Theme.paneMax))
+    readonly property real inspectorWidth: Math.max(Theme.inspectorMin, Math.min(width * Theme.inspectorFraction, Theme.inspectorMax))
     onCompactChanged: if (!compact) trayDrawer.close()
     onExpandedChanged: if (expanded) inspectorDrawer.close()
+    // Re-parenting a pane across width classes drops the focus it held; put it back on the review.
+    onWidthClassChanged: {
+        const active = page.Window.window ? page.Window.window.activeFocusItem : null;
+        if (!active || holdsFocus(trayPane, active) || holdsFocus(inspector, active))
+            Qt.callLater(() => page.focusReview());
+    }
+
+    function holdsFocus(pane, active) {
+        for (let item = active; item; item = item.parent) {
+            if (item === pane)
+                return true;
+        }
+        return false;
+    }
+
+    // A modal drawer hides the page, so a blocking safety entry must pull the user back to it.
+    function closeDrawers() {
+        const wasOpen = trayDrawer.opened || inspectorDrawer.opened;
+        trayDrawer.close();
+        inspectorDrawer.close();
+        if (wasOpen)
+            page.focusReview();
+    }
+    // One control's width: the least the toolbar must keep for its overflow button,
+    // and the least any fixed toolbar item may shrink to (they fill up to their natural width, so
+    // they give way before the toolbar is starved).
+    readonly property real toolbarFloor: Theme.controlHeight
     readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo")
 
     function focusReview() {
@@ -149,7 +176,7 @@ Kirigami.Page {
         objectName: "shortcutsPopup"
         parent: QQC2.Overlay.overlay
         anchors.centerIn: parent
-        width: Math.min(32 * Theme.gu, parent.width * 0.9)
+        width: Math.min(Theme.popupMax, parent.width * Theme.overlayFraction)
         modal: true
         focus: true
         closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutside
@@ -170,11 +197,18 @@ Kirigami.Page {
                 text: bridge.scanPending ? qsTr("Scanning…") : bridge.canScan ? qsTr("Scan") : bridge.canLoadNext ? qsTr("Load next holder") : bridge.canFirstLoad ? qsTr("First load…") : bridge.canConfirmScanner ? qsTr("Restart scanner…") : qsTr("Scan")
                 icon.name: "scanner"
                 highlighted: true
+                Layout.fillWidth: true
+                Layout.maximumWidth: implicitWidth
+                Layout.minimumWidth: page.toolbarFloor
                 enabled: bridge.canScan || bridge.canLoadNext || bridge.canFirstLoad || bridge.canConfirmScanner
                 onClicked: page.primaryAction()
             }
             QQC2.Button {
                 objectName: "nextSectionButton"
+                Layout.fillWidth: true
+                Layout.maximumWidth: implicitWidth
+                Layout.minimumWidth: page.toolbarFloor
+                clip: true
                 text: qsTr("Next section")
                 visible: bridge.collection !== ""
                 enabled: bridge.canFinishBox
@@ -182,6 +216,10 @@ Kirigami.Page {
             }
             QQC2.Button {
                 objectName: "finishBoxButton"
+                Layout.fillWidth: true
+                Layout.maximumWidth: implicitWidth
+                Layout.minimumWidth: page.toolbarFloor
+                clip: true
                 text: qsTr("Finish box")
                 visible: bridge.collection !== ""
                 enabled: bridge.canFinishBox
@@ -189,14 +227,27 @@ Kirigami.Page {
             }
             QQC2.Button {
                 objectName: "trayDrawerToggle"
+                Layout.fillWidth: true
+                Layout.maximumWidth: implicitWidth
+                Layout.minimumWidth: page.toolbarFloor
+                clip: true
                 text: qsTr("Trays")
                 icon.name: "view-list-details"
                 visible: page.compact
                 onClicked: trayDrawer.open()
             }
             QQC2.Button {
+                id: inspectorToggle
                 objectName: "inspectorDrawerToggle"
                 text: qsTr("Inspector (%1)").arg(inspector.count)
+                // Sized for a two-digit count so the toolbar does not jitter as the selection changes.
+                readonly property real stableWidth: Math.max(implicitWidth, implicitWidth - currentLabel.advanceWidth + widestLabel.advanceWidth)
+                Layout.fillWidth: true
+                Layout.maximumWidth: stableWidth
+                Layout.minimumWidth: page.toolbarFloor
+                clip: true
+                TextMetrics { id: currentLabel; font: inspectorToggle.font; text: inspectorToggle.text }
+                TextMetrics { id: widestLabel; font: inspectorToggle.font; text: qsTr("Inspector (%1)").arg(99) }
                 icon.name: "document-properties"
                 visible: !page.expanded
                 onClicked: inspectorDrawer.open()
@@ -204,6 +255,9 @@ Kirigami.Page {
             Kirigami.ActionToolBar {
                 objectName: "secondaryActionToolBar"
                 Layout.fillWidth: true
+                // Leftover space only; never less than the overflow button, so "..." stays reachable.
+                Layout.preferredWidth: 0
+                Layout.minimumWidth: page.toolbarFloor
                 alignment: Qt.AlignRight
                 actions: [
                     Kirigami.Action {
@@ -268,31 +322,17 @@ Kirigami.Page {
         }
     }
 
-    Kirigami.OverlayDrawer {
+    ReviewDrawer {
         id: trayDrawer
         objectName: "trayDrawer"
         edge: Qt.LeftEdge
-        modal: true
-        focus: true
-        handleVisible: false
-        handle.parent: page
-        handle.visible: false
-        width: Math.min(22 * Theme.gu, page.width * 0.9)
-        contentItem: Item {}
-        onClosed: page.focusReview()
+        host: page
     }
-    Kirigami.OverlayDrawer {
+    ReviewDrawer {
         id: inspectorDrawer
         objectName: "inspectorDrawer"
         edge: Qt.RightEdge
-        modal: true
-        focus: true
-        handleVisible: false
-        handle.parent: page
-        handle.visible: false
-        width: Math.min(22 * Theme.gu, page.width * 0.9)
-        contentItem: Item {}
-        onClosed: page.focusReview()
+        host: page
     }
     TrayPane {
         id: trayPane
@@ -329,7 +369,8 @@ Kirigami.Page {
             Layout.maximumHeight: budget
             Layout.preferredHeight: Math.max(2 * Theme.controlHeight, Math.min(implicitHeight, budget))
             shortWindow: page.shortWindow
-            compact: page.width < 50 * Theme.gu
+            compact: page.compact
+            onBlockingGained: page.closeDrawers()
             onLoadHelp: loadHelpDialog.open()
             onConfirmScanner: confirmScannerDialog.open()
             onReviewEmptyFrames: {
