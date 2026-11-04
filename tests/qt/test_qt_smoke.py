@@ -3,6 +3,7 @@
 Run with: QT_QPA_PLATFORM=offscreen pytest -m qt
 """
 
+import inspect
 import os
 import time
 
@@ -40,7 +41,32 @@ def qapp():
     return QApplication.instance() or QApplication(["smoke"])
 
 
-def _wait(bridge, condition, timeout=TIMEOUT):
+def _describe_condition(condition, label):
+    """Name the condition that hung: the caller's label, else the lambda's own source line."""
+    if label:
+        return label
+    try:
+        return inspect.getsource(condition).strip()
+    except (OSError, TypeError):
+        return repr(condition)
+
+
+def _observed(bridge):
+    """The last state the wait saw, so a timeout says what the window was doing (best effort)."""
+    state = getattr(bridge, "_state", None)
+    banner = getattr(state, "banner", None)
+    session = getattr(getattr(bridge, "_controller", None), "_session", None)
+    scanner = getattr(session, "scanner", None)
+    return (
+        f"scannerStatus={getattr(state, 'scanner', None)!r} loadPhase={bridge.loadPhase!r} "
+        f"hasBatch={bridge.hasBatch} selectedTray={bridge.selectedTray} "
+        f"trays={bridge.trays.rowCount()} slides={bridge.slides.rowCount()} "
+        f"focus={list(bridge.selectionFocus)} banner={getattr(banner, 'text', None)!r} "
+        f"scanner.calls={getattr(scanner, 'calls', None)!r}"
+    )
+
+
+def _wait(bridge, condition, timeout=TIMEOUT, label=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         QCoreApplication.processEvents()
@@ -48,7 +74,9 @@ def _wait(bridge, condition, timeout=TIMEOUT):
         if condition():
             return
         time.sleep(0.01)
-    raise AssertionError("timed out waiting for the window")
+    raise AssertionError(
+        f"timed out waiting for {_describe_condition(condition, label)}; {_observed(bridge)}"
+    )
 
 
 def _drain_deferred_deletes():
@@ -168,6 +196,13 @@ def _scanned(bridge, tmp_path, name):
     bridge.scan()
     _wait(bridge, lambda: bridge.trays.rowCount() == 1 and not bridge.scanPending)
     _wait(bridge, lambda: bridge.selectedTray == 1 and bridge.slides.rowCount() == 4)
+    # The slides show while the tray is still enhancing, but a selection click is dropped until
+    # the tray leaves the busy stages (selection.selectable_keys), so wait for that.
+    _wait(
+        bridge,
+        lambda: all(s["selectable"] for s in bridge.sheet.get(0)["slides"]),
+        label="the scanned tray to become selectable",
+    )
     return tmp_path / name
 
 
