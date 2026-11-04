@@ -50,7 +50,24 @@ QQC2.ScrollView {
             auto: qsTr("Auto status")}[key];
     }
 
-    Layout.minimumHeight: 0
+    readonly property bool overflowing: contentHeight > availableHeight
+    readonly property real minimumStatusHeight: pinnedFooter.implicitHeight
+        + Math.min(Theme.controlHeight, statusColumn.implicitHeight)
+    Layout.minimumHeight: Math.min(minimumStatusHeight, Layout.maximumHeight)
+
+    // Keep complete entries when they fit; an oversized first entry remains scrollable.
+    function heightForBudget(budget) {
+        const viewport = Math.max(0, budget - pinnedFooter.implicitHeight);
+        if (statusColumn.implicitHeight <= viewport)
+            return implicitHeight;
+        let completeHeight = 0;
+        for (let child of statusColumn.children) {
+            if (child.visible && child.y + child.height <= viewport)
+                completeHeight = Math.max(completeHeight, child.y + child.height);
+        }
+        const snapped = completeHeight > 0 ? completeHeight : viewport;
+        return Math.min(implicitHeight, pinnedFooter.implicitHeight + snapped);
+    }
     function reflowScannerActions() {
         const target = compact ? scannerActions : scannerRow;
         const actions = [loadHelpLink, confirmScannerButton, ejectButton, loadNextHost];
@@ -65,22 +82,190 @@ QQC2.ScrollView {
     clip: true
     implicitHeight: statusColumn.implicitHeight + pinnedFooter.implicitHeight
     bottomPadding: pinnedFooter.implicitHeight
+    rightPadding: overflowing ? statusBar.width + Theme.spacingSmall : 0
     contentWidth: availableWidth
     contentHeight: statusColumn.implicitHeight
     QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
+    QQC2.ScrollBar.vertical: QQC2.ScrollBar {
+        id: statusBar
+        objectName: "statusVerticalScrollBar"
+        parent: area
+        x: area.width - width
+        y: area.topPadding
+        width: Theme.spacingSmall
+        height: area.availableHeight
+        orientation: Qt.Vertical
+        active: area.overflowing
+        minimumSize: Math.min(1, Theme.controlHeight / Math.max(1, height))
+        background: Rectangle { color: Theme.track; radius: width / 2 }
+        contentItem: Rectangle {
+            implicitWidth: Theme.spacingSmall
+            implicitHeight: Theme.controlHeight
+            color: Theme.muted
+            radius: width / 2
+        }
+        policy: area.overflowing ? QQC2.ScrollBar.AlwaysOn : QQC2.ScrollBar.AlwaysOff
+    }
 
     ColumnLayout {
         id: statusColumn
         width: area.availableWidth
         spacing: 0
+
+        ColumnLayout {
+            id: activeFirstLoadSlot
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: area.entryVisible("activeFirstLoad")
+            FirstLoadCard {
+                id: firstLoadCard
+                parent: area.firstLoadActive ? activeFirstLoadSlot : idleFirstLoadSlot
+                compact: area.shortWindow
+                onTerminalHelp: area.loadHelp()
+            }
+        }
+        ErrorBanner {
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: area.entryVisible("error")
+        }
+        ColumnLayout {
+            id: heldSlot
+            Layout.fillWidth: true
+            Layout.margins: Theme.spacingSmall
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: area.entryVisible("held")
+            ColumnLayout {
+                id: heldTextSlot
+                Layout.fillWidth: true
+            }
+            QQC2.Label {
+                Layout.fillWidth: true
+                visible: bridge.emptyConfirmationCount > 0
+                wrapMode: Text.Wrap
+                text: bridge.autoStatus
+            }
+            QQC2.Button {
+                objectName: "freeHeldRaw"
+                visible: bridge.heldTray > 0 && !bridge.readonly
+                text: qsTr("Approve settings and release raw cleanup")
+                onClicked: bridge.requestHeldRelease(bridge.heldTray)
+            }
+        }
+        ColumnLayout {
+            id: emptySlot
+            Layout.fillWidth: true
+            Layout.margins: Theme.spacingSmall
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: area.entryVisible("empty")
+            ColumnLayout {
+                id: emptyTextSlot
+                Layout.fillWidth: true
+            }
+            QQC2.Button {
+                objectName: "confirmEmptyFrames"
+                visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
+                text: qsTr("Review %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
+                onClicked: area.reviewEmptyFrames()
+            }
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.margins: Theme.spacingSmall
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: area.entryVisible("latch")
+            QQC2.Label {
+                objectName: "holderLatchText"
+                Layout.fillWidth: true
+                visible: text !== "" && !bridge.holderLatchWarning
+                wrapMode: Text.Wrap
+                text: bridge.holderLatchText
+            }
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: bridge.holderLatchWarning
+                type: Kirigami.MessageType.Warning
+                text: qsTr("Holder latch is unknown. Reseat and latch the holder before scanning.")
+            }
+            QQC2.Button {
+                objectName: "confirmHolderLatched"
+                visible: bridge.canConfirmHolderLatched
+                text: qsTr("Confirm holder is seated and latched")
+                onClicked: bridge.confirmHolderLatched()
+            }
+        }
+        ColumnLayout {
+            id: idleFirstLoadSlot
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: area.entryVisible("firstLoad")
+        }
+        ColumnLayout {
+            id: autoSlot
+            Layout.fillWidth: true
+            Layout.margins: Theme.spacingSmall
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: area.entryVisible("auto")
+            QQC2.Label {
+                objectName: "autoPipelineStatus"
+                visible: text !== ""
+                parent: bridge.emptyConfirmationCount > 0 ? emptyTextSlot : bridge.heldTray > 0 ? heldTextSlot : autoSlot
+                Layout.fillWidth: true
+                Layout.row: 0
+                wrapMode: Text.Wrap
+                text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
+            }
+        }
+    }
+
+    // Keep the hidden safety entries reachable below the scrolled entries.
+    ColumnLayout {
+        id: pinnedFooter
+        parent: area
+        x: 0
+        y: area.height - height
+        width: area.width
+        z: 1
+        spacing: 0
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.spacingSmall
+            QQC2.Button {
+                objectName: "statusMore"
+                visible: area.hiddenEntryCount > 0
+                flat: true
+                Layout.fillWidth: true
+                text: area.expanded ? qsTr("Show less") : qsTr("%1 more: %2").arg(area.hiddenEntryCount).arg(area.entryKeys.slice(area.entryLimit).map(key => area.entryTitle(key)).join(", "))
+                onClicked: area.expanded = !area.expanded
+            }
+            QQC2.Label {
+                objectName: "statusMoreBelow"
+                visible: area.overflowing
+                opacity: area.contentItem.atYEnd ? 0 : 1
+                Layout.rightMargin: Theme.spacing
+                horizontalAlignment: Text.AlignHCenter
+                color: Theme.muted
+                font.pixelSize: Theme.fontSmall
+                text: qsTr("More below ↓")
+            }
+        }
         GridLayout {
             id: scannerRow
             columns: area.compact ? 1 : 5
             // the scanner's status and the holder controls: own row, so the text is never cut off
             Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            columnSpacing: Kirigami.Units.largeSpacing
-            rowSpacing: Kirigami.Units.smallSpacing
+            Layout.margins: Theme.spacingSmall / 2
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            columnSpacing: Theme.spacing
+            rowSpacing: Theme.spacingSmall
 
             QQC2.Label {
                 objectName: "scannerStatusText"
@@ -147,121 +332,5 @@ QQC2.ScrollView {
             }
         }
 
-        ColumnLayout {
-            id: activeFirstLoadSlot
-            Layout.fillWidth: true
-            visible: area.entryVisible("activeFirstLoad")
-            FirstLoadCard {
-                id: firstLoadCard
-                parent: area.firstLoadActive ? activeFirstLoadSlot : idleFirstLoadSlot
-                compact: area.shortWindow
-                onTerminalHelp: area.loadHelp()
-            }
-        }
-        ErrorBanner {
-            Layout.fillWidth: true
-            visible: area.entryVisible("error")
-        }
-        ColumnLayout {
-            id: heldSlot
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            visible: area.entryVisible("held")
-            ColumnLayout {
-                id: heldTextSlot
-                Layout.fillWidth: true
-            }
-            QQC2.Label {
-                Layout.fillWidth: true
-                visible: bridge.emptyConfirmationCount > 0
-                wrapMode: Text.Wrap
-                text: bridge.autoStatus
-            }
-            QQC2.Button {
-                objectName: "freeHeldRaw"
-                visible: bridge.heldTray > 0 && !bridge.readonly
-                text: qsTr("Approve settings and release raw cleanup")
-                onClicked: bridge.requestHeldRelease(bridge.heldTray)
-            }
-        }
-        ColumnLayout {
-            id: emptySlot
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            visible: area.entryVisible("empty")
-            ColumnLayout {
-                id: emptyTextSlot
-                Layout.fillWidth: true
-            }
-            QQC2.Button {
-                objectName: "confirmEmptyFrames"
-                visible: bridge.emptyConfirmationTray > 0 && !bridge.readonly
-                text: qsTr("Review %1 empty frames in tray %2").arg(bridge.emptyConfirmationCount).arg(bridge.emptyConfirmationTray)
-                onClicked: area.reviewEmptyFrames()
-            }
-        }
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            visible: area.entryVisible("latch")
-            QQC2.Label {
-                objectName: "holderLatchText"
-                Layout.fillWidth: true
-                visible: text !== ""
-                wrapMode: Text.Wrap
-                text: bridge.holderLatchText
-            }
-            Kirigami.InlineMessage {
-                Layout.fillWidth: true
-                visible: bridge.holderLatchWarning
-                type: Kirigami.MessageType.Warning
-                text: qsTr("Holder latch is unknown. Reseat and latch the holder before scanning.")
-            }
-            QQC2.Button {
-                objectName: "confirmHolderLatched"
-                visible: bridge.canConfirmHolderLatched
-                text: qsTr("Confirm holder is seated and latched")
-                onClicked: bridge.confirmHolderLatched()
-            }
-        }
-        ColumnLayout {
-            id: idleFirstLoadSlot
-            Layout.fillWidth: true
-            visible: area.entryVisible("firstLoad")
-        }
-        ColumnLayout {
-            id: autoSlot
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.smallSpacing
-            visible: area.entryVisible("auto")
-            QQC2.Label {
-                objectName: "autoPipelineStatus"
-                visible: text !== ""
-                parent: bridge.emptyConfirmationCount > 0 ? emptyTextSlot : bridge.heldTray > 0 ? heldTextSlot : autoSlot
-                Layout.fillWidth: true
-                Layout.row: 0
-                wrapMode: Text.Wrap
-                text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
-            }
-        }
-    }
-
-    // Keep the hidden safety entries reachable below the scrolled entries.
-    ColumnLayout {
-        id: pinnedFooter
-        parent: area
-        x: 0
-        y: area.height - height
-        width: area.width
-        z: 1
-        spacing: 0
-        QQC2.Button {
-            objectName: "statusMore"
-            visible: area.hiddenEntryCount > 0
-            flat: true
-            Layout.fillWidth: true
-            text: area.expanded ? qsTr("Show less") : qsTr("%1 more: %2").arg(area.hiddenEntryCount).arg(area.entryKeys.slice(area.entryLimit).map(key => area.entryTitle(key)).join(", "))
-            onClicked: area.expanded = !area.expanded
-        }
     }
 }

@@ -139,7 +139,14 @@ def test_auto_resumes_incomplete_tray_on_reopen(sweep600_dir, tmp_path):
         c.close_batch()
         wait_until(c, lambda: c.state().batch_name is None)
         c.open_batch(tmp_path / "batch")
-        wait_until(c, lambda: bool(c.state().trays) and c.state().trays[0].auto == "failed")
+        wait_until(
+            c,
+            lambda: (
+                bool(c.state().trays)
+                and c.state().trays[0].auto == "failed"
+                and c.state().banner is not None
+            ),
+        )
         assert not c._session.store.snapshot().trays[0].raw_removed
         assert "failed" in c.state().banner.message
     finally:

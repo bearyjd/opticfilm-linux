@@ -1,9 +1,9 @@
 """Fresh-process real-scanner-fixture probes for the optional layout matrix."""
 
+import argparse
 import json
 import os
 import re
-import sys
 from collections import Counter
 from pathlib import Path
 
@@ -111,7 +111,7 @@ def measure_controls(fixture, nodes):
     return controls
 
 
-def run(sweep, directory, font_scale, compact=False):
+def run(sweep, directory, font_scale, compact=False, size=None):
     app = QApplication(["responsive-matrix"])
     default_font = QFont(app.font())
     font = QFont(default_font)
@@ -124,7 +124,7 @@ def run(sweep, directory, font_scale, compact=False):
             "font_point_size": app.font().pointSizeF(),
             "cases": [],
         }
-        sizes = FONT_SIZES if font_scale != 1 or compact else SIZES
+        sizes = (size,) if size else FONT_SIZES if font_scale != 1 or compact else SIZES
         states = (
             ("contact-sheet",)
             if compact
@@ -140,9 +140,16 @@ def run(sweep, directory, font_scale, compact=False):
 
 
 def main():
-    sweep, directory, output, scale = sys.argv[1:5]
-    result = run(sweep, directory, float(scale), "--compact" in sys.argv)
-    Path(output).write_text(json.dumps(result, indent=2))
+    parser = argparse.ArgumentParser()
+    for name in ("sweep", "directory", "output"):
+        parser.add_argument(name)
+    parser.add_argument("scale", type=float)
+    parser.add_argument("--compact", action="store_true")
+    parser.add_argument("--size", choices=[f"{w}x{h}" for w, h in SIZES])
+    args = parser.parse_args()
+    size = tuple(map(int, args.size.split("x"))) if args.size else None
+    result = run(args.sweep, args.directory, args.scale, args.compact, size)
+    Path(args.output).write_text(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

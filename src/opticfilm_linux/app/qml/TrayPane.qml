@@ -32,6 +32,7 @@ ColumnLayout {
         // Accessible.name keeps the full "Select flagged/failed (n)" strings.
         PillButton {
             objectName: "selectFlagged"
+            flat: true
             Layout.fillWidth: true
             Layout.minimumWidth: 0
             horizontalPadding: pane.shortWindow ? Theme.spacingSmall / 2 : Theme.spacingLarge
@@ -50,6 +51,7 @@ ColumnLayout {
         }
         PillButton {
             objectName: "selectFailed"
+            flat: true
             Layout.fillWidth: true
             Layout.minimumWidth: 0
             horizontalPadding: pane.shortWindow ? Theme.spacingSmall / 2 : Theme.spacingLarge

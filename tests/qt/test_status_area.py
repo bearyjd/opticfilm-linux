@@ -96,10 +96,14 @@ def test_review_area_keeps_its_minimum(layout):
         column_height = evaluate(layout, "statusScroll", "parent.height")
         status = named(tree(layout.engine, layout.root), "statusScroll").rect
         review = named(tree(layout.engine, layout.root), "reviewArea").rect
-        minimum = max(17 * gu, 0.5 * page_height)
+        minimum = (
+            0.4 * layout.root.height()
+            if evaluate(layout, "mainPage", "shortWindow")
+            else max(17 * gu, 0.5 * page_height)
+        )
         assert review.height >= minimum - 1, size
         # the status area is capped against the same column the review minimum is enforced in
-        floor = 2 * control_height(gu)
+        floor = evaluate(layout, "statusScroll", "minimumStatusHeight")
         assert status.height <= max(floor, column_height - minimum) + 1, size
         collapse_status(layout)
 
@@ -169,3 +173,12 @@ def test_short_toolbar_actions_remain_available_outside_status_area(layout):
     for name in ("themeAction", "shortcutHelp"):
         assert evaluate(layout, name, "visible && enabled"), name
     assert not any(node.name == "themeToggle" for node in nodes)
+
+
+def test_large_budget_does_not_create_scroll_for_final_entry_margin(layout):
+    layout.apply("worst-stack", (3840, 2160))
+    evaluate(layout, "statusScroll", "expanded = true; contentItem.contentY = 0")
+    assert evaluate(layout, "statusScroll", "heightForBudget(budget) === implicitHeight")
+    assert not evaluate(layout, "statusScroll", "overflowing")
+    assert not evaluate(layout, "statusVerticalScrollBar", "visible")
+    assert not any(node.name == "statusMoreBelow" for node in tree(layout.engine, layout.root))

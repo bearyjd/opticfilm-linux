@@ -12,6 +12,7 @@ Kirigami.Page {
     title: bridge.collection !== "" ? qsTr("%1 — Box %2, section %3").arg(bridge.batchName).arg(bridge.box).arg(bridge.section) : bridge.batchName
     focus: true
     readonly property bool shortWindow: height < Theme.shortMax
+    readonly property real reviewMinimum: shortWindow ? 0.4 * page.Window.window.height : Theme.reviewMin(height)
     readonly property bool compact: width < Theme.compactMax
     readonly property bool expanded: width >= Theme.expandedMin
     readonly property string widthClass: compact ? "compact" : expanded ? "expanded" : "medium"
@@ -46,6 +47,7 @@ Kirigami.Page {
     // and the least any fixed toolbar item may shrink to (they fill up to their natural width, so
     // they give way before the toolbar is starved).
     readonly property real toolbarFloor: Theme.controlHeight
+    readonly property real headerInset: width < 7 * toolbarFloor ? Theme.spacingSmall / 2 : Theme.spacing
     readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo")
 
     function focusReview() {
@@ -121,6 +123,7 @@ Kirigami.Page {
     ConfirmDialog {
         id: heldReleaseDialog
         objectName: "heldReleaseDialog"
+        destructive: true
         property int tray: 0
         property string rawBytes: "0"
         title: qsTr("Release raw cleanup for tray %1?").arg(tray)
@@ -190,6 +193,8 @@ Kirigami.Page {
     header: QQC2.ToolBar {
         RowLayout {
             anchors.fill: parent
+            anchors.leftMargin: page.headerInset
+            anchors.rightMargin: page.headerInset
             spacing: Theme.spacingSmall
 
             PillButton {
@@ -229,7 +234,7 @@ Kirigami.Page {
                 objectName: "trayDrawerToggle"
                 Layout.fillWidth: true
                 Layout.maximumWidth: implicitWidth
-                Layout.minimumWidth: page.toolbarFloor
+                Layout.minimumWidth: implicitWidth
                 clip: true
                 text: qsTr("Trays")
                 icon.name: "view-list-details"
@@ -241,10 +246,10 @@ Kirigami.Page {
                 objectName: "inspectorDrawerToggle"
                 text: qsTr("Inspector (%1)").arg(inspector.count)
                 // Sized for a two-digit count so the toolbar does not jitter as the selection changes.
-                readonly property real stableWidth: Math.max(implicitWidth, implicitWidth - currentLabel.advanceWidth + widestLabel.advanceWidth)
+                readonly property real stableWidth: Math.ceil(leftPadding + rightPadding + widestLabel.advanceWidth + Math.max(icon.width, Theme.iconMedium) + spacing)
                 Layout.fillWidth: true
                 Layout.maximumWidth: stableWidth
-                Layout.minimumWidth: page.toolbarFloor
+                Layout.minimumWidth: implicitWidth
                 clip: true
                 TextMetrics { id: currentLabel; font: inspectorToggle.font; text: inspectorToggle.text }
                 TextMetrics { id: widestLabel; font: inspectorToggle.font; text: qsTr("Inspector (%1)").arg(99) }
@@ -364,10 +369,10 @@ Kirigami.Page {
             Layout.fillWidth: true
             // One budget for both: the column's real height (what enforces the review minimum),
             // floored so the always-visible scanner row can never be squashed away.
-            readonly property real budget: Math.max(2 * Theme.controlHeight, parent.height - Theme.reviewMin(page.height)
-                - (shortcuts.visible ? shortcuts.implicitHeight + 2 * Theme.spacingSmall : 0))
+            readonly property real budget: Math.min(parent.height, Math.max(minimumStatusHeight, parent.height - page.reviewMinimum
+                - (shortcuts.visible ? shortcuts.implicitHeight + 2 * Theme.spacingSmall : 0)))
             Layout.maximumHeight: budget
-            Layout.preferredHeight: Math.max(2 * Theme.controlHeight, Math.min(implicitHeight, budget))
+            Layout.preferredHeight: Math.max(minimumStatusHeight, heightForBudget(budget))
             shortWindow: page.shortWindow
             compact: page.compact
             onBlockingGained: page.closeDrawers()
@@ -385,7 +390,7 @@ Kirigami.Page {
             objectName: "reviewArea"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.minimumHeight: Theme.reviewMin(page.height)
+            Layout.minimumHeight: Math.min(page.reviewMinimum, Math.max(0, parent.height - statusArea.minimumStatusHeight))
             spacing: 0
 
             Item {

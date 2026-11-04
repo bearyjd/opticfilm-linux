@@ -84,7 +84,8 @@ def test_worst_stack_keeps_review_space_and_safety_actions(layout, size, theme):
     nodes = tree(layout.engine, layout.root)
     sheet = named(nodes, "sheetView")
     page = named(nodes, "mainPage")
-    assert sheet.rect.height >= max(300, page.rect.height * 0.5), sheet.rect
+    minimum = 240 if evaluate(layout, "mainPage", "shortWindow") else page.rect.height * 0.5
+    assert sheet.rect.height >= minimum, sheet.rect
     row = nodes[named(nodes, "sheetTray_1").parent]
     assert sheet.rect.height >= row.rect.height, "one complete tray row must fit"
     expand_status(layout)
@@ -323,7 +324,7 @@ def test_short_worst_stack_all_safety_actions_remain_reachable(layout, size, sca
         layout.root,
         ("scannerStatusText", scanner_action, "ejectButton", "loadNextButton", "statusMore"),
     )
-    assert named(nodes, "sheetView").rect.height >= 300
+    assert named(nodes, "sheetView").rect.height >= 240
     expand_status(layout)
     assert_pane_controls_reachable(
         layout,
@@ -339,7 +340,7 @@ def test_short_worst_stack_all_safety_actions_remain_reachable(layout, size, sca
         ),
     )
     assert evaluate(layout, "shortcutHelp", "visible && enabled")
-    assert named(tree(layout.engine, layout.root), "sheetView").rect.height >= 300
+    assert named(tree(layout.engine, layout.root), "sheetView").rect.height >= 240
     assert layout.warnings[warning_start:] == []
 
 
@@ -375,7 +376,7 @@ def test_expanded_status_and_error_details_stay_inside_height_cap(layout):
     expand_status(layout)
     evaluate(layout, "bannerDetails", "clicked()")
     nodes = tree(layout.engine, layout.root)
-    assert named(nodes, "sheetView").rect.height >= 300
+    assert named(nodes, "sheetView").rect.height >= 240
     scroll = named(nodes, "statusScroll").rect
     evaluate(
         layout,

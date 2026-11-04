@@ -29,6 +29,11 @@ Kirigami.Dialog {
     objectName: "orientationDialog"
     title: qsTr("Batch orientation")
     padding: Theme.spacing
+    Binding {
+        target: dialog.header
+        property: "leftPadding"
+        value: dialog.leftPadding
+    }
     standardButtons: Kirigami.Dialog.NoButton
     onOpened: {
         rotationBox.currentIndex = Math.max(0, bridge.rotationChoices.indexOf(bridge.batchRotation));
