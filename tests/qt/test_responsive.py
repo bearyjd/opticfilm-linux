@@ -645,7 +645,7 @@ def test_toolbar_overflow_menu_reaches_secondary_actions(layout, name, size):
     pump(350)
 
 
-def test_large_font_toolbar_keeps_overflow_reachable(sweep600_dir, tmp_path):
+def _toolbar_probe(sweep600_dir, tmp_path, scale, sizes=None):
     output = tmp_path / "result.json"
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software")
     root = Path(__file__).resolve().parents[2]
@@ -653,20 +653,39 @@ def test_large_font_toolbar_keeps_overflow_reachable(sweep600_dir, tmp_path):
     for kind in ("STATE", "CACHE", "CONFIG", "DATA"):
         env[f"XDG_{kind}_HOME"] = str(tmp_path / kind.lower())
     worker = Path(__file__).with_name("toolbar_worker.py")
-    command = [sys.executable, str(worker), str(sweep600_dir), str(tmp_path), str(output), "2"]
-    done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=300)
+    command = [sys.executable, str(worker), str(sweep600_dir), str(tmp_path), str(output), scale]
+    done = subprocess.run(
+        command + ([json.dumps(sizes)] if sizes else []),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
     assert done.returncode == 0, done.stderr[-4000:]
-    result = json.loads(output.read_text())
+    return json.loads(output.read_text())
+
+
+def _assert_overflow_reachable(result, min_gu):
     assert result["warnings"] == []
     assert len(set(result["toggle_widths"])) == 1, "Inspector (n) must not change the toolbar"
     for case in result["cases"]:
-        assert case["gu"] >= 30, case
+        assert case["gu"] >= min_gu, case
         window = Rect(0, 0, *case["size"])
         toolbar, more, theme = (
             Rect(*case[k]) if case[k] else None for k in ("toolbar", "more", "theme")
         )
         assert more and toolbar.contains(more), case
         assert theme and window.contains(theme), case
+
+
+def test_large_font_toolbar_keeps_overflow_reachable(sweep600_dir, tmp_path):
+    _assert_overflow_reachable(_toolbar_probe(sweep600_dir, tmp_path, "2"), 30)
+
+
+@pytest.mark.parametrize("scale", ("1.5", "2.5"))
+def test_toolbar_toggles_do_not_starve_overflow_at_small_windows(sweep600_dir, tmp_path, scale):
+    result = _toolbar_probe(sweep600_dir, tmp_path, scale, [(800, 600), (720, 540)])
+    _assert_overflow_reachable(result, 1)
 
 
 BLOCKING = {

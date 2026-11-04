@@ -32,16 +32,34 @@ Kirigami.Dialog {
     property var previews: []
     property int loaded: 0
     readonly property var bodyFlickable: contentItem.contentItem
-    readonly property bool framesFullyVisible: bodyFlickable
-        && frameGrid.y >= bodyFlickable.contentY - bodyFlickable.originY
-        && frameGrid.y + frameGrid.height <= bodyFlickable.contentY - bodyFlickable.originY + bodyFlickable.height
-    readonly property bool evidenceReviewed: bodyFlickable && (bodyFlickable.atYEnd || framesFullyVisible)
+    // "At the end" is judged from the Flickable's own contentHeight/height/contentY (atYEnd), never from
+    // child geometry, so it stays correct whatever the body contains. Unscrollable content is at its end.
+    readonly property bool framesFullyVisible: !!bodyFlickable && bodyFlickable.atYEnd
+    readonly property bool evidenceReviewed: framesFullyVisible
     objectName: "emptyFramesDialog"
     title: qsTr("Review empty frames in tray %1").arg(tray)
     standardButtons: Kirigami.Dialog.NoButton
     property string zoomUrl: ""
     onPreviewsChanged: Qt.callLater(() => { refreshLoaded(); resetReview(); })
     onAboutToShow: resetReview()
+    // Focus the body so PageDown/Down reach it before any Tab press.
+    onOpened: body.forceActiveFocus()
+
+    // Keyboard-only users cannot drag the body, so scrolling and focus both go through here.
+    function scrollBodyBy(delta: real) {
+        const top = bodyFlickable.originY;
+        const last = Math.max(top, top + bodyFlickable.contentHeight - bodyFlickable.height);
+        bodyFlickable.contentY = Math.max(top, Math.min(last, bodyFlickable.contentY + delta));
+    }
+
+    function revealItem(item: Item) {
+        const top = item.mapToItem(bodyFlickable.contentItem, 0, 0).y - Theme.spacing;
+        const bottom = top + item.height + 2 * Theme.spacing;
+        if (top < bodyFlickable.contentY)
+            scrollBodyBy(top - bodyFlickable.contentY);
+        else if (bottom > bodyFlickable.contentY + bodyFlickable.height)
+            scrollBodyBy(bottom - bodyFlickable.contentY - bodyFlickable.height);
+    }
 
     function resetReview() {
         if (bodyFlickable)
@@ -123,6 +141,18 @@ Kirigami.Dialog {
     ColumnLayout {
         id: body
         spacing: Theme.spacing
+        Keys.onPressed: event => {
+            const steps = {
+                [Qt.Key_PageDown]: dialog.bodyFlickable.height * 0.9,
+                [Qt.Key_PageUp]: -dialog.bodyFlickable.height * 0.9,
+                [Qt.Key_Down]: 4 * Theme.gu,
+                [Qt.Key_Up]: -4 * Theme.gu
+            };
+            if (event.key in steps) {
+                dialog.scrollBodyBy(steps[event.key]);
+                event.accepted = true;
+            }
+        }
         QQC2.Label {
             id: instructions
             Layout.fillWidth: true
@@ -174,6 +204,7 @@ Kirigami.Dialog {
                         text: qsTr("Enlarge frame %1").arg(modelData.position)
                         icon.name: "zoom-in"
                         enabled: preview.status === Image.Ready
+                        onActiveFocusChanged: if (activeFocus) dialog.revealItem(enlargeButton)
                         onClicked: dialog.enlargeFrame(index)
                     }
                 }

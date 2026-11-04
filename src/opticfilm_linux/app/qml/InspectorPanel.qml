@@ -118,8 +118,8 @@ QQC2.ScrollView {
                 }
                 Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(panel.width * 0.7, panel.height * Theme.inspectorPreviewFraction)
-                    Layout.maximumHeight: panel.height * Theme.inspectorPreviewFraction
+                    Layout.preferredHeight: Math.max(Theme.minCell * 0.5, Math.min(panel.width * 0.7, panel.height * Theme.inspectorPreviewFraction))
+                    Layout.maximumHeight: Math.max(Theme.minCell * 0.5, panel.height * Theme.inspectorPreviewFraction)
                     Image {
                         objectName: "inspectorPreview"
                         anchors.fill: parent

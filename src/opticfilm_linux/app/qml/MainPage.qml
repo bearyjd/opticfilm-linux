@@ -8,11 +8,11 @@ Kirigami.Page {
 
     objectName: "mainPage"
     padding: 0
-    bottomPadding: shortWindow ? 0 : page.Window.window.themeFooterHeight
+    bottomPadding: shortWindow || !page.Window.window ? 0 : page.Window.window.themeFooterHeight
     title: bridge.collection !== "" ? qsTr("%1 — Box %2, section %3").arg(bridge.batchName).arg(bridge.box).arg(bridge.section) : bridge.batchName
     focus: true
     readonly property bool shortWindow: height < Theme.shortMax
-    readonly property real reviewMinimum: shortWindow ? 0.4 * page.Window.window.height : Theme.reviewMin(height)
+    readonly property real reviewMinimum: shortWindow ? 0.4 * (page.Window.window ? page.Window.window.height : page.height) : Theme.reviewMin(height)
     readonly property bool compact: width < Theme.compactMax
     readonly property bool expanded: width >= Theme.expandedMin
     readonly property string widthClass: compact ? "compact" : expanded ? "expanded" : "medium"
@@ -231,12 +231,18 @@ Kirigami.Page {
                 onClicked: bridge.finishBox(true)
             }
             QQC2.Button {
+                id: trayToggle
                 objectName: "trayDrawerToggle"
                 Layout.fillWidth: true
-                Layout.maximumWidth: implicitWidth
-                Layout.minimumWidth: implicitWidth
+                // Below its full width it shrinks to the icon alone so it cannot starve the overflow button.
+                readonly property real fullWidth: traysProbe.implicitWidth
+                Layout.maximumWidth: fullWidth
+                Layout.minimumWidth: Math.max(page.toolbarFloor, Math.ceil(leftPadding + rightPadding + Math.max(icon.width, Theme.iconMedium)))
+                display: width < fullWidth ? QQC2.AbstractButton.IconOnly : QQC2.AbstractButton.TextBesideIcon
                 clip: true
                 text: qsTr("Trays")
+                // Same button in text mode, hidden: its implicit width is the width the label needs.
+                QQC2.Button { id: traysProbe; visible: false; font: trayToggle.font; text: trayToggle.text; icon.name: trayToggle.icon.name }
                 icon.name: "view-list-details"
                 visible: page.compact
                 onClicked: trayDrawer.open()
@@ -246,13 +252,14 @@ Kirigami.Page {
                 objectName: "inspectorDrawerToggle"
                 text: qsTr("Inspector (%1)").arg(inspector.count)
                 // Sized for a two-digit count so the toolbar does not jitter as the selection changes.
-                readonly property real stableWidth: Math.ceil(leftPadding + rightPadding + widestLabel.advanceWidth + Math.max(icon.width, Theme.iconMedium) + spacing)
+                readonly property real stableWidth: inspectorProbe.implicitWidth
                 Layout.fillWidth: true
                 Layout.maximumWidth: stableWidth
-                Layout.minimumWidth: implicitWidth
+                // Below its stable width it shrinks to the icon alone (the count is still in its accessible name).
+                Layout.minimumWidth: Math.max(page.toolbarFloor, Math.ceil(leftPadding + rightPadding + Math.max(icon.width, Theme.iconMedium)))
+                display: width < stableWidth ? QQC2.AbstractButton.IconOnly : QQC2.AbstractButton.TextBesideIcon
                 clip: true
-                TextMetrics { id: currentLabel; font: inspectorToggle.font; text: inspectorToggle.text }
-                TextMetrics { id: widestLabel; font: inspectorToggle.font; text: qsTr("Inspector (%1)").arg(99) }
+                QQC2.Button { id: inspectorProbe; visible: false; font: inspectorToggle.font; text: qsTr("Inspector (%1)").arg(99); icon.name: inspectorToggle.icon.name }
                 icon.name: "document-properties"
                 visible: !page.expanded
                 onClicked: inspectorDrawer.open()
@@ -390,6 +397,7 @@ Kirigami.Page {
             objectName: "reviewArea"
             Layout.fillWidth: true
             Layout.fillHeight: true
+            // At large font scales the review area can drop below 240 px by design: the status area keeps its minimum so safety rows stay reachable.
             Layout.minimumHeight: Math.min(page.reviewMinimum, Math.max(0, parent.height - statusArea.minimumStatusHeight))
             spacing: 0
 

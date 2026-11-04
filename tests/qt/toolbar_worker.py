@@ -55,12 +55,13 @@ def toggle_widths(fixture):
 
 def main():
     sweep, directory, output, scale = sys.argv[1:5]
+    sizes = [tuple(size) for size in json.loads(sys.argv[5])] if len(sys.argv) > 5 else None
     app = QApplication(["toolbar"])
     font = app.font()
     font.setPointSizeF(font.pointSizeF() * float(scale))
     app.setFont(font)  # Must precede construction of the QML engine and Kirigami Units.
     with create_layout(app, Path(sweep), Path(directory)) as fixture:
-        cases = [probe(fixture, size) for size in ((480, 320), (800, 600), (1024, 600))]
+        cases = [probe(fixture, size) for size in sizes or ((480, 320), (800, 600), (1024, 600))]
         widths = toggle_widths(fixture)
         result = {"cases": cases, "toggle_widths": widths, "warnings": fixture.warnings}
         Path(output).write_text(json.dumps(result))
