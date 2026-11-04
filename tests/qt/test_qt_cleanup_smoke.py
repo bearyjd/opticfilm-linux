@@ -96,6 +96,8 @@ def test_failed_automatic_cleanup_renders_actual_raw_outcome(loaded, tmp_path, o
     bridge._controller._rebuild()
     _drain_deferred_deletes()
     root = engine.rootObjects()[0]
+    if _prop(root, "trayDrawerToggle", "visible"):
+        _click(root, "trayDrawerToggle")
     queue = root.findChild(QQuickItem, "trayQueue")
     queue.setProperty("currentIndex", 0)
     # Keep the parentless delegate/content wrappers alive while reading their labels.

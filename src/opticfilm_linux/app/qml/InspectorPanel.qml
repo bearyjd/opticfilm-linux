@@ -14,6 +14,7 @@ QQC2.ScrollView {
     signal reexportRequested()
     clip: true
     contentWidth: availableWidth
+    implicitWidth: 0
     QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
 
     function setting(field, fallback) {
@@ -80,6 +81,7 @@ QQC2.ScrollView {
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spacing
             Layout.rightMargin: Theme.spacing
+            wrapMode: Text.Wrap
             text: panel.count ? qsTr("%1 selected").arg(panel.count) : qsTr("Select a slide to inspect")
             color: Theme.text
             font.pixelSize: Theme.fontHeading
@@ -186,6 +188,7 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "rotateSelectionLeft"
                     text: "↶"
+                    implicitWidth: Theme.controlHeight
                     font.pixelSize: Theme.fontRotation
                     implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate left")
@@ -196,6 +199,7 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "rotateSelectionRight"
                     text: "↷"
+                    implicitWidth: Theme.controlHeight
                     font.pixelSize: Theme.fontRotation
                     implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate right")

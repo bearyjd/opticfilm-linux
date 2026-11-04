@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QUrl  # noqa: E402
-from test_qt_smoke import _scanned, _wait, loaded, qapp  # noqa: E402, F401
+from test_qt_smoke import _click, _scanned, _wait, loaded, qapp  # noqa: E402, F401
 
 from opticfilm_linux.app.qt.bridge import _slide_dict  # noqa: E402
 from opticfilm_linux.app.state import SlideCard  # noqa: E402
@@ -58,6 +58,7 @@ def test_mark_empty_button_routes_slide_back_to_blank(loaded, tmp_path):
     _scanned(bridge, tmp_path, "Mark empty")
     bridge.selectSlide(1, 1, 0)
     root = engine.rootObjects()[0]
+    _click(root, "inspectorDrawerToggle")
     _wait(bridge, lambda: root.findChild(QObject, "markEmpty_1") is not None)
     button = root.findChild(QObject, "markEmpty_1")
     assert button is not None and button.property("enabled")

@@ -10,8 +10,8 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
-from layout_fixture import create_layout, pump
-from layout_probe import detect, named, tree
+from layout_fixture import LayoutDialog, create_layout, pump
+from layout_probe import assert_reachable, detect, named, tree
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QFont
 from PySide6.QtQml import QQmlComponent
@@ -71,14 +71,7 @@ def record(fixture, state, size, theme):
         pump(50)
     nodes = tree(fixture.engine, fixture.root, dialog)
     issues = detect(fixture.engine, fixture.root, dialog, nodes)
-    controls = (
-        {}
-        if dialog
-        else {
-            name: [named(nodes, name).rect.width, named(nodes, name).rect.height]
-            for name in CONTROLS
-        }
-    )
+    controls = {} if dialog else measure_controls(fixture, nodes)
     fonts = [n.prop("fontPx") for n in nodes if n.textitem and n.text]
     return {
         "key": f"{size[0]}x{size[1]}:{theme}:{state}",
@@ -88,6 +81,34 @@ def record(fixture, state, size, theme):
         "dpr": fixture.root.devicePixelRatio(),
         "size": [fixture.root.width(), fixture.root.height()],
     }
+
+
+def measure_controls(fixture, nodes):
+    """Measure controls directly or after opening the reachable Inspector drawer."""
+    direct = tuple(name for name in CONTROLS if any(n.name == name for n in nodes))
+    assert_reachable(nodes, fixture.root, direct)
+    controls = {
+        name: [named(nodes, name).rect.width, named(nodes, name).rect.height] for name in direct
+    }
+    missing = set(CONTROLS) - set(direct)
+    if missing:
+        assert missing == {"acceptSelection"}, missing
+        assert_reachable(nodes, fixture.root, ("inspectorDrawerToggle",))
+        popup = LayoutDialog(fixture.engine, fixture.root, "inspectorDrawer")
+        popup.invoke("open")
+        pump(350)
+        try:
+            drawer_nodes = tree(fixture.engine, fixture.root, popup)
+            assert_reachable(drawer_nodes, fixture.root, missing)
+            issues = detect(fixture.engine, fixture.root, popup, drawer_nodes)
+            assert not issues, issues
+            item = named(drawer_nodes, "acceptSelection")
+            controls["acceptSelection"] = [item.rect.width, item.rect.height]
+        finally:
+            popup.invoke("close")
+            pump(350)
+    assert set(controls) == set(CONTROLS)
+    return controls
 
 
 def run(sweep, directory, font_scale, compact=False):
