@@ -9,9 +9,17 @@ QQC2.Frame {
     property bool compact: false
     signal terminalHelp()
     readonly property bool active: ["jogging", "await_reinsert", "loading"].indexOf(bridge.loadPhase) >= 0
-    visible: bridge.canFirstLoad || active || bridge.loadPhase === "failed" || bridge.loadPhase === "done"
+    readonly property bool available: bridge.canFirstLoad || active || bridge.loadPhase === "failed" || bridge.loadPhase === "done"
+    visible: available
     Layout.fillWidth: true
     Layout.margins: Kirigami.Units.smallSpacing
+
+    Binding {
+        target: cardColumn
+        property: "spacing"
+        value: Theme.spacingSmall
+        when: card.compact
+    }
 
     ConfirmDialog {
         id: cancelDialog
@@ -21,7 +29,18 @@ QQC2.Frame {
         onConfirmed: bridge.firstLoadCancel()
     }
 
+    // Regular size keeps the Frame's default padding and the layout's default spacing, exactly as
+    // before contentItem replaced anchors.fill (that also sat inside the padded content item);
+    // compact tightens both.
+    Binding {
+        target: card
+        property: "padding"
+        value: Theme.spacingSmall
+        when: card.compact
+    }
+
     contentItem: ColumnLayout {
+        id: cardColumn
         QQC2.Label {
             objectName: "firstLoadText"
             Layout.fillWidth: true

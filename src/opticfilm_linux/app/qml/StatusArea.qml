@@ -10,8 +10,8 @@ QQC2.ScrollView {
     property bool compact: false
     property bool expanded: false
     readonly property int entryLimit: shortWindow ? 1 : 3
-    readonly property bool firstLoadActive: ["jogging", "await_reinsert", "loading"].indexOf(bridge.loadPhase) >= 0
-    readonly property bool firstLoadAvailable: bridge.canFirstLoad || firstLoadActive || bridge.loadPhase === "failed" || bridge.loadPhase === "done"
+    readonly property bool firstLoadActive: firstLoadCard.active
+    readonly property bool firstLoadAvailable: firstLoadCard.available
     readonly property var entryKeys: [
         {key: "activeFirstLoad", present: firstLoadAvailable && firstLoadActive},
         {key: "error", present: bridge.hasBanner},
@@ -24,6 +24,8 @@ QQC2.ScrollView {
     readonly property int hiddenEntryCount: Math.max(0, entryKeys.length - entryLimit)
     readonly property int visibleEntryCount: expanded ? entryKeys.length : Math.min(entryLimit, entryKeys.length)
     readonly property alias themeHost: compactThemeHost
+    onHiddenEntryCountChanged: if (hiddenEntryCount === 0)
+        expanded = false
     signal loadHelp()
     signal confirmScanner()
     signal reviewEmptyFrames()
@@ -54,7 +56,8 @@ QQC2.ScrollView {
 
     padding: 0
     clip: true
-    implicitHeight: statusColumn.implicitHeight
+    implicitHeight: statusColumn.implicitHeight + pinnedFooter.implicitHeight
+    bottomPadding: pinnedFooter.implicitHeight
     contentWidth: availableWidth
     contentHeight: statusColumn.implicitHeight
     QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
@@ -142,6 +145,7 @@ QQC2.ScrollView {
             Layout.fillWidth: true
             visible: area.entryVisible("activeFirstLoad")
             FirstLoadCard {
+                id: firstLoadCard
                 parent: area.firstLoadActive ? activeFirstLoadSlot : idleFirstLoadSlot
                 compact: area.shortWindow
                 onTerminalHelp: area.loadHelp()
@@ -225,6 +229,7 @@ QQC2.ScrollView {
             visible: area.entryVisible("auto")
             QQC2.Label {
                 objectName: "autoPipelineStatus"
+                visible: text !== ""
                 parent: bridge.emptyConfirmationCount > 0 ? emptyTextSlot : bridge.heldTray > 0 ? heldTextSlot : autoSlot
                 Layout.fillWidth: true
                 Layout.row: 0
@@ -232,6 +237,18 @@ QQC2.ScrollView {
                 text: bridge.emptyConfirmationCount > 0 ? qsTr("%1 frame(s) look empty - confirm they are empty to free raw").arg(bridge.emptyConfirmationCount) : bridge.autoStatus
             }
         }
+    }
+
+    // Pinned below the scrolled entries so the "N more" button (a hidden safety entry's only
+    // indication) and the short-window theme/shortcuts row can never scroll out of view.
+    ColumnLayout {
+        id: pinnedFooter
+        parent: area
+        x: 0
+        y: area.height - height
+        width: area.width
+        z: 1
+        spacing: 0
         QQC2.Button {
             objectName: "statusMore"
             visible: area.hiddenEntryCount > 0
@@ -246,7 +263,7 @@ QQC2.ScrollView {
             spacing: Theme.spacingSmall
             Item {
                 id: compactThemeHost
-                implicitWidth: 10 * Theme.gu
+                implicitWidth: children.length > 0 ? children[0].implicitWidth : 0
                 implicitHeight: Theme.controlHeight
             }
             QQC2.Button {

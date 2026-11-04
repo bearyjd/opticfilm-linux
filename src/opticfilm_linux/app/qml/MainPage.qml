@@ -235,9 +235,12 @@ Kirigami.Page {
         StatusArea {
             id: statusArea
             Layout.fillWidth: true
-            Layout.maximumHeight: page.height - Theme.reviewMin(page.height)
-            Layout.preferredHeight: Math.min(implicitHeight, parent.height - Theme.reviewMin(page.height)
+            // One budget for both: the column's real height (what enforces the review minimum),
+            // floored so the always-visible scanner row can never be squashed away.
+            readonly property real budget: Math.max(2 * Theme.controlHeight, parent.height - Theme.reviewMin(page.height)
                 - (shortcuts.visible ? shortcuts.implicitHeight + 2 * Theme.spacingSmall : 0))
+            Layout.maximumHeight: budget
+            Layout.preferredHeight: Math.max(2 * Theme.controlHeight, Math.min(implicitHeight, budget))
             shortWindow: page.shortWindow
             compact: page.width < 50 * Theme.gu
             onLoadHelp: loadHelpDialog.open()
@@ -252,6 +255,7 @@ Kirigami.Page {
         }
 
         RowLayout {
+            objectName: "reviewArea"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.minimumHeight: Theme.reviewMin(page.height)
