@@ -156,7 +156,7 @@ def _process_slide(
     options = options_for(defaults, tray.mode, snapshot.settings, snapshot.position)
     enhanced = slide.rgb if blank else enhance_slide(slide, options, sweep.dpi)
     try:
-        publish = _stage_previews(store, number, slide, enhanced, options, blank)
+        publish = _stage_previews(store, number, position, slide, enhanced, options, blank)
         flags = () if blank else compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
         _merge_slide(
             store,
@@ -189,13 +189,13 @@ def _pending_files(store: BatchStore, number: int, position: int) -> tuple[Path,
 def _stage_previews(
     store: BatchStore,
     number: int,
+    position: int,
     slide: Slide,
     enhanced,
     options: ProcessOptions,
     blank: bool,
 ) -> Callable[[], None]:
     """Write the pending previews and master; returns what puts them in place at publish."""
-    position = slide.index + 1
     before = store.preview_path(number, position, "before")
     after = store.preview_path(number, position, "after")
     master = store.master_path(number, position)
@@ -280,7 +280,7 @@ def enhance_tray(
         _process_slide(store, number, slide, sweep, tray, snapshot)
         if on_progress is not None:
             on_progress(position, len(slides))
-    _drop_stray_masters(store, number, {slide.index + 1 for slide in slides})
+    _drop_stray_masters(store, number, set(slides))
     store.update_tray_if(number, current, stage=TrayStage.REVIEW)
 
 
