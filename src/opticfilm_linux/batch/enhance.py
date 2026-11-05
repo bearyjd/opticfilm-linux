@@ -7,7 +7,7 @@ settings, and only its previews and flags are refreshed.
 import dataclasses
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from opticfilm_linux.batch.flags import compute_flags
@@ -27,7 +27,7 @@ from opticfilm_linux.batch.slots import compose, slot_orientation
 from opticfilm_linux.batch.store import BatchError, BatchStore, is_interrupted
 from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
-from opticfilm_linux.pipeline.split import SlideSplitError, is_blank, split_slides
+from opticfilm_linux.pipeline.split import SlideSplitError, is_blank, split_positions
 from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import SweepFormatError, load_sweep
 
@@ -148,7 +148,7 @@ def _process_slide(
     snapshot: SlideRecord,
 ) -> None:
     defaults = store.snapshot().defaults
-    position = slide.index + 1
+    position = snapshot.position  # the holder opening; the sweep index differs once one is skipped
     blank = (
         snapshot.status is SlideStatus.BLANK
         and (snapshot.owner_decided or snapshot.preview_stale or not snapshot.blank_fingerprint)
@@ -271,18 +271,27 @@ def enhance_tray(
 
     try:
         sweep = load_sweep(store.sweep_dir(number, version))
-        slides = split_slides(sweep)
+        slides = split_positions(sweep)
     except (SweepFormatError, SlideSplitError) as exc:
         store.update_tray_if(number, current, stage=TrayStage.FAILED, error=str(exc))
         return
-    for slide in slides:
-        position = slide.index + 1
+    for position, slide in slides.items():
         snapshot = _existing(tray, position) or SlideRecord(position=position)
         _process_slide(store, number, slide, sweep, tray, snapshot)
         if on_progress is not None:
             on_progress(position, len(slides))
     _drop_stray_masters(store, number, {slide.index + 1 for slide in slides})
     store.update_tray_if(number, current, stage=TrayStage.REVIEW)
+
+
+def require_scanned(
+    slides: dict[int, Slide], number: int, positions: Iterable[int]
+) -> dict[int, Slide]:
+    """``slides``, unless a slide record's holder opening is not in the sweep (no raw data)."""
+    if missing := sorted(set(positions) - set(slides)):
+        names = ", ".join(map(str, missing))
+        raise BatchError(f"tray {number} has no scanned opening {names}")
+    return slides
 
 
 def reenhance_slide(store: BatchStore, number: int, position: int) -> None:
@@ -293,5 +302,5 @@ def reenhance_slide(store: BatchStore, number: int, position: int) -> None:
     if snapshot is None:
         raise BatchError(f"tray {number} has no slide {position}")
     sweep = load_sweep(store.sweep_dir(number, tray.sweep_version))
-    slides = split_slides(sweep)
-    _process_slide(store, number, slides[position - 1], sweep, tray, snapshot)
+    slides = require_scanned(split_positions(sweep), number, (position,))
+    _process_slide(store, number, slides[position], sweep, tray, snapshot)

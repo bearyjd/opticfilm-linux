@@ -44,7 +44,7 @@ from opticfilm_linux.batch.cleanup_recovery import (
     recover_interrupted_cleanup as recover_interrupted_cleanup,
 )
 from opticfilm_linux.batch.empty import is_empty_confirmed
-from opticfilm_linux.batch.enhance import RawRemoved, options_for
+from opticfilm_linux.batch.enhance import RawRemoved, options_for, require_scanned
 from opticfilm_linux.batch.export_contract import (
     _export_receipt,
     _metadata_spec,
@@ -81,7 +81,7 @@ from opticfilm_linux.output import (
     write_slide,
 )
 from opticfilm_linux.pipeline.run import enhance_slide
-from opticfilm_linux.pipeline.split import split_slides
+from opticfilm_linux.pipeline.split import split_positions
 from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
 
@@ -303,13 +303,13 @@ def _export_tray(
     _checked_export_parent(spec.directory, root, store)
     sweep = load_sweep(store.sweep_dir(tray.number, tray.sweep_version))
     spec = dataclasses.replace(spec, scan_dpi=sweep.dpi)
-    slides = split_slides(sweep)
+    slides = require_scanned(split_positions(sweep), tray.number, (r.position for r in pending))
     for record in pending:
         if cancel is not None and cancel.is_set():
             return False
         slide_spec = _slide_spec(manifest, tray, record, spec)
         options = options_for(defaults, tray.mode, record.settings, record.position)
-        slide = slides[record.position - 1]
+        slide = slides[record.position]
         slide_spec = _metadata_spec(manifest, tray, record, slide, options, slide_spec)
         path, exported = _write_export(
             store, root, tray, record, slide, options, slide_spec, defaults
@@ -485,16 +485,16 @@ def _verify_raw(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) 
     if current not in folders:
         raise CleanupRefused("current raw sweep is missing; cleanup refused")
     try:
-        slides = split_slides(load_sweep(current))
+        slides = split_positions(load_sweep(current))
         positions = [slide.position for slide in tray.slides]
         if (
             any(type(position) is not int for position in positions)
             or len(positions) != len(slides)
-            or set(positions) != set(range(1, len(slides) + 1))
+            or set(positions) != set(slides)
         ):
             raise ValueError("manifest positions must cover every raw position exactly once")
         for slide in tray.slides:
-            current_digest = raw_region_sha256(slides[slide.position - 1])
+            current_digest = raw_region_sha256(slides[slide.position])
             if slide.status is SlideStatus.BLANK:
                 if not is_empty_confirmed(tray, slide) or slide.blank_fingerprint != current_digest:
                     raise ValueError("empty confirmation does not match the current raw scan")

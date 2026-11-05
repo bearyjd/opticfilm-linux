@@ -59,7 +59,7 @@ def store(tmp_path, monkeypatch):
         )
         for i in (1, 2, 3)
     ]
-    monkeypatch.setattr(exports, "split_slides", lambda _: slides)
+    monkeypatch.setattr(exports, "split_positions", lambda _: dict(enumerate(slides, start=1)))
     monkeypatch.setattr(exports, "enhance_slide", lambda slide, *_: slide.rgb)
     yield opened
     opened.close()

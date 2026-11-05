@@ -33,8 +33,13 @@ class ScanEvidence:
     diagnostics: tuple[str, ...]
 
 
-def diagnostics_from_files(paths: list[Path], frames: int) -> tuple[str, ...]:
-    """Retain one JSON object per frame; never choose between competing sidecars."""
+def diagnostics_from_files(
+    paths: list[Path], frames: int, scanned: tuple[int, ...] | None = None
+) -> tuple[str, ...]:
+    """Retain one JSON object per frame; never choose between competing sidecars.
+
+    The result stays indexed by frame number; a frame not in ``scanned`` is ``{}`` by design.
+    """
     candidates: dict[int, list[Path]] = {}
     for path in paths:
         match = _DIAGNOSTIC_NAME.fullmatch(path.name)
@@ -42,6 +47,9 @@ def diagnostics_from_files(paths: list[Path], frames: int) -> tuple[str, ...]:
             candidates.setdefault(frame, []).append(path)
     result = []
     for frame in range(1, frames + 1):
+        if scanned is not None and frame not in scanned:
+            result.append("{}")
+            continue
         matches = candidates.get(frame, [])
         if len(matches) != 1:
             log.warning("missing or ambiguous scan diagnostics for frame %d", frame)

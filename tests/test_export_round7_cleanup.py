@@ -14,13 +14,13 @@ from test_export_safety import delivery as delivery
 def test_interrupted_cleanup_rechecks_raw_before_deletion(delivery, monkeypatch):
     store, _ = _delivered(delivery)
     store.update_tray(1, raw_removed=True, cleanup_sweeps=(1,))
-    original = export.split_slides
+    original = export.split_positions
 
     def altered(sweep):
         slides = original(sweep)
-        return [dataclasses.replace(slides[0], rgb=np.zeros_like(slides[0].rgb))]
+        return {1: dataclasses.replace(slides[1], rgb=np.zeros_like(slides[1].rgb))}
 
-    monkeypatch.setattr(export, "split_slides", altered)
+    monkeypatch.setattr(export, "split_positions", altered)
     with pytest.raises(export.CleanupRefused, match="current raw scan"):
         export.cleanup_raw(store, 1)
     assert store.sweep_dir(1, 1).exists()
@@ -160,18 +160,18 @@ def test_failed_postcommit_reset_cannot_turn_refusal_into_cleanup(
     delivery, monkeypatch, retry_while_disk_full
 ):
     store, _ = _delivered(delivery)
-    original_update, original_split = store.update, export.split_slides
+    original_update, original_split = store.update, export.split_positions
 
     def altered(sweep):
         slides = original_split(sweep)
-        return [dataclasses.replace(slides[0], rgb=np.zeros_like(slides[0].rgb))]
+        return {1: dataclasses.replace(slides[1], rgb=np.zeros_like(slides[1].rgb))}
 
     def fill_disk(change):
         if store.snapshot().trays[0].raw_removed:
             raise OSError("no space for cleanup reset")
         manifest = original_update(change)
         if manifest.trays[0].raw_removed:
-            monkeypatch.setattr(export, "split_slides", altered)
+            monkeypatch.setattr(export, "split_positions", altered)
         return manifest
 
     monkeypatch.setattr(store, "update", fill_disk)
