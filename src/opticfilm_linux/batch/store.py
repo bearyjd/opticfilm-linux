@@ -163,6 +163,10 @@ class BatchStore:
     def preview_path(self, number: int, position: int, kind: Literal["before", "after"]) -> Path:
         return self.tray_dir(number) / "previews" / f"{position:02d}-{kind}.jpg"
 
+    def master_path(self, number: int, position: int) -> Path:
+        """The lossless "after" of the last full render, which quick turns are made from."""
+        return self.tray_dir(number) / "previews" / f"{position:02d}-master.png"
+
     def recover_interrupted(self) -> tuple[int, ...]:
         """Apply the crash-recovery rules; return the trays waiting for enhancement."""
 

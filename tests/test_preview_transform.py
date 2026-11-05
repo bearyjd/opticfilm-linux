@@ -1,0 +1,164 @@
+"""The dihedral transform that turns a preview from one effective orientation into another."""
+
+import itertools
+
+import numpy as np
+import pytest
+from PIL import Image, PngImagePlugin
+
+from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideSettings, SlotOrientation
+from opticfilm_linux.batch.preview_transform import (
+    effective_orientation,
+    preview_transform,
+    transform_preview,
+)
+from opticfilm_linux.batch.previews import (
+    MASTER_ORIENTATION,
+    make_preview,
+    read_master,
+    write_master,
+)
+from opticfilm_linux.pipeline.orient import apply_orientation
+
+ORIENTATIONS = tuple(itertools.product(ROTATIONS, (False, True)))
+POSITION = 2
+
+
+def _sample() -> np.ndarray:
+    """A non-square image with no symmetry, different from the probe the module uses."""
+    rng = np.random.default_rng(7)
+    return rng.integers(0, 255, size=(5, 3, 3), dtype=np.uint8)
+
+
+def _defaults(batch, slot) -> BatchDefaults:
+    slots = () if slot == (0, False) else (SlotOrientation(POSITION, *slot),)
+    return BatchDefaults(rotation=batch[0], mirror=batch[1], slots=slots)
+
+
+def _check(old, new) -> None:
+    image = _sample()
+    shown = apply_orientation(image, *old)
+    assert np.array_equal(
+        transform_preview(shown, preview_transform(old, new)), apply_orientation(image, *new)
+    )
+
+
+@pytest.mark.parametrize("old", ORIENTATIONS)
+@pytest.mark.parametrize("new", ORIENTATIONS)
+def test_transform_maps_every_orientation_to_every_other(old, new):
+    _check(old, new)
+
+
+def test_same_orientation_is_the_identity():
+    for orientation in ORIENTATIONS:
+        assert preview_transform(orientation, orientation) == (0, False)
+
+
+@pytest.mark.parametrize("batch", ORIENTATIONS)
+@pytest.mark.parametrize("slot", ORIENTATIONS)
+def test_slide_setting_changes_under_every_batch_and_slot_default(batch, slot):
+    defaults = _defaults(batch, slot)
+    for old, new in itertools.product(ORIENTATIONS, repeat=2):
+        before = effective_orientation(
+            defaults, "positive", SlideSettings(*old[:1], mirror=old[1]), POSITION
+        )
+        after = effective_orientation(
+            defaults, "positive", SlideSettings(*new[:1], mirror=new[1]), POSITION
+        )
+        _check(before, after)
+
+
+@pytest.mark.parametrize("slot", ORIENTATIONS)
+@pytest.mark.parametrize("slide", ORIENTATIONS)
+def test_batch_default_changes_under_every_slot_and_slide_setting(slot, slide):
+    settings = SlideSettings(rotation=slide[0], mirror=slide[1])
+    for old, new in itertools.product(ORIENTATIONS, repeat=2):
+        before = effective_orientation(_defaults(old, slot), "negative", settings, POSITION)
+        after = effective_orientation(_defaults(new, slot), "negative", settings, POSITION)
+        _check(before, after)
+
+
+def test_effective_orientation_follows_the_pipeline_options():
+    defaults = _defaults((90, True), (180, False))
+    settings = SlideSettings(rotation=270, mirror=True)
+    from opticfilm_linux.batch.enhance import options_for
+
+    options = options_for(defaults, "positive", settings, POSITION)
+    assert effective_orientation(defaults, "positive", settings, POSITION) == (
+        options.rotation,
+        options.mirror,
+    )
+
+
+def test_transform_returns_a_new_array():
+    image = _sample()
+    out = transform_preview(image, (0, False))
+    assert np.array_equal(out, image) and not np.shares_memory(out, image)
+
+
+def test_quarter_turns_swap_the_preview_dimensions():
+    image = _sample()
+    assert transform_preview(image, preview_transform((0, False), (90, False))).shape == (3, 5, 3)
+
+
+@pytest.mark.parametrize("old", ORIENTATIONS)
+@pytest.mark.parametrize("new", ORIENTATIONS)
+def test_turning_a_downscaled_preview_matches_downscaling_the_turned_slide(old, new):
+    """At full resolution the preview is a downscale: turning must commute with it."""
+    rng = np.random.default_rng(11)
+    slide = rng.integers(0, 65535, size=(400, 2100, 3), dtype=np.uint16)
+    shown = make_preview(apply_orientation(slide, *old))
+    wanted = make_preview(apply_orientation(slide, *new))
+    turned = transform_preview(shown, preview_transform(old, new))
+    assert turned.shape == wanted.shape
+    assert float(np.abs(turned.astype(np.int16) - wanted.astype(np.int16)).mean()) < 1.0
+
+
+def _tagged(path, text):
+    info = PngImagePlugin.PngInfo()
+    if text is not None:
+        info.add_text(MASTER_ORIENTATION, text)
+    Image.fromarray(_sample().astype(np.uint8)).save(path, format="PNG", pnginfo=info)
+
+
+@pytest.mark.parametrize("orientation", ORIENTATIONS)
+def test_a_master_reads_back_its_orientation(tmp_path, orientation):
+    write_master(_sample(), orientation, tmp_path / "m.png")
+    pixels, read = read_master(tmp_path / "m.png")
+    assert read == orientation and np.array_equal(pixels, _sample())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "",
+        "x,y",
+        "90",
+        "90,0,1",
+        "90,2",
+        "90,true",
+        "90, 1",
+        "45,0",
+        "-90,0",
+        "450,0",
+        "1e2,0",
+    ],
+)
+def test_a_master_with_a_bad_tag_is_no_master(tmp_path, text):
+    _tagged(tmp_path / "m.png", text)
+    assert read_master(tmp_path / "m.png") is None
+
+
+def test_a_truncated_or_corrupt_master_is_no_master(tmp_path):
+    good = tmp_path / "good.png"
+    write_master(_sample(), (90, True), good)
+    data = good.read_bytes()
+    (tmp_path / "short.png").write_bytes(data[: len(data) // 2])
+    idat = data.index(b"IDAT")
+    flipped = bytearray(data)
+    flipped[idat + 6] ^= 0xFF  # inside the compressed pixels: the chunk CRC no longer matches
+    (tmp_path / "crc.png").write_bytes(bytes(flipped))
+    (tmp_path / "junk.png").write_bytes(b"not a png at all")
+    for name in ("short.png", "crc.png", "junk.png", "missing.png"):
+        assert read_master(tmp_path / name) is None, name
