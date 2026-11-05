@@ -271,11 +271,25 @@ class SelectionCommands:
 
         A value that breaks the rules, or nothing to edit, raises ValueError at once.
         """
+        self.set_slides_meta(self._selection_keys(), field, value)
+
+    def set_slides_meta(self, keys, field: str, value: str | None) -> None:
+        """Like ``set_selection_meta`` for explicit ``(tray, position)`` keys: the strip passes
+        the slides selected when the owner started typing, not whatever is selected now."""
         change = {field: checked_override(field, value)}
         self._check_meta_target()
-        keys = self._selection_keys()
+        keys = frozenset((int(tray), int(position)) for tray, position in keys)
         if not keys:
             raise ValueError("Select at least one slide first")
+        with self._lock:
+            manifest = self._manifest
+        known = (
+            {(t.number, s.position) for t in manifest.trays for s in t.slides}
+            if manifest
+            else set()
+        )
+        if not keys <= known:
+            raise ValueError("Some of those slides are no longer in this batch")
         self._run_meta_edit(lambda store: review.edit_meta_many(store, keys, change))
 
     def reset_selection_meta(self, field: str) -> None:
