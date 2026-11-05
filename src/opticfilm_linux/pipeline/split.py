@@ -120,6 +120,12 @@ def split_slides(sweep: RawSweep, expected: int = 4) -> tuple[Slide, ...]:
     return tuple(slides)
 
 
+def split_positions(sweep: RawSweep) -> dict[int, Slide]:
+    """The sweep's openings keyed by holder position: the i-th opening is ``positions[i]``."""
+    slides = split_slides(sweep, expected=len(sweep.positions))
+    return dict(zip(sweep.positions, slides, strict=True))
+
+
 def is_blank(slide: Slide) -> bool:
     """A clear window: saturated bright and almost perfectly flat.
 
