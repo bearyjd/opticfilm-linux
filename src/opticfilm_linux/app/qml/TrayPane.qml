@@ -37,6 +37,7 @@ ColumnLayout {
             flat: true
             text: qsTr("Edit")
             Accessible.name: qsTr("Edit the description and date of the next tray")
+            Accessible.description: qsTr("Clears the slide selection so the strip edits the batch default")
             enabled: !bridge.readonly
             onClicked: pane.nextTrayEditRequested()
         }

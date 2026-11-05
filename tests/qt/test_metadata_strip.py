@@ -260,9 +260,102 @@ def test_a_refusal_from_the_slot_is_shown_inline(strip, monkeypatch):
     def refuse(*_args):
         raise ValueError("This batch is open read-only")
 
-    monkeypatch.setattr(bridge._controller, "set_selection_meta", refuse)
+    monkeypatch.setattr(bridge._controller, "set_slides_meta", refuse)
     select_all(bridge, root)
     type_into(root, "metaDescription", "x")
     error = find(root, "metaError")
     _wait(bridge, lambda: error.property("text") == "This batch is open read-only")
     assert error.property("visible")
+
+
+def select_one(bridge, root, tray, position):
+    _tap(root, f"slideThumb_{tray}_{position}")
+    _wait(bridge, lambda: bridge.selection == [[tray, position]])
+    _wait(bridge, lambda: find(root, "metaDescription").property("enabled"))
+
+
+def meta_of(store, tray, position):
+    return store.snapshot().trays[tray - 1].slides[position - 1].meta
+
+
+def test_typing_then_clicking_another_slide_edits_the_original(strip):
+    bridge, root, store = strip
+    select_one(bridge, root, 1, 1)
+    type_into(root, "metaDescription", "Lake", enter=False)
+    _tap(root, "slideThumb_1_4")
+    _wait(bridge, lambda: meta_of(store, 1, 1).description == "Lake")
+    _wait(bridge, lambda: bridge.selection == [[1, 4]])
+    QTest.qWait(100)
+    assert meta_of(store, 1, 4) == MetaOverride()
+
+
+def test_typing_then_clicking_a_tray_header_edits_the_original(strip):
+    bridge, root, store = strip
+    select_one(bridge, root, 2, 3)
+    type_into(root, "metaDescription", "Beach", enter=False)
+    _tap(root, "sheetTray_1")
+    _wait(bridge, lambda: meta_of(store, 2, 3).description == "Beach")
+    QTest.qWait(100)
+    assert all(s.meta == MetaOverride() for s in store.snapshot().trays[0].slides)
+
+
+def test_a_typed_year_then_another_slide_edits_the_original(strip):
+    bridge, root, store = strip
+    select_one(bridge, root, 1, 1)
+    type_into(root, "metaYear", "1955", enter=False)
+    _tap(root, "slideThumb_2_3")
+    _wait(bridge, lambda: meta_of(store, 1, 1).date == "1955")
+    QTest.qWait(100)
+    assert meta_of(store, 2, 3) == MetaOverride()
+
+
+def test_escape_then_clicking_elsewhere_discards_the_typing(strip):
+    bridge, root, store = strip
+    select_one(bridge, root, 1, 1)
+    type_into(root, "metaDescription", "Gone", enter=False)
+    QTest.keyClick(root, Qt.Key.Key_Escape)
+    _tap(root, "slideThumb_1_2")
+    _wait(bridge, lambda: bridge.selection == [[1, 2]])
+    QTest.qWait(150)
+    assert all(s.meta == MetaOverride() for s in slides(store))
+
+
+def test_a_selection_change_from_the_controller_commits_to_the_original(strip):
+    bridge, root, store = strip
+    select_one(bridge, root, 1, 1)
+    type_into(root, "metaDescription", "Tick", enter=False)
+    bridge._controller.select_slide(2, 1)  # e.g. a scan tick moving the selection
+    _wait(bridge, lambda: meta_of(store, 1, 1).description == "Tick")
+    QTest.qWait(100)
+    assert meta_of(store, 2, 1) == MetaOverride()
+
+
+def test_ctrl_a_in_a_strip_control_does_not_select_all_slides(strip):
+    bridge, root, _store = strip
+    select_one(bridge, root, 1, 1)
+    find(root, "metaYear").setProperty("text", "1978")
+    for name in ("metaMonth", "metaClear"):
+        find(root, name).forceActiveFocus(Qt.FocusReason.TabFocusReason)
+        QTest.keyClick(root, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        QTest.qWait(100)
+        assert bridge.selection == [[1, 1]], name
+
+
+def test_a_mixed_description_typed_then_deleted_changes_nothing(strip):
+    bridge, root, store = strip
+    store.update_tray(
+        1,
+        slides=(
+            SlideRecord(1, meta=MetaOverride(description="own")),
+            *(SlideRecord(p) for p in range(2, 5)),
+        ),
+    )
+    bridge._controller._rebuild()
+    select_all(bridge, root)
+    _wait(bridge, lambda: find(root, "metaDescription").property("placeholderText") == "(mixed)")
+    type_into(root, "metaDescription", "x", enter=False)
+    QTest.keyClick(root, Qt.Key.Key_Backspace)
+    QTest.keyClick(root, Qt.Key.Key_Return)
+    QTest.qWait(150)
+    assert meta_of(store, 1, 1) == MetaOverride(description="own")
+    assert all(s.meta == MetaOverride() for s in slides(store)[1:])

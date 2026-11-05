@@ -56,3 +56,24 @@ def test_a_short_window_gives_safety_rows_priority_over_the_strip(layout):
     assert not evaluate(layout, "metadataStrip", "visible")
     layout.apply(size=(720, 540))
     assert evaluate(layout, "metadataStrip", "visible")
+
+
+def test_edit_description_shows_the_strip_for_the_selection_in_a_crowded_window(layout):
+    from layout_fixture import pump
+
+    layout.apply("worst-stack", (720, 540))  # the smallest window: the strip yields here
+    assert not evaluate(layout, "metadataStrip", "visible")
+    layout.bridge.selectAll()
+    pump(200)
+    before = list(layout.bridge.selection)
+    assert before
+    evaluate(layout, "editMetaAction", "trigger()")
+    pump(100)
+    assert evaluate(layout, "metadataStrip", "visible && scope === 'slides'")
+    assert evaluate(layout, "metaDescription", "activeFocus")
+    evaluate(layout, "metaDescription", "accepted()")  # Enter does not hide it mid-edit
+    assert evaluate(layout, "metadataStrip", "visible")
+    assert list(layout.bridge.selection) == before
+    evaluate(layout, "metadataStrip", "leave()")  # Escape
+    assert not evaluate(layout, "metadataStrip", "visible")
+    assert evaluate(layout, "mainPage", "Theme.shortReviewFloor >= 13 * Theme.gu")

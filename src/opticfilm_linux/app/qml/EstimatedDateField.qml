@@ -19,6 +19,8 @@ RowLayout {
     readonly property bool showDateProblem: dateProblem !== "" && (yearField.text.length >= 4 || !yearField.activeFocus)
     // the owner finished a change: Enter or leaving the year, a month chosen, or Clear
     signal edited()
+    // the owner started changing the date (typing a year, picking a month, Clear)
+    signal changing()
 
     function setDate(text) {
         const parts = (text || "").split("-");
@@ -38,6 +40,7 @@ RowLayout {
             regularExpression: /[0-9]{0,4}/
         }
         onTextChanged: if (text === "") monthBox.currentIndex = 0
+        onTextEdited: field.changing()
         onEditingFinished: field.edited()
     }
     QQC2.ComboBox {
@@ -47,7 +50,10 @@ RowLayout {
         Accessible.description: field.help
         model: ["—", qsTr("Jan"), qsTr("Feb"), qsTr("Mar"), qsTr("Apr"), qsTr("May"), qsTr("Jun"), qsTr("Jul"), qsTr("Aug"), qsTr("Sep"), qsTr("Oct"), qsTr("Nov"), qsTr("Dec")]
         enabled: yearField.text !== ""
-        onActivated: field.edited()
+        onActivated: {
+            field.changing();
+            field.edited();
+        }
     }
     PillButton {
         objectName: field.namePrefix + "DateClear"
@@ -55,6 +61,7 @@ RowLayout {
         Accessible.name: qsTr("Clear the date")
         enabled: yearField.text !== ""
         onClicked: {
+            field.changing();
             yearField.text = "";
             field.edited();
         }

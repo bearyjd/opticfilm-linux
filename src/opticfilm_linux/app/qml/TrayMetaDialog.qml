@@ -45,6 +45,17 @@ Kirigami.Dialog {
         descriptionField.forceActiveFocus();
     }
 
+    // keep the comparison values current if the batch default changes while the dialog is open
+    Connections {
+        target: bridge
+        enabled: dialog.opened
+        function onChanged() {
+            const row = bridge.sheet.get(bridge.sheet.indexOfTray(dialog.tray));
+            if (row.meta)
+                dialog.meta = row.meta;
+        }
+    }
+
     function levelText(level) {
         return level === "tray" ? qsTr("set for this tray") : level === "batch" ? qsTr("from batch") : qsTr("not set");
     }

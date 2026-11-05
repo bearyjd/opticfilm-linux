@@ -7,6 +7,8 @@ ListView {
     objectName: "sheetView"
     signal reviewFocusRequested()
     signal trayMetaRequested(int number)
+    // before a click changes the selection: lets the metadata strip finish a pending edit
+    signal aboutToSelect()
     property string lastFocus: ""
     // the tray whose header context menu is open
     property int menuTray: 0
@@ -61,6 +63,7 @@ ListView {
         parent: sheet
         onTapped: point => {
             if (!sheet.itemAt(point.position.x + sheet.contentX, point.position.y + sheet.contentY)) {
+                sheet.aboutToSelect();
                 bridge.clearSelection();
                 sheet.reviewFocusRequested();
             }
@@ -90,6 +93,7 @@ ListView {
         QQC2.ItemDelegate {
             id: header
             function choose(modifiers) {
+                sheet.aboutToSelect();
                 bridge.selectTray(row.number, modifiers);
                 sheet.reviewFocusRequested();
             }
@@ -146,6 +150,7 @@ ListView {
                     Layout.maximumHeight: sheet.cellHeight
                     slide: slideData
                     onChosen: modifiers => {
+                        sheet.aboutToSelect();
                         bridge.selectSlide(slide.tray, slide.position, modifiers);
                         sheet.reviewFocusRequested();
                     }

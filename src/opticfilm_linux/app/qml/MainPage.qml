@@ -52,7 +52,7 @@ Kirigami.Page {
     // they give way before the toolbar is starved).
     readonly property real toolbarFloor: Theme.controlHeight
     readonly property real headerInset: width < 7 * toolbarFloor ? Theme.spacingSmall / 2 : Theme.spacing
-    readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo")
+    readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo (outside text fields)")
 
     function focusReview() {
         const active = page.Window.window ? page.Window.window.activeFocusItem : null;
@@ -75,12 +75,12 @@ Kirigami.Page {
     function handleKey(event) {
         const active = page.Window.window ? page.Window.window.activeFocusItem : null;
         if (active && typeof active.cursorPosition === "number") return;
+        if (active && holdsFocus(metaStrip, active)) return;  // keys typed into the strip
         const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
         const shift = (event.modifiers & Qt.ShiftModifier) !== 0;
         if (ctrl && event.key === Qt.Key_A) bridge.selectAll();
         else if (ctrl && event.key === Qt.Key_Z) bridge.undo();
         else if (ctrl || (event.modifiers & Qt.AltModifier)) return;
-        else if (active && holdsFocus(metaStrip, active)) return;  // keys typed into the strip
         else if (event.key === Qt.Key_Left) bridge.moveSelectionFocus(-1, shift);
         else if (event.key === Qt.Key_Right) bridge.moveSelectionFocus(1, shift);
         else if (event.key === Qt.Key_Up) bridge.moveSelectionFocus(-4, shift);
@@ -297,6 +297,13 @@ Kirigami.Page {
                         onTriggered: loadHelpDialog.open()
                     },
                     Kirigami.Action {
+                        objectName: "editMetaAction"
+                        text: qsTr("Edit description / date")
+                        icon.name: "document-edit"
+                        enabled: !bridge.readonly
+                        onTriggered: metaStrip.focusSelection()
+                    },
+                    Kirigami.Action {
                         objectName: "acceptAllAction"
                         text: qsTr("Accept all")
                         icon.name: "dialog-ok-apply"
@@ -449,6 +456,7 @@ Kirigami.Page {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 onReviewFocusRequested: page.focusReview()
+                onAboutToSelect: metaStrip.commitPending()
                 onTrayMetaRequested: number => {
                     trayMetaDialog.tray = number;
                     trayMetaDialog.meta = bridge.sheet.get(bridge.sheet.indexOfTray(number)).meta || {};

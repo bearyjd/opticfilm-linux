@@ -49,7 +49,7 @@ QtObject {
     readonly property real expandedMin: 68 * gu
     readonly property real shortMax: 45 * gu
     // review height a short window keeps before it shows the metadata strip: one tray row, px
-    readonly property real shortReviewFloor: 240
+    readonly property real shortReviewFloor: Math.max(240, 13 * gu)
     // Docked pane widths are these fractions of the page width, clamped by pane/inspector Min/Max.
     readonly property real paneFraction: 0.16
     readonly property real inspectorFraction: 0.25

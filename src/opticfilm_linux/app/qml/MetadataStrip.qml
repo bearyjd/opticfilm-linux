@@ -25,9 +25,16 @@ Rectangle {
     readonly property bool collapsed: shortWindow && !expanded
     property string error: ""
     property bool descriptionDirty: false
+    property bool dateDirty: false
+    // What an edit applies to, recorded when the owner starts it: a click elsewhere changes the
+    // selection before the field loses focus, so the live selection is the wrong target.
+    property var target: null
+    property string shownDescription: ""
+    property string shownDate: ""
     property bool pendingBatchFocus: false
     // shown on request even where a short window would leave it out (see MainPage)
     property bool requested: false
+    property string requestedScope: ""
     signal reviewFocusRequested()
 
     // short windows: the thinnest band that still holds a full-size control
@@ -40,9 +47,12 @@ Rectangle {
     Accessible.name: qsTr("Description and date")
 
     onSummaryChanged: sync()
+    // The selection moved (a click, a scan tick): finish what was typed for the old target.
     onIdentityChanged: {
-        descriptionDirty = false;
         error = "";
+        commitPending();
+        if (requested && scope !== requestedScope)
+            requested = false;
         sync();
     }
     Component.onCompleted: sync()
@@ -60,10 +70,14 @@ Rectangle {
 
     // The fields show the selection's values unless the owner is in the middle of changing them.
     function sync() {
-        if (!descriptionDirty)
-            descriptionField.text = meta.description || "";
-        if (!dateField.editing)
-            dateField.setDate(meta.date || "");
+        if (!descriptionDirty) {
+            shownDescription = meta.description || "";
+            descriptionField.text = shownDescription;
+        }
+        if (!dateDirty) {
+            shownDate = meta.date || "";
+            dateField.setDate(shownDate);
+        }
         if (pendingBatchFocus && scope === "batch") {
             pendingBatchFocus = false;
             Qt.callLater(() => descriptionField.forceActiveFocus(Qt.OtherFocusReason));
@@ -73,6 +87,7 @@ Rectangle {
     // Hands-free scanning: edit the batch default ("Next tray") without stopping.
     function focusBatch() {
         requested = true;
+        requestedScope = "batch";
         pendingBatchFocus = true;
         if (scope === "batch")
             sync();
@@ -80,11 +95,39 @@ Rectangle {
             bridge.clearSelection();
     }
 
+    // Show the strip for the current selection even where a short window leaves it out.
+    function focusSelection() {
+        requested = true;
+        requestedScope = scope;
+        Qt.callLater(() => descriptionField.forceActiveFocus(Qt.OtherFocusReason));
+    }
+
+    function currentTarget() {
+        return {
+            scope: scope,
+            keys: JSON.parse(JSON.stringify(bridge.selection)),
+            tray: singleTray
+        };
+    }
+
+    function beginEdit() {
+        if (target === null)
+            target = currentTarget();
+    }
+
+    function endEditIfDone() {
+        if (!descriptionDirty && !dateDirty)
+            target = null;
+    }
+
+    // Escape: drop what was typed
     function leave() {
         requested = false;
         descriptionDirty = false;
-        descriptionField.text = meta.description || "";
-        dateField.setDate(meta.date || "");
+        dateDirty = false;
+        target = null;
+        descriptionField.text = shownDescription;
+        dateField.setDate(shownDate);
         reviewFocusRequested();
     }
 
@@ -111,36 +154,50 @@ Rectangle {
     }
 
     // kind: "set" (value), "clear" ("" at this level) or "reset" (inherit again)
-    function apply(field, kind, value) {
+    function apply(field, kind, value, to) {
         if (!editable)
             return;
+        const t = to || currentTarget();
         const batchScope = scopeBox.currentValue;
         let refusal;
-        if (scope === "batch")
+        if (t.scope === "slides")
+            refusal = kind === "set" ? bridge.setSlidesMeta(t.keys, field, value) : kind === "clear" ? bridge.clearSlidesMeta(t.keys, field) : bridge.resetSlidesMeta(t.keys, field);
+        else if (t.scope === "batch")
             refusal = kind === "set" ? bridge.setBatchMeta(field, value, batchScope) : bridge.clearBatchMeta(field, batchScope);
-        else if (scope === "tray")
-            refusal = kind === "set" ? bridge.setTrayMeta(singleTray, field, value) : kind === "clear" ? bridge.clearTrayMeta(singleTray, field) : bridge.resetTrayMeta(singleTray, field);
         else
-            refusal = kind === "set" ? bridge.setSelectionMeta(field, value) : kind === "clear" ? bridge.clearSelectionMeta(field) : bridge.resetSelectionMeta(field);
+            refusal = kind === "set" ? bridge.setTrayMeta(t.tray, field, value) : kind === "clear" ? bridge.clearTrayMeta(t.tray, field) : bridge.resetTrayMeta(t.tray, field);
         // Clear and Reset touch both fields: keep the first refusal of the pair
         if (refusal !== "" || kind === "set")
             error = refusal;
     }
 
+    // Unchanged text is no change: a mixed field typed into and emptied again stays mixed.
     function applyDescription() {
         if (!descriptionDirty)
             return;
         descriptionDirty = false;
-        if (descriptionField.text !== meta.description)
-            apply("description", "set", descriptionField.text);
+        if (descriptionField.text !== shownDescription)
+            apply("description", "set", descriptionField.text, target);
+        endEditIfDone();
     }
 
     function applyDate() {
-        if (dateField.dateProblem !== "")
+        if (!dateDirty || dateField.dateProblem !== "")
             return;  // the inline date message says why; nothing is sent
-        const shown = meta.date == null ? "" : meta.date;
-        if (dateField.dateText !== shown || meta.date == null && dateField.dateText !== "")
-            apply("date", "set", dateField.dateText);
+        dateDirty = false;
+        if (dateField.dateText !== shownDate)
+            apply("date", "set", dateField.dateText, target);
+        endEditIfDone();
+    }
+
+    // before the selection changes (a click on the sheet) or after it changed
+    function commitPending() {
+        applyDescription();
+        applyDate();
+        if (dateDirty) {  // an invalid date cannot follow the old target: drop it
+            dateDirty = false;
+            target = null;
+        }
     }
 
     GridLayout {
@@ -178,10 +235,12 @@ Rectangle {
                 placeholderText: strip.meta.description == null ? qsTr("(mixed)") : qsTr("Description")
                 Accessible.name: qsTr("Description")
                 Accessible.description: strip.scope === "batch" ? qsTr("Press Enter to apply to trays scanned next") : qsTr("Press Enter to apply to the selection")
-                onTextEdited: strip.descriptionDirty = true
+                onTextEdited: {
+                    strip.beginEdit();
+                    strip.descriptionDirty = true;
+                }
                 onAccepted: {
                     strip.applyDescription();
-                    strip.requested = false;
                     strip.reviewFocusRequested();
                 }
                 onEditingFinished: strip.applyDescription()
@@ -214,6 +273,10 @@ Rectangle {
                 namePrefix: "meta"
                 enabled: strip.editable
                 yearPlaceholder: strip.meta.date == null ? qsTr("(mixed)") : qsTr("Year")
+                onChanging: {
+                    strip.beginEdit();
+                    strip.dateDirty = true;
+                }
                 onEdited: strip.applyDate()
                 Keys.onEscapePressed: strip.leave()
             }
