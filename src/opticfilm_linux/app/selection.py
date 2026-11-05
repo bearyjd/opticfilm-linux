@@ -163,5 +163,7 @@ def failed_empty_trays(trays) -> frozenset[int]:
     return frozenset(
         tray.number
         for tray in trays
-        if not tray.slides and (tray.stage is TrayStage.FAILED or tray.auto == "failed")
+        # skipped openings are never counted, so a tray of only those is an empty one
+        if all(s.status is SlideStatus.SKIPPED for s in tray.slides)
+        and (tray.stage is TrayStage.FAILED or tray.auto == "failed")
     )

@@ -429,3 +429,13 @@ def test_a_skipped_slide_outside_the_skipped_openings_is_refused():
     data["trays"][0]["slides"][0]["status"] = "skipped"
     with pytest.raises(ManifestFormatError, match="skipped"):
         from_json(json.dumps(data))
+
+
+@pytest.mark.parametrize("stage", list(TrayStage))
+def test_a_skipped_opening_always_has_a_skipped_slide_record(stage):
+    with pytest.raises(ValueError, match="skipped"):
+        TrayRecord(number=1, stage=stage, skipped=(4,))
+    data = json.loads(OLD_TRAY_JSON)
+    data["trays"][0].update(stage=stage.value, skipped=[4])
+    with pytest.raises(ManifestFormatError, match="skipped"):
+        from_json(json.dumps(data))

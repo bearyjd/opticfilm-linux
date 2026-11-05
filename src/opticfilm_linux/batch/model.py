@@ -197,10 +197,12 @@ class TrayRecord:
     skipped: tuple[int, ...] = ()  # holder openings not scanned on purpose, ascending
 
     def __post_init__(self) -> None:
-        check_skipped(self.skipped, self.slides)
+        check_skipped(self.skipped)
+        _check_skipped_records(self.skipped, self.slides)
 
 
-def check_skipped(skipped: tuple[int, ...], slides: tuple[SlideRecord, ...] = ()) -> None:
+def check_skipped(skipped: tuple[int, ...]) -> None:
+    """Refuse a skipped-openings list that is not ascending and unique within 1-4, or all four."""
     if (
         type(skipped) is not tuple
         or any(type(p) is not int or p not in ALL_POSITIONS for p in skipped)
@@ -211,10 +213,13 @@ def check_skipped(skipped: tuple[int, ...], slides: tuple[SlideRecord, ...] = ()
             f"skipped openings must be ascending, unique, within 1-4 and not all four, "
             f"got {skipped!r}"
         )
-    if stray := [
-        s.position for s in slides if s.status is SlideStatus.SKIPPED and s.position not in skipped
-    ]:
-        raise ValueError(f"slides {stray} are skipped but not among the skipped openings")
+
+
+def _check_skipped_records(skipped: tuple[int, ...], slides: tuple[SlideRecord, ...]) -> None:
+    """A skipped opening has a SKIPPED record from the moment its scan starts, and only it."""
+    recorded = sorted(s.position for s in slides if s.status is SlideStatus.SKIPPED)
+    if recorded != list(skipped):
+        raise ValueError(f"skipped openings {skipped} but skipped slide records at {recorded}")
 
 
 @dataclass(frozen=True)

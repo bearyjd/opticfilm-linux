@@ -5,7 +5,7 @@ from typing import Any
 from opticfilm_linux.app.messages import slide_status_text
 from opticfilm_linux.app.selection import failed_empty_trays, filter_matches
 from opticfilm_linux.app.state import AppState, SlideCard, TrayRow
-from opticfilm_linux.batch.model import BatchDefaults, TrayStage
+from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayStage
 
 DEFAULTS = BatchDefaults()
 
@@ -32,6 +32,7 @@ def _tray_dict(row: TrayRow) -> dict[str, Any]:
 def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
     s = card.settings
     base = f"image://preview/{tray}/{card.position}"
+    shown = card.status is not SlideStatus.SKIPPED  # an opening not scanned has no picture
     return {
         "tray": tray,
         "position": card.position,
@@ -49,9 +50,9 @@ def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
         "updating": card.updating,
         "previewToken": card.preview_token,
         "beforePreviewToken": card.before_preview_token,
-        "afterUrl": f"{base}/after/{card.preview_token}" if card.preview_token else "",
+        "afterUrl": f"{base}/after/{card.preview_token}" if shown and card.preview_token else "",
         "beforeUrl": f"{base}/before/{card.before_preview_token}"
-        if card.before_preview_token
+        if shown and card.before_preview_token
         else "",
     }
 
@@ -66,7 +67,7 @@ def sheet_rows(state: AppState) -> list[dict]:
                     **_slide_dict(tray.number, card),
                     "selected": (tray.number, card.position) in state.selection,
                     "focused": (tray.number, card.position) == state.focus,
-                    "selectable": tray.stage not in busy,
+                    "selectable": tray.stage not in busy and card.status is not SlideStatus.SKIPPED,
                 }
                 for card in tray.slides
             ],

@@ -42,6 +42,7 @@ def check_raw_coverage(tray: TrayRecord, regions: Mapping[int, object]) -> None:
         any(type(position) is not int for position in positions)
         or len(positions) != len(regions)
         or set(positions) != set(regions)
+        # not implied by the above: a hand-edited manifest could repeat a scanned position
         or any(s.status is SlideStatus.SKIPPED and s.position in regions for s in tray.slides)
     ):
         raise ValueError("manifest positions must cover every raw position exactly once")

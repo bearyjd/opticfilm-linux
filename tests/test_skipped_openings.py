@@ -9,6 +9,7 @@ from opticfilm_linux.app import auto, jobs, state
 from opticfilm_linux.app.messages import slide_status_text
 from opticfilm_linux.app.selection import filter_matches, selectable_keys
 from opticfilm_linux.app.selection_commands import SelectionCommands
+from opticfilm_linux.app.state import SlideCard, TrayRow
 from opticfilm_linux.batch import export_contract, review
 from opticfilm_linux.batch.empty import check_raw_coverage
 from opticfilm_linux.batch.export import cleanup_raw, export_batch
@@ -41,7 +42,10 @@ def sweeps(tmp_path_factory):
     save_sweep(sweep, three)
     four = tmp_path_factory.mktemp("four")
     save_sweep(make_sweep(dpi=600), four)
-    return SimpleNamespace(three=three, four=four)
+    gap = tmp_path_factory.mktemp("gap")
+    sweep = dataclasses.replace(make_sweep(dpi=600, filled=(True,) * 3), positions=(1, 3, 4))
+    save_sweep(sweep, gap)
+    return SimpleNamespace(three=three, four=four, gap=gap)
 
 
 def _section_store(path):
@@ -283,3 +287,123 @@ def test_raw_coverage_ignores_skipped_openings_but_refuses_them_in_the_raw():
     for raw in ({1: None, 2: None, 4: None}, {1: None}, {1: None, 2: None, 3: None}):
         with pytest.raises(ValueError, match="positions"):
             check_raw_coverage(tray, raw)
+
+
+def test_a_rescan_that_skips_an_opening_drops_its_old_previews_and_master(tmp_path, sweeps):
+    from opticfilm_linux.app.preview_tokens import PreviewTokens
+
+    store = _section_store(tmp_path / "b")
+    number = _scan(store, sweeps.four)
+    assert store.preview_path(number, 4, "after").exists()
+    _scan(store, sweeps.three, skipped=(4,), rescan=number)
+    for kind in ("before", "after"):
+        assert not store.preview_path(number, 4, kind).exists()
+    assert not store.master_path(number, 4).exists()
+    assert store.preview_path(number, 3, "after").exists()
+    tokens = PreviewTokens().read(store, store.snapshot())
+    assert (number, 4) not in tokens and (number, 4, "before") not in tokens
+    assert (number, 3) in tokens
+
+
+def _card(position, status, token=7):
+    return SlideCard(position, status, (), SlideSettings(), False, False, False, token, token)
+
+
+def test_a_skipped_tile_has_no_preview_and_is_not_selectable():
+    from opticfilm_linux.app.qt.sheet import filter_count, sheet_rows
+
+    cards = (_card(1, SlideStatus.ACCEPTED), _card(2, SKIPPED))
+    rows = sheet_rows(SimpleNamespace(trays=(_row_with(cards),), selection=frozenset(), focus=None))
+    accepted, skipped = rows[0]["slides"]
+    assert accepted["selectable"] and accepted["afterUrl"] and accepted["beforeUrl"]
+    assert not skipped["selectable"]
+    assert skipped["afterUrl"] == "" and skipped["beforeUrl"] == ""
+    assert skipped["statusText"] == "Empty (not scanned)"
+    failed = SimpleNamespace(trays=(_row_with((_card(4, SKIPPED),), TrayStage.FAILED),))
+    assert filter_count(failed, "failed") == 1  # a failed tray with no scanned slide
+
+
+def _row_with(cards, stage=TrayStage.REVIEW):
+    row = TrayRow(1, stage, "", None, None, None, 0, False)
+    return dataclasses.replace(row, slides=cards)
+
+
+def test_a_skip_in_the_middle_keeps_022_free_and_a_rescan_fills_only_it(tmp_path, sweeps):
+    store = _section_store(tmp_path / "b")
+    out = tmp_path / "out"
+    number = _scan(store, sweeps.gap, skipped=(2,))
+    assert _export(store, out) == ["021.jpg", "023.jpg", "024.jpg"]
+    section = out / "family" / "box-1" / "a"
+    before = {p.name: p.read_bytes() for p in section.iterdir()}
+    cleanup_raw(store, number)
+    _scan(store, sweeps.four, rescan=number)
+    review.accept_all(store)
+    written = export_batch(store, out, "jpeg", keys=frozenset({(number, 2)})).written
+    assert [p.name for p in written] == ["022.jpg"]
+    assert {name: (section / name).read_bytes() for name in before} == before
+    assert sorted(p.name for p in section.iterdir()) == sorted([*before, "022.jpg"])
+
+
+def test_the_flat_layout_reserves_no_number_for_a_skipped_opening(tmp_path, sweeps):
+    """Like a blank window, a skipped one only keeps its number in the box/section layout."""
+    store = BatchStore.create(tmp_path / "b", name="T", defaults=BatchDefaults(dpi=600))
+    _scan(store, sweeps.gap, skipped=(2,))
+    names = _export(store, tmp_path / "out")
+    numbers = [int("".join(c for c in name if c.isdigit())) for name in names]
+    assert len(names) == 3 and numbers == list(range(numbers[0], numbers[0] + 3))
+
+
+class _WrongPositions:
+    """A scanner that ignores the requested openings (what a misbehaving driver could do)."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def status(self):
+        return self._inner.status()
+
+    def scan_holder(self, settings):
+        return self._inner.scan_holder(dataclasses.replace(settings, positions=(1, 2, 3, 4)))
+
+
+def test_a_sweep_with_other_openings_than_requested_fails_the_tray(tmp_path, sweeps):
+    store = _section_store(tmp_path / "b")
+    runner = BatchRunner(store, _WrongPositions(FakeScanner(sweeps.four)))
+    try:
+        number = runner.scan_tray(skipped=(4,))
+        assert runner.wait_idle(TIMEOUT)
+    finally:
+        runner.close()
+    tray = _tray(store, number)
+    assert tray.stage is TrayStage.FAILED
+    assert "openings (1, 2, 3, 4)" in tray.error and "(1, 2, 3)" in tray.error
+    assert not store.sweep_dir(number, tray.sweep_version).exists()
+
+
+def test_skipped_records_exist_from_the_moment_the_scan_starts(tmp_path, sweeps):
+    import threading
+
+    gate = threading.Event()
+    store = _section_store(tmp_path / "b")
+    runner = BatchRunner(store, FakeScanner(sweeps.three, before_scan=lambda: gate.wait(TIMEOUT)))
+    try:
+        number = runner.scan_tray(skipped=(4,))
+        tray = _tray(store, number)
+        assert tray.stage is TrayStage.SCANNING
+        assert tray.slides == (SlideRecord(4, status=SKIPPED),)
+    finally:
+        gate.set()
+        runner.close()
+
+
+def test_a_quick_turn_never_touches_a_skipped_opening():
+    from opticfilm_linux.batch import reorient
+
+    def manifest(stale, rotation):
+        slide = SlideRecord(
+            4, status=SKIPPED, preview_stale=stale, settings=SlideSettings(rotation=rotation)
+        )
+        tray = TrayRecord(1, TrayStage.REVIEW, slides=(SlideRecord(1), slide), skipped=(4,))
+        return BatchManifest("M", trays=(tray,))
+
+    assert not reorient._eligible(manifest(False, 0), manifest(True, 90), (1, 4))

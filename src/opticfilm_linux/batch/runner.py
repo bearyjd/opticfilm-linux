@@ -35,7 +35,12 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.reorient import publish_turns, reorient_preview, stage_turn
-from opticfilm_linux.batch.skipped import mark_skipped, scan_positions
+from opticfilm_linux.batch.skipped import (
+    check_scanned_positions,
+    drop_skipped_previews,
+    mark_skipped,
+    scan_positions,
+)
 from opticfilm_linux.batch.store import INTERRUPTED_SCAN, BatchError, BatchStore
 from opticfilm_linux.model import ScanSettings
 from opticfilm_linux.scanner import interrupted
@@ -66,7 +71,10 @@ def _restart_rescan(
         current,
         stage=TrayStage.SCANNING,
         sweep_version=current.sweep_version + 1,
-        slides=tuple(SlideRecord(position=s.position, exports=s.exports) for s in current.slides),
+        slides=mark_skipped(
+            tuple(SlideRecord(position=s.position, exports=s.exports) for s in current.slides),
+            skipped,
+        ),
         error=None,
         raw_removed=False,
         cleanup_sweeps=(),
@@ -128,6 +136,7 @@ class BatchRunner:
                 mode=defaults.mode,
                 location=allocate_location(manifest, 4),
                 skipped=skipped,
+                slides=mark_skipped((), skipped),
             )
             return dataclasses.replace(manifest, trays=manifest.trays + (tray,))
 
@@ -166,6 +175,7 @@ class BatchRunner:
             try:
                 export._retry_cleanup_resets(self._store)
                 self._store.update(lambda manifest: _restart_rescan(manifest, tray, skipped))
+                drop_skipped_previews(self._store, number, skipped)
                 self._emit(TrayStageChanged(number, TrayStage.SCANNING))
                 self._submit(self._scan_pool, self._scan_job, number, scan=True)
             finally:
@@ -317,6 +327,7 @@ class BatchRunner:
         final = self._store.sweep_dir(number, tray.sweep_version)
         try:
             sweep = self._scanner.scan_holder(settings)
+            check_scanned_positions(sweep, settings)
             save_sweep(sweep, tmp)
             os.replace(tmp, final)
         except BaseException as exc:  # a failed scan must end as a visible FAILED tray
@@ -327,11 +338,7 @@ class BatchRunner:
             message = str(exc) if isinstance(exc, ScanInterrupted) else _describe(exc)
             self._fail(number, message, (TrayStage.SCANNING,))
             return
-        # A scanning tray's slides are not editable, so this read cannot go stale.
-        slides = mark_skipped(self._tray(number))
-        self._store.update_tray(
-            number, stage=TrayStage.SCANNED, evidence=sweep.evidence, slides=slides
-        )
+        self._store.update_tray(number, stage=TrayStage.SCANNED, evidence=sweep.evidence)
         self._emit(TrayStageChanged(number, TrayStage.SCANNED))
         self._submit(self._enhance_pool, self._enhance_job, number)
 
