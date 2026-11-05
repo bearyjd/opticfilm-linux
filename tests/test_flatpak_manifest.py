@@ -239,6 +239,47 @@ def test_python_dependencies_cover_pyproject():
     assert [name for name in wanted if name not in urls] == []
 
 
+WHEEL_FILE = re.compile(
+    r"[A-Za-z0-9_]+-[0-9][A-Za-z0-9.]*-"
+    r"(py3-none-any|cp313-cp313-manylinux[\w.]*_x86_64[\w.]*|cp3\d+-abi3-manylinux[\w.]*_x86_64[\w.]*)\.whl"
+)
+PYPI_URL = re.compile(
+    r"https://files\.pythonhosted\.org/packages/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{60}/[^/]+"
+)
+WHEELS = {"pillow", "tifffile", "opencv_python_headless", "pyusb"}
+
+
+def wheel_sources(manifest: dict):
+    return [s for s in sources(manifest) if s.get("type") == "file"]
+
+
+def test_wheels_are_real_pins_from_pypi():
+    wheels = wheel_sources(json.loads(MANIFEST.read_text()))
+    assert len(wheels) == len(WHEELS)
+    for wheel in wheels:
+        assert PYPI_URL.fullmatch(wheel["url"]), wheel["url"]
+        assert WHEEL_FILE.fullmatch(wheel["url"].rsplit("/", 1)[1]), wheel["url"]
+        assert SHA256.fullmatch(wheel["sha256"]) and not PLACEHOLDER.search(json.dumps(wheel))
+
+
+def test_wheel_set_is_pyproject_deps_plus_pyusb_without_numpy():
+    names = {
+        s["url"].rsplit("/", 1)[1].split("-")[0].lower()
+        for s in wheel_sources(json.loads(MANIFEST.read_text()))
+    }
+    assert names == WHEELS
+
+
+def test_only_the_app_commit_is_still_a_placeholder():
+    text = MANIFEST.read_text()
+    assert sorted(set(PLACEHOLDER.findall(text))) == ["PLACEHOLDER_COMMIT_APP"]
+
+
+def test_pin_provenance_and_numpy_finding_are_recorded():
+    notes = " ".join(json.loads(MANIFEST.read_text())["x-notes"])
+    assert "2026-11" in notes and "PyPI" in notes and "numpy 2.3.5" in notes
+
+
 def test_unpinned_placeholders_are_declared_in_the_notes():
     manifest = json.loads(MANIFEST.read_text())
     assert any("PLACEHOLDER" in n and "NOT BUILDABLE" in n for n in manifest["x-notes"])
