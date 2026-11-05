@@ -7,9 +7,11 @@
   "base-version": "6.11",
   "command": "opticfilm",
   "x-notes": [
-    "DRAFT, NOT BUILDABLE YET: every PLACEHOLDER_* value below must be replaced by a real pin before a build.",
+    "DRAFT, NOT BUILDABLE YET: the app commit (PLACEHOLDER_COMMIT_APP) is pinned in the last PR; the wheels below are real pins.",
     "numpy comes from io.qt.PySide.BaseApp (6.11), so it is not installed from a wheel here.",
-    "The scanner driver is an EXTERNAL dependency (github.com/cgillinger/opticfilm135i-linux), fetched by pinned commit. Nothing from Plustek or the vendor driver is vendored here.",
+    "Wheel pins produced 2026-11-04 by hand from PyPI's JSON API (https://pypi.org/pypi/<name>/<version>/json; D11 hand-pin fallback), newest releases: pillow 13.0.0 (cp313 manylinux_2_28), tifffile 2026.10.15 (py3-none-any), opencv-python-headless 5.0.0.93 (cp37-abi3 manylinux_2_28, installs on cp313), pyusb 1.3.1 (py3-none-any). These are the versions the dev environment tests against. pip runs with --no-deps, so every Requires-Dist was checked: pillow none at runtime, pyusb none, tifffile needs numpy>=2.1 (BaseApp), opencv needs numpy>=2 with no upper bound. imagecodecs is not needed: the app only writes uncompressed RGB TIFFs and reads them back.",
+    "numpy finding: the BaseApp ships numpy 2.3.5 and Python 3.13, which satisfies tifffile numpy>=2.1 and opencv-python-headless 5.0.0.93 numpy>=2 (built against the numpy 2 ABI, forward compatible), so no numpy wheel is shipped. Not yet verified by an import inside the sandbox; that is the build PR's smoke test.",
+    "The scanner driver is an EXTERNAL dependency: the owner's fork (github.com/bearyjd/opticfilm135i-linux) pinned at commit eaa6f88, which has the calibration stop gate default 'enforce'. Upstream cgillinger master (6270867) has the gate OFF by default and exits 4 on slide scans here, so it is NOT used. Nothing from Plustek or the vendor driver is vendored here.",
     "--device=all is the broad choice for raw USB access (07b3:1436): it works on the host but is untested inside the sandbox, and it also grants GPU access that Qt Quick may rely on, so narrowing to --device=usb needs --device=dri alongside and is untested."
   ],
   "cleanup-commands": [
@@ -33,23 +35,23 @@
       "sources": [
         {
           "type": "file",
-          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/pillow-PLACEHOLDER_VERSION.whl",
-          "sha256": "PLACEHOLDER_SHA256_PILLOW"
+          "url": "https://files.pythonhosted.org/packages/ef/fe/f5cdaa2d1c4086e757430f368c271a58ee29cfe7378e7ae7b9d964015c25/pillow-13.0.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+          "sha256": "5f56499c1a74d2b862beb0c33b8016f99d095858455df9d21583bbbc1c15b582"
         },
         {
           "type": "file",
-          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/tifffile-PLACEHOLDER_VERSION.whl",
-          "sha256": "PLACEHOLDER_SHA256_TIFFFILE"
+          "url": "https://files.pythonhosted.org/packages/5b/bc/9e7664e2d30d4e82ada1b29dbb249d2dcac1ed1114cbbf11764f670d8be7/tifffile-2026.10.15-py3-none-any.whl",
+          "sha256": "3dcf6c56731a45c1f85c81e90dad922b0a380a2d639e77f71207e010f8ef0f7b"
         },
         {
           "type": "file",
-          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/opencv_python_headless-PLACEHOLDER_VERSION.whl",
-          "sha256": "PLACEHOLDER_SHA256_OPENCV"
+          "url": "https://files.pythonhosted.org/packages/9b/21/f6ef335f6e65724aa78b8d792b48d40a48c381715f1e62f5a5049e09d07e/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl",
+          "sha256": "ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37"
         },
         {
           "type": "file",
-          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/pyusb-PLACEHOLDER_VERSION.whl",
-          "sha256": "PLACEHOLDER_SHA256_PYUSB"
+          "url": "https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl",
+          "sha256": "bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430"
         }
       ]
     },
@@ -63,8 +65,8 @@
       "sources": [
         {
           "type": "git",
-          "url": "https://github.com/cgillinger/opticfilm135i-linux.git",
-          "commit": "PLACEHOLDER_COMMIT_DRIVER"
+          "url": "https://github.com/bearyjd/opticfilm135i-linux.git",
+          "commit": "eaa6f889f09796bc8f4ddab73cd5daa0bdb273fd"
         }
       ]
     },
