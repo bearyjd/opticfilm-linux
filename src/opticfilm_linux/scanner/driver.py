@@ -466,6 +466,7 @@ class DriverScanner:
 
     def scan_holder(self, settings: ScanSettings) -> RawSweep:
         self.scan_diagnostics = None
+        self.scan_exit_code: int | None = None  # the driver's, once it ended by itself
         self._require_driver()
         self._scanning.set()  # status() answers BUSY from now on, without touching the scanner
         try:
@@ -498,6 +499,7 @@ class DriverScanner:
             except BaseException:
                 self._note_failure()  # cut off (Ctrl-C): the mark stays until confirmed
                 raise
+            self.scan_exit_code = result.returncode  # non-zero with all frames: kept, no auto-eject
             if result.stopped:  # never stitch what a stopped driver left: a partial payload
                 self._note_failure()
                 self._keep_sidecars(work, failed=True)

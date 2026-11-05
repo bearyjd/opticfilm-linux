@@ -41,6 +41,7 @@ AUTO_CUT_OFF = (
     "a scan or holder move was cut off. Power-cycle the scanner and press Confirm scanner reset"
 )
 NO_HOLDER_CONTROL = "this scanner cannot move the holder"
+DRIVER_ERROR = "the scanner driver ended the scan with an error. Check the slides"
 NEXT_STRIP_OFF = (
     "Load next holder is switched off by OPTICFILM_NEXT_STRIP. "
     'Follow "How to load the scanner" instead.'
@@ -134,6 +135,8 @@ class HolderCommands:
             refusal = AUTO_CUT_OFF
         if refusal is None and (session is None or session.holder is None):
             refusal = NO_HOLDER_CONTROL
+        if refusal is None and getattr(session.scanner, "scan_exit_code", 0) not in (0, None):
+            refusal = DRIVER_ERROR  # frames complete, so the tray is kept; the eject waits
         if refusal is not None:
             self._set(_banner=Banner(auto_eject_skipped_text(refusal)))
             return

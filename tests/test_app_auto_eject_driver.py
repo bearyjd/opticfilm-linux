@@ -176,3 +176,16 @@ def test_a_hung_eject_is_marked_while_it_runs_and_ends_as_a_failed_eject(
     wait_until(c, lambda: not c._holder_busy and _banner(c) == holder_failed_text("eject"))
     assert c._holder_latch is HolderLatch.UNKNOWN and interrupted.is_pending()
     wait_until(c, lambda: c.state().trays[0].stage is TrayStage.REVIEW)
+
+
+def test_a_driver_error_after_complete_frames_keeps_the_tray_but_skips_the_eject(
+    build, tmp_path, monkeypatch
+):
+    """Exit 1 with every frame written is a good tray today; it is not ejected automatically."""
+    monkeypatch.setenv("FAKE_DRIVER_MODE", "coverage_fail")
+    c = build()
+    _scan(c)
+    wait_all_in_review(c, 1)
+    wait_until(c, lambda: "Automatic eject skipped" in _banner(c))
+    _settle(c)
+    assert _ejects(tmp_path) == 0 and "driver ended the scan with an error" in _banner(c)
