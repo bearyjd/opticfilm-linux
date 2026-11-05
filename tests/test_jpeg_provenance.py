@@ -1,5 +1,7 @@
 import hashlib
 import json
+import shutil
+import subprocess
 from dataclasses import replace
 from xml.etree import ElementTree as ET
 
@@ -7,6 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.batch.model import (
     BatchManifest,
     Flag,
@@ -159,28 +162,133 @@ def test_embedded_provenance_complete_and_escaped(tmp_path, size):
 
 
 @pytest.mark.parametrize(
-    "date,original,precision",
-    [
-        (None, None, None),
-        ("1975", None, "year"),
-        ("1975-06", None, "month"),
-        ("1975-06-01", "1975:06:01 00:00:00", "day"),
-    ],
+    "date,precision",
+    [(None, None), ("1975", "year"), ("1975-06", "month")],
 )
-def test_heirloom_fields_empty_unless_owner_date(tmp_path, date, original, precision):
+def test_heirloom_fields_empty_unless_owner_date(tmp_path, date, precision):
     path = _write(tmp_path, _inputs(date))
     fields = _fields(path)
     with Image.open(path) as image:
         exif = image.getexif()
-        assert exif.get_ifd(34665).get(36867) == original
+        assert 36867 not in exif.get_ifd(34665)
         assert 270 not in exif and 306 not in exif and 34853 not in exif
         assert 36881 not in exif.get_ifd(34665)
     if date:
         assert fields["PhotoDate"] == date
         assert fields["PhotoDatePrecision"] == precision
-        assert fields["PhotoDateSource"] == "owner-entered"
+        assert fields["PhotoDateApproximate"] == "true"
+        assert fields["PhotoDateSource"] == "owner-estimate"
+        assert fields["PhotoDateLevel"] == "batch"
     else:
-        assert "PhotoDateSource" not in fields and "PhotoDate" not in fields
+        for key in ("PhotoDate", "PhotoDatePrecision", "PhotoDateApproximate", "PhotoDateSource"):
+            assert key not in fields
+
+
+def _with_meta(inputs, *, description="", date=None, tray_meta=None, slide_meta=None):
+    manifest, tray, record, slide, options = inputs
+    record = replace(record, meta=slide_meta or MetaOverride())
+    tray = replace(tray, slides=(record,), meta=tray_meta or MetaOverride())
+    manifest = replace(manifest, description=description, date=date, trays=(tray,))
+    return manifest, tray, record, slide, options
+
+
+def _raw_xmp(path):
+    with Image.open(path) as image:
+        return [p for m, p in image.applist if m == "APP1" and p.startswith(XMP_HEADER)][0]
+
+
+def test_estimate_never_writes_standard_date_or_description(tmp_path):
+    inputs = _with_meta(_inputs(), description="Lake trip", date="1978-07")
+    path = _write(tmp_path, inputs)
+    with Image.open(path) as image:
+        exif = image.getexif()
+        assert 270 not in exif
+        assert 36867 not in exif.get_ifd(34665)
+        assert exif.get_ifd(34665)[36868] == "2026:11:01 12:00:00"
+    packet = _raw_xmp(path)
+    assert b"purl.org/dc" not in packet and b"DateTimeOriginal" not in packet
+    assert b"photoshop" not in packet and b"dc:" not in packet
+
+
+@pytest.mark.parametrize(
+    "kwargs,description,level,date_level",
+    [
+        ({"description": "Batch", "date": "1978"}, "Batch", "batch", "batch"),
+        (
+            {"description": "Batch", "tray_meta": MetaOverride("Tray", "1980-02")},
+            "Tray",
+            "tray",
+            "tray",
+        ),
+        (
+            {
+                "description": "Batch",
+                "date": "1978",
+                "tray_meta": MetaOverride("Tray"),
+                "slide_meta": MetaOverride("Slide é\x07\x00x", "1981"),
+            },
+            "Slide éx",
+            "slide",
+            "slide",
+        ),
+        ({"description": "Batch", "slide_meta": MetaOverride("")}, None, None, None),
+    ],
+)
+def test_description_level_and_source(tmp_path, kwargs, description, level, date_level):
+    fields = _fields(_write(tmp_path, _with_meta(_inputs(), **kwargs)))
+    assert fields.get("Description") == description
+    assert fields.get("DescriptionSource") == level
+    assert fields.get("PhotoDateLevel") == (date_level if "PhotoDate" in fields else None)
+    if description is None:
+        assert "Description" not in fields and "DescriptionSource" not in fields
+
+
+def test_long_unicode_description_survives(tmp_path):
+    text = "é日本\U0001f600" * 125
+    assert len(text) == 500
+    fields = _fields(_write(tmp_path, _with_meta(_inputs(), description=text)))
+    assert fields["Description"] == text
+
+
+def test_legacy_day_date_exports_as_month(tmp_path):
+    path = _write(tmp_path, _inputs("1975-06-01"))
+    fields = _fields(path)
+    assert fields["PhotoDate"] == "1975-06"
+    assert fields["PhotoDatePrecision"] == "month"
+    assert fields["PhotoDateApproximate"] == "true"
+    with Image.open(path) as image:
+        assert 36867 not in image.getexif().get_ifd(34665)
+
+
+@pytest.mark.skipif(shutil.which("exiftool") is None, reason="exiftool not installed")
+def test_exiftool_reads_back_ofscan_only(tmp_path):
+    inputs = _with_meta(_inputs(), description="Lake trip é", date="1978-07")
+    path = _write(tmp_path, inputs)
+    out = subprocess.run(
+        ["exiftool", "-j", "-G1", "-XMP-ofscan:all", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    data = json.loads(out.stdout)[0]
+    values = {k.split(":", 1)[1]: v for k, v in data.items() if k.startswith("XMP-ofscan:")}
+    assert values["Description"] == "Lake trip é"
+    assert values["PhotoDate"] in ("1978-07", "1978-07-00")
+    assert str(values["PhotoDateApproximate"]).lower() == "true"
+    empty = subprocess.run(
+        [
+            "exiftool",
+            "-s3",
+            "-ImageDescription",
+            "-XMP-dc:Description",
+            "-DateTimeOriginal",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert empty.stdout.strip() == ""
 
 
 @pytest.mark.parametrize("diagnostic", [None, "{}", '{"gain_codes":[1,2,3]}', "broken"])
@@ -466,3 +574,10 @@ def test_valid_xml_whitespace_and_unicode_survive_owner_names(tmp_path):
     assert fields["Collection"] == collection
     assert inputs[0].name == inputs[0].album == name
     assert inputs[1].location.collection == collection
+
+
+def test_line_breaks_and_tabs_in_a_description_become_spaces_not_run_together_words():
+    from opticfilm_linux.provenance import _clean_description
+
+    assert _clean_description("Summer\nat the lake\t1978\r\nMimi") == "Summer at the lake 1978 Mimi"
+    assert _clean_description("a\x00b\x1fc\x7fd") == "abcd"  # other control characters go
