@@ -103,8 +103,9 @@ def _canonical(value: object) -> str:
 
 
 def _clean_description(text: str) -> str:
-    """Owner text for the packet: control characters out, surrounding blanks trimmed."""
-    return "".join(c for c in text if unicodedata.category(c) != "Cc").strip()
+    """Owner text for the packet: line breaks and tabs become spaces, other control characters go."""
+    spaced = text.replace("\r\n", " ").translate({ord("\n"): " ", ord("\r"): " ", ord("\t"): " "})
+    return "".join(c for c in spaced if unicodedata.category(c) != "Cc").strip()
 
 
 def _estimate_fields(manifest: "BatchManifest", tray: "TrayRecord", record: "SlideRecord") -> dict:

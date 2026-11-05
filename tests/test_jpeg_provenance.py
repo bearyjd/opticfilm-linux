@@ -574,3 +574,10 @@ def test_valid_xml_whitespace_and_unicode_survive_owner_names(tmp_path):
     assert fields["Collection"] == collection
     assert inputs[0].name == inputs[0].album == name
     assert inputs[1].location.collection == collection
+
+
+def test_line_breaks_and_tabs_in_a_description_become_spaces_not_run_together_words():
+    from opticfilm_linux.provenance import _clean_description
+
+    assert _clean_description("Summer\nat the lake\t1978\r\nMimi") == "Summer at the lake 1978 Mimi"
+    assert _clean_description("a\x00b\x1fc\x7fd") == "abcd"  # other control characters go
