@@ -49,6 +49,7 @@ from opticfilm_linux.app.state import (
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.manifest import ManifestFormatError
+from opticfilm_linux.batch.metadata import EstimatedDate, validate_description
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     SlotOrientation,
@@ -83,6 +84,13 @@ class _Session:
     scanner: Scanner | None = None  # identity may become known only after the first status poll
     auto_export: bool = False  # batch setting is immutable throughout this session
     previews: PreviewTokens = dataclasses.field(default_factory=PreviewTokens)
+
+
+def _checked_meta(date: str | None, description: str) -> tuple[str | None, str]:
+    """The strict rules for text being written; a bad value is refused before anything is made."""
+    estimate = (date or "").strip()
+    when = EstimatedDate.parse(estimate).text() if estimate else None
+    return when, validate_description(description)
 
 
 class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCommands):
@@ -225,8 +233,10 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         box: int = 1,
         section: str = "a",
         section_size: int = 140,
+        description: str = "",
     ) -> None:
         def job() -> None:
+            when, description_text = _checked_meta(date, description)
             if auto_export and not export_dir.strip():
                 raise BatchError(MISSING_DESTINATION)
             if export_dir:
@@ -246,7 +256,9 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
                 collection=collection, box=box, section=section, section_size=section_size
             )
             self._replace_batch(
-                lambda: BatchStore.create(directory, name, album, date, defaults, **layout)
+                lambda: BatchStore.create(
+                    directory, name, album, when, defaults, description=description_text, **layout
+                )
             )
 
         self._run_lifecycle(job, "Could not create the batch")
