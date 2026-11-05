@@ -165,6 +165,7 @@ def main() -> int:
     scan.add_argument("--frames")
     scan.add_argument("--dpi", type=int)
     scan.add_argument("--ir", action="store_true")
+    scan.add_argument("--no-clean", action="store_true")
     scan.add_argument("--no-cal-data", action="store_true")
     scan.add_argument("--dark-fallback")
     scan.add_argument("--slides")

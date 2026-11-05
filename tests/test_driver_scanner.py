@@ -62,6 +62,37 @@ def test_the_command_asks_for_the_four_slide_openings_with_infrared_and_no_inver
     assert argv[argv.index("--dpi") + 1] == "3600" and "--no-cal-data" not in argv
 
 
+def _scan_argv(scanner_for, tmp_path, dpi, **env):
+    log = tmp_path / f"argv-{dpi}.json"
+    scanner_for(FAKE_DRIVER_ARGV=str(log), **env).scan_holder(ScanSettings(dpi=dpi))
+    return json.loads(log.read_text())
+
+
+@pytest.mark.parametrize("dpi", [600, 1200, 3600, 7200])
+def test_the_driver_own_dust_clean_is_off_by_default(scanner_for, tmp_path, dpi):
+    argv = _scan_argv(scanner_for, tmp_path, dpi)
+    assert argv.count("--no-clean") == 1
+    expected = ["scan", "--slides", "1-4", "--dpi", str(dpi), "--ir", "--no-clean"]
+    assert argv[:7] == expected and argv[7] == "--dark-fallback"
+
+
+@pytest.mark.parametrize("dpi", [600, 1200, 3600, 7200])
+def test_driver_clean_env_restores_the_old_command(scanner_for, tmp_path, dpi):
+    argv = _scan_argv(scanner_for, tmp_path, dpi, OPTICFILM_DRIVER_CLEAN="1")
+    assert "--no-clean" not in argv
+    assert argv[:-1] == [
+        "scan",
+        "--slides",
+        "1-4",
+        "--dpi",
+        str(dpi),
+        "--ir",
+        "--dark-fallback",
+        "default",
+        "-o",
+    ]
+
+
 def test_a_nonzero_exit_is_fine_when_the_full_frames_were_written(scanner_for):
     sweep = scanner_for(FAKE_DRIVER_MODE="coverage_fail").scan_holder(ScanSettings(dpi=600))
     assert len(split_slides(sweep)) == 4
@@ -215,7 +246,10 @@ def test_a_frame_with_the_wrong_number_of_channels_is_refused(scanner_for, tmp_p
 
 # -- scanned positions ---------------------------------------------------------------------
 
-MAIN_ARGV = ["scan", "--slides", "1-4", "--dpi", "3600", "--ir", "--dark-fallback", "default"]
+MAIN_ARGV = [
+    *["scan", "--slides", "1-4", "--dpi", "3600", "--ir", "--no-clean"],
+    *["--dark-fallback", "default"],
+]
 
 
 def test_argv_with_the_default_positions_is_identical_to_main(scanner_for, tmp_path):
