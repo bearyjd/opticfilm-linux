@@ -15,6 +15,7 @@ the rewrite, which is honest (the file did change) and lets photo indexers notic
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
 import stat
@@ -24,6 +25,8 @@ from pathlib import Path
 
 from opticfilm_linux.output import _sync_directories
 from opticfilm_linux.provenance import XMP_HEADER, XMP_NAMESPACE, _xmp_packet
+
+log = logging.getLogger(__name__)
 
 SOI = b"\xff\xd8"
 SOS = 0xDA
@@ -152,7 +155,10 @@ def _replace(path: Path, data: bytes, mode: int) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-    _sync_directories(path.parent, required=False)
+    try:
+        _sync_directories(path.parent, required=False)
+    except OSError as exc:  # the rename is done; the bytes are in place, so this is not a failure
+        log.warning("directory sync after rewriting %s failed: %s", path, exc)
 
 
 def rewrite_xmp_file(
@@ -161,10 +167,10 @@ def rewrite_xmp_file(
     """Rewrite the description and date fields of the JPEG at ``path``, which must still be
     exactly the file the export wrote; returns the new ``(sha256, size_bytes)``."""
     data, mode = _read_exactly(path)
+    new = replace_xmp(data, lambda old: updated_packet(old, estimate))
+    if new == data:  # already current: a crash may have come after the rename, before the receipt
+        return hashlib.sha256(data).hexdigest(), len(data)
     if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:
         raise RewriteRefused("the file changed since it was exported; it was left untouched")
-    new = replace_xmp(data, lambda old: updated_packet(old, estimate))
-    if new == data:
-        return sha256, size_bytes
     _replace(path, new, mode)
     return hashlib.sha256(new).hexdigest(), len(new)

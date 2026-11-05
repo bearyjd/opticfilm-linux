@@ -214,3 +214,25 @@ def test_a_crash_before_the_rename_leaves_the_old_file(tmp_path, monkeypatch):
         rewrite_xmp_file(path, digest, size, {"Description": "Fair"})
     assert path.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["001.jpg"]
+
+
+def test_a_file_already_rewritten_before_the_receipt_was_saved_is_adopted(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+    new_digest, new_size = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    # the receipt still holds the old digest (crash between the rename and the receipt save)
+    assert rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}) == (new_digest, new_size)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == new_digest
+
+
+def test_a_failed_directory_sync_after_the_rename_is_not_fatal(tmp_path, monkeypatch):
+    path, digest, size = _on_disk(tmp_path)
+
+    def broken(*_args, **_kwargs):
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(jpeg_rewrite, "_sync_directories", broken)
+    new_digest, new_size = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    data = path.read_bytes()
+    assert (new_digest, new_size) == (hashlib.sha256(data).hexdigest(), len(data))
+    assert _fields(data)["PhotoDate"] == "1980"
+
