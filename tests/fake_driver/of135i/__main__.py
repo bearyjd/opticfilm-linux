@@ -55,10 +55,11 @@ def _parse_slides(spec: str | None) -> list[int] | None:
     """The requested frames, or None for a list the real driver could misread."""
     frames: list[int] = []
     for part in (spec or f"1-{HOLDER_FRAMES}").split(","):
-        low, _, high = part.partition("-")
-        if not low.isdigit() or not (high or low).isdigit() or int(high or low) < int(low):
+        low, dash, high = part.partition("-")
+        high = high if dash else low  # "1-" is refused, as int("") fails in the real driver
+        if not low.isdigit() or not high.isdigit() or int(high) < int(low):
             return None
-        frames += range(int(low), int(high or low) + 1)
+        frames += range(int(low), int(high) + 1)
     ascending = frames == sorted(set(frames))
     return frames if ascending and all(1 <= n <= HOLDER_FRAMES for n in frames) else None
 

@@ -19,7 +19,8 @@ def check_positions(positions: tuple[int, ...]) -> None:
         or any(type(p) is not int or p not in ALL_POSITIONS for p in positions)
         or list(positions) != sorted(set(positions))
     ):
-        raise ValueError(f"positions must be ascending, unique openings 1-4, got {positions!r}")
+        span = f"{ALL_POSITIONS[0]}-{ALL_POSITIONS[-1]}"
+        raise ValueError(f"positions must be ascending, unique openings {span}, got {positions!r}")
 
 
 class HolderKind(StrEnum):

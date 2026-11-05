@@ -32,7 +32,7 @@ from typing import IO
 import numpy as np
 import tifffile
 
-from opticfilm_linux.model import HolderKind, RawSweep, ScanSettings
+from opticfilm_linux.model import ALL_POSITIONS, HolderKind, RawSweep, ScanSettings
 from opticfilm_linux.provenance import diagnostics_from_files
 from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import (
@@ -508,7 +508,7 @@ class DriverScanner:
             self._keep_sidecars(work, failed=failed)
             sweep = _stitch(work, settings.dpi, result, positions)
             sidecars = list(work.glob("*.diag.json"))
-            self.scan_diagnostics = diagnostics_from_files(sidecars, 4, positions)
+            self.scan_diagnostics = diagnostics_from_files(sidecars, len(ALL_POSITIONS), positions)
             return sweep
         finally:
             shutil.rmtree(work, ignore_errors=True)

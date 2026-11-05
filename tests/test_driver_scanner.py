@@ -297,3 +297,21 @@ def test_the_fake_driver_refuses_a_slide_list_the_real_one_would_misread(
     command = [sys.executable, "-m", "of135i", "scan", "--slides", spec, "--dpi", "600"]
     done = subprocess.run([*command, "-o", str(out)], env=env, capture_output=True, timeout=60)
     assert done.returncode == 2 and not list(tmp_path.glob("tray-f*"))
+
+
+@pytest.mark.parametrize("spec", ["1-", "-2", "1,", ",1", "1--2", "a"])
+def test_the_fake_driver_refuses_a_malformed_slide_list(sweep600_dir, tmp_path, spec):
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(FAKE_DRIVER), os.environ.get("PYTHONPATH", "")]),
+        "FAKE_DRIVER_SWEEP": str(sweep600_dir),
+    }
+    out = tmp_path / "tray.tiff"
+    command = [sys.executable, "-m", "of135i", "scan", "--slides", spec, "--dpi", "600"]
+    done = subprocess.run([*command, "-o", str(out)], env=env, capture_output=True, timeout=60)
+    assert done.returncode == 2 and not list(tmp_path.glob("tray-f*"))
+
+
+def test_the_positions_error_names_the_holder_openings():
+    with pytest.raises(ValueError, match="openings 1-4"):
+        ScanSettings(positions=(5,))
