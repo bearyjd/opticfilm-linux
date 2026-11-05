@@ -58,6 +58,7 @@ Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage
 | `OPTICFILM_DRIVER_RUNNER` | No | How the shown load command runs the driver: unset = distrobox container `dev`, `host` = directly, `distrobox:<name>` = that container (letters, digits, `-`, `_`, `.`; must start with a letter or digit). Anything else falls back to the default and is logged |
 | `OPTICFILM_NEXT_STRIP` | No (on) | Exact case-insensitive `0`, `false`, `no`, or `off` disables `load --next-strip` and the app's load-next-holder; unset, empty, and anything else enables it. First load after power-on still uses the interactive terminal command |
 | `OPTICFILM_EJECT_BUTTON` | No (on) | `0`, `false`, `no` or `off` (any case) switches the front-panel Eject button off; anything else leaves it on |
+| `OPTICFILM_DRIVER_CLEAN` | No (off) | `1` lets the driver run its own IR dust clean again; otherwise scans pass `--no-clean` and only the app's dust repair runs |
 | `OPTICFILM_LOAD_COMMAND` | No | Replaces the first-load terminal command shown in the app's help dialog |
 | `OPTICFILM_HW_ASSUME_YES` | No | Only for `scripts/hardware/` wrappers that supervise the scanner: skips the interactive confirmation of the motor-moving series and prints a notice. Without it, a closed or piped stdin aborts with no driver call |
 | `OF135I_DEPS_OVERLAY` | No | Extra `PYTHONPATH` entry for `scripts/hardware/hw_run.sh` (a folder with pure-Python driver deps such as `tifffile`) |

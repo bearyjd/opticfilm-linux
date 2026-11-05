@@ -11,6 +11,7 @@ Generated from environment reads and assignments in `src/`, `scripts/`, and `pac
 | `OPTICFILM_LOAD_COMMAND` | Optional | Nonempty stripped text replaces the first-load command shown in help; empty/unset generates the normal command. | `src/opticfilm_linux/app/qt/app.py:57`, `src/opticfilm_linux/app/qt/app.py:66` |
 | `QT_QUICK_CONTROLS_STYLE` | Optional | Any nonempty value prevents the app from choosing its KDE desktop style. Actual style-name interpretation belongs to Qt; see Qt for accepted names. Without it, the app selects `org.kde.desktop` when found. | `src/opticfilm_linux/app/qt/app.py:90` |
 | `OPTICFILM_NEXT_STRIP` | Optional | `load --next-strip` is on by default. `0`, `false`, `no`, or `off` (case-insensitive exact tokens) disables it; unset, empty, and all other values enable it. First load after power-on still needs the interactive terminal command. | `src/opticfilm_linux/scanner/select.py:21` |
+| `OPTICFILM_DRIVER_CLEAN` | Optional | `1` (exact) lets the driver run its own IR dust clean again (omits `--no-clean`); unset or anything else passes `--no-clean`, so the app's own dust repair works on the unfilled frames. | `src/opticfilm_linux/scanner/driver.py` |
 | `OPTICFILM_EJECT_BUTTON` | Optional | Front-panel Eject support is enabled by default. Stripped, case-insensitive `0`, `false`, `no`, or `off` disables it; all other values leave it enabled. | `src/opticfilm_linux/scanner/select.py:26` |
 
 ## Driver and scanner
