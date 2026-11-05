@@ -1,0 +1,79 @@
+"""The metadata strip fits every supported window: compact, short and wide."""
+
+import os
+
+import pytest
+
+pytestmark = pytest.mark.qt
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QUICK_BACKEND", "software")
+pytest.importorskip("PySide6")
+
+from layout_fixture import create_layout
+from layout_probe import assert_reachable, detect, named, tree
+from PySide6.QtWidgets import QApplication
+from test_responsive import SIZES, evaluate
+
+CONTROLS = ("metaDescription", "metaYear", "metaMonth", "metaClear", "metaLevelDate")
+
+
+@pytest.fixture(scope="module")
+def layout(tmp_path_factory, sweep600_dir):
+    app = QApplication.instance() or QApplication(["strip-layout"])
+    with create_layout(app, sweep600_dir, tmp_path_factory.mktemp("strip")) as fixture:
+        yield fixture
+
+
+@pytest.mark.parametrize("size", SIZES, ids=[f"{w}x{h}" for w, h in SIZES])
+def test_the_strip_and_its_controls_fit(layout, size):
+    layout.apply(size=size)
+    short = evaluate(layout, "mainPage", "shortWindow")
+    if short:  # one row by default; the date and the actions open on request
+        assert not evaluate(layout, "metaYear", "visible")
+        evaluate(layout, "metaDateToggle", "clicked()")
+    try:
+        nodes = tree(layout.engine, layout.root)
+        assert named(nodes, "metadataStrip").rect.height > 0
+        assert_reachable(nodes, layout.root, CONTROLS)
+        issues = [
+            i
+            for i in detect(layout.engine, layout.root, nodes=nodes)
+            if i.item.startswith("meta")
+            and i.kind in {"control_outside_window", "outside_clipping_parent"}
+        ]
+        assert not issues, issues
+    finally:
+        if short:
+            evaluate(layout, "metaDateToggle", "clicked()")
+
+
+def test_a_short_window_gives_safety_rows_priority_over_the_strip(layout):
+    layout.apply("worst-stack", (720, 540))
+    assert not evaluate(layout, "metadataStrip", "visible")
+    evaluate(layout, "nextTrayMetaEdit", "clicked()")  # asking for it still shows it
+    assert evaluate(layout, "metadataStrip", "visible")
+    evaluate(layout, "metadataStrip", "leave()")
+    assert not evaluate(layout, "metadataStrip", "visible")
+    layout.apply(size=(720, 540))
+    assert evaluate(layout, "metadataStrip", "visible")
+
+
+def test_edit_description_shows_the_strip_for_the_selection_in_a_crowded_window(layout):
+    from layout_fixture import pump
+
+    layout.apply("worst-stack", (720, 540))  # the smallest window: the strip yields here
+    assert not evaluate(layout, "metadataStrip", "visible")
+    layout.bridge.selectAll()
+    pump(200)
+    before = list(layout.bridge.selection)
+    assert before
+    evaluate(layout, "editMetaButton", "clicked()")
+    pump(100)
+    assert evaluate(layout, "metadataStrip", "visible && scope === 'slides'")
+    assert evaluate(layout, "metaDescription", "activeFocus")
+    evaluate(layout, "metaDescription", "accepted()")  # Enter does not hide it mid-edit
+    assert evaluate(layout, "metadataStrip", "visible")
+    assert list(layout.bridge.selection) == before
+    evaluate(layout, "metadataStrip", "leave()")  # Escape
+    assert not evaluate(layout, "metadataStrip", "visible")
+    assert evaluate(layout, "mainPage", "Theme.shortReviewFloor >= 13 * Theme.gu")

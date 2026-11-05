@@ -137,6 +137,20 @@ class SelectionBridge(QObject):
     def resetSelectionMeta(self, field: str) -> str:  # noqa: N802
         return self._meta(self._controller.set_selection_meta, field, None)
 
+    # The strip passes the slides it was editing ([[tray, position], ...]) so a click that
+    # changes the selection before the edit is committed cannot redirect it.
+    @Slot("QVariantList", str, str, result=str)
+    def setSlidesMeta(self, keys: list, field: str, value: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_slides_meta, keys, field, value)
+
+    @Slot("QVariantList", str, result=str)
+    def clearSlidesMeta(self, keys: list, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_slides_meta, keys, field, "")
+
+    @Slot("QVariantList", str, result=str)
+    def resetSlidesMeta(self, keys: list, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_slides_meta, keys, field, None)
+
     @Slot(int, str, str, result=str)
     def setTrayMeta(self, number: int, field: str, value: str) -> str:  # noqa: N802
         return self._meta(self._controller.set_tray_meta, number, field, value)

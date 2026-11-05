@@ -26,6 +26,7 @@ def _tray_dict(row: TrayRow) -> dict[str, Any]:
         "autoFailed": ", ".join(map(str, row.auto_failed)),
         "autoError": row.auto_error,
         "autoFlagged": ", ".join(map(str, row.auto_flagged)),
+        "meta": dict(row.meta),
     }
 
 

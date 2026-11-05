@@ -59,6 +59,8 @@ class TrayRow:
     auto_error: str = ""
     can_recover_raw: bool = False
     slides: tuple[SlideCard, ...] = ()
+    # the tray's resolved description and date: description, date, descriptionLevel, dateLevel
+    meta: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,7 +122,9 @@ def _meta_fields(manifest, pairs, selection: Selection) -> dict:
     if manifest is None:
         return {}
     batch = resolve(manifest, TrayRecord(0, TrayStage.REVIEW))
-    found = [resolve(manifest, tray, slide) for tray, slide in pairs] or [batch]
+    # with only trays selected (no selectable slides), the strip edits and shows those trays
+    trays = [resolve(manifest, tray) for tray in manifest.trays if tray.number in selection.trays]
+    found = [resolve(manifest, tray, slide) for tray, slide in pairs] or trays or [batch]
 
     def text(meta):
         return meta.date.text() if meta.date else ""
@@ -400,9 +404,22 @@ def _can_finish_box(
     )
 
 
+def _tray_meta(manifest, tray) -> tuple[tuple[str, str], ...]:
+    meta = resolve(manifest, tray)
+    return (
+        ("description", meta.description),
+        ("date", meta.date.text() if meta.date else ""),
+        ("descriptionLevel", meta.description_level),
+        ("dateLevel", meta.date_level),
+    )
+
+
 def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable):
     return tuple(
-        _tray_row(t, progress, scan_started, now, raw_pending, raw_recoverable)
+        replace(
+            _tray_row(t, progress, scan_started, now, raw_pending, raw_recoverable),
+            meta=_tray_meta(manifest, t),
+        )
         for t in (manifest.trays if manifest else ())
     )
 

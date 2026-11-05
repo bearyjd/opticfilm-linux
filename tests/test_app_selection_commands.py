@@ -373,3 +373,19 @@ def test_meta_edit_requeues_verified_trays_and_no_op_leaves_no_undo(selected, mo
     selected.set_tray_meta(2, "date", "1981")
     wait_until(selected, lambda: store.snapshot().trays[1].meta.date == "1981")
     assert len(selected._undo) == depth + 1
+
+
+def test_slides_meta_edits_the_given_keys_not_the_live_selection(selected):
+    selected.select_slide(1, 1)
+    selected.set_slides_meta([(1, 2), (2, 1)], "description", "Lake")
+    wait_until(selected, lambda: _metas(selected)[2, 1].description == "Lake")
+    metas = _metas(selected)
+    assert metas[1, 2].description == "Lake" and metas[1, 1] == MetaOverride()
+    selected.set_slides_meta([(1, 2)], "description", None)
+    wait_until(selected, lambda: _metas(selected)[1, 2] == MetaOverride())
+    with pytest.raises(ValueError, match="no longer"):
+        selected.set_slides_meta([(1, 2), (99, 1)], "description", "x")
+    with pytest.raises(ValueError):
+        selected.set_slides_meta([], "description", "x")
+    with pytest.raises(ValueError):
+        selected.set_slides_meta([(1, 2)], "date", "1850")
