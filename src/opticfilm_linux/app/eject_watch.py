@@ -15,6 +15,8 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from opticfilm_linux.app.sandbox import HOST_PREFIX, in_flatpak
+
 UNIT = "opticfilm-eject-watch.service"
 # The watcher is stopped with SIGINT and may be finishing a holder move, so allow it time.
 SYSTEMCTL_TIMEOUT_S = 150.0
@@ -37,8 +39,10 @@ class WatchStillActive(Exception):
 
 
 def run_systemctl(args: Sequence[str]) -> tuple[int, str]:
+    """Run ``systemctl``; inside a Flatpak sandbox, on the host through ``flatpak-spawn``."""
+    prefix = HOST_PREFIX if in_flatpak() else ()
     done = subprocess.run(
-        ["systemctl", *args],
+        [*prefix, "systemctl", *args],
         capture_output=True,
         text=True,
         timeout=SYSTEMCTL_TIMEOUT_S,
