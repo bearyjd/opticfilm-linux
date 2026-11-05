@@ -17,10 +17,11 @@ This is not the developer or host-ops guide. For that see [RUNBOOK.md](RUNBOOK.m
 - Never use `pkill` or `pgrep -f` to stop a scan or the watcher.
 - "Ejected" in a message does not prove the holder is free. Look at it.
 - Keep the calibration stop gate on. Do not turn it off to "fix" a scan.
-- **Unverified:** STATE.md (2026-11-05) says the `driver-latest` checkout is 67 commits behind
-  upstream master and has no stop gate of its own. Check that the driver you run enforces the
-  gate before a long session (the fork pinned in `packaging/flatpak/README.md` has it on by
-  default).
+- The production driver (`.local-research/publish/driver-latest`, the owner's fork at commit `eaa6f88`)
+  has the stop gate on by default: `scan --cal-wait-scanstop` defaults to `enforce`
+  (`of135i/cli.py`). It is behind the upstream master by many commits, but upstream ported the gate
+  from this fork, and upstream's own default is `off`. To check a driver, run
+  `grep -n 'cal-wait-scanstop' -A2 <driver>/of135i/cli.py` and look for `default="enforce"`.
 
 ## 1. Before you start
 
