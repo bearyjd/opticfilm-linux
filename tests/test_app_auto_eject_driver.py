@@ -21,6 +21,15 @@ from opticfilm_linux.scanner.holder_latch import HolderLatch
 FAKE_DRIVER = Path(__file__).parent / "fake_driver"
 
 
+@pytest.fixture(autouse=True)
+def _default_sigint_for_the_driver():
+    """The fake driver only exits 130 if Python installs its KeyboardInterrupt handler, which it
+    skips when SIGINT is inherited as ignored (background shells, nohup): it would then sleep on."""
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    yield
+    signal.signal(signal.SIGINT, previous)
+
+
 @pytest.fixture
 def build(sweep600_dir, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_DRIVER_SWEEP", str(sweep600_dir))
