@@ -33,25 +33,27 @@ RowLayout {
         Accessible.name: qsTr("Slides in this holder")
         onActivated: index => bridge.setScanOpenings(selector.firstOpenings(selector.counts[index]))
     }
-    Repeater {
-        model: bridge.skipGapsEnabled ? 4 : 0
-        QQC2.Button {
-            required property int index
-            readonly property int opening: index + 1
-            readonly property bool chosen: selector.openings.indexOf(opening) >= 0
-            objectName: "openingToggle" + opening
-            text: opening
-            highlighted: chosen
-            // the last chosen opening cannot be cleared: an empty holder is ejected, not scanned
-            enabled: selector.editable && !(chosen && selector.openings.length === 1)
-            Accessible.role: Accessible.CheckBox
-            Accessible.checkable: true
-            Accessible.checked: chosen
-            Accessible.name: qsTr("Opening %1").arg(opening)
-            QQC2.ToolTip.visible: hovered
-            QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-            QQC2.ToolTip.text: chosen ? qsTr("Opening %1 will be scanned. Tap to mark it empty.").arg(opening) : qsTr("Opening %1 is marked empty and will not be scanned.").arg(opening)
-            onClicked: bridge.setScanOpenings(selector.toggled(opening))
-        }
+    // four named toggles rather than a Repeater, so each one is a findable child of the selector
+    component OpeningToggle: QQC2.Button {
+        required property int opening
+        readonly property bool chosen: selector.openings.indexOf(opening) >= 0
+        objectName: "openingToggle" + opening
+        visible: bridge.skipGapsEnabled
+        text: opening
+        highlighted: chosen
+        // the last chosen opening cannot be cleared: an empty holder is ejected, not scanned
+        enabled: selector.editable && !(chosen && selector.openings.length === 1)
+        Accessible.role: Accessible.CheckBox
+        Accessible.checkable: true
+        Accessible.checked: chosen
+        Accessible.name: qsTr("Opening %1").arg(opening)
+        QQC2.ToolTip.visible: hovered
+        QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+        QQC2.ToolTip.text: chosen ? qsTr("Opening %1 will be scanned. Tap to mark it empty.").arg(opening) : qsTr("Opening %1 is marked empty and will not be scanned.").arg(opening)
+        onClicked: bridge.setScanOpenings(selector.toggled(opening))
     }
+    OpeningToggle { opening: 1 }
+    OpeningToggle { opening: 2 }
+    OpeningToggle { opening: 3 }
+    OpeningToggle { opening: 4 }
 }

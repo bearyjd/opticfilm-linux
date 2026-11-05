@@ -18,6 +18,7 @@ from PySide6.QtCore import QCoreApplication, QObject, QPoint, QPointF, Qt, QUrl 
 from PySide6.QtQuick import QQuickItem  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
+from shiboken6 import getCppPointer, isValid  # noqa: E402
 
 from opticfilm_linux.app.controller import Controller  # noqa: E402
 from opticfilm_linux.app.prefs import MemoryPrefs  # noqa: E402
@@ -73,37 +74,61 @@ def _wait(bridge, condition, timeout=TIMEOUT):
     raise AssertionError("timed out")
 
 
+_VISUAL_REFERENCES = []  # wrappers kept alive: a collected one can delete a live item (abort)
+
+
 def _visual(item, name):
     """Search the visual tree: Repeater delegates are not QObject children of the window."""
-    for child in item.childItems():
-        if child.objectName() == name:
-            return child
-        found = _visual(child, name)
-        if found is not None:
-            return found
+    pending, visited = [item], set()
+    while pending:
+        current = pending.pop()
+        if not isValid(current):
+            continue
+        pointer = getCppPointer(current)[0]
+        if pointer in visited:
+            continue
+        visited.add(pointer)
+        if current is not item and current.objectName() == name:
+            return current
+        children = current.childItems()
+        _VISUAL_REFERENCES.extend(children)
+        pending.extend(children)
     return None
 
 
 def _item(root, name):
-    found = root.findChild(QQuickItem, name)
-    return found if found is not None else _visual(root.contentItem(), name)
+    return root.findChild(QQuickItem, name)
 
 
-def _click(root, item):
+def _thumb_label(root, position):
+    """The placeholder of a contact-sheet tile (delegates are found below the sheet only)."""
+    thumb = _visual(_item(root, "sheetView"), f"slideThumb_1_{position}")
+    return None if thumb is None else _visual(thumb, "thumbPlaceholder")
+
+
+def _click_at(root, item, x, y):
     assert item is not None and item.isVisible() and item.isEnabled()
-    centre = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+    point = item.mapToScene(QPointF(x, y))
     QTest.mouseClick(
         root,
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
-        QPoint(int(centre.x()), int(centre.y())),
+        QPoint(int(point.x()), int(point.y())),
     )
 
 
-def _segment(root, label):
+def _click(root, item):
+    _click_at(root, item, item.width() / 2, item.height() / 2)
+
+
+COUNTS = [4, 3, 2, 1]  # the segments, left to right
+
+
+def _click_count(root, count):
+    """Press the "count" segment where it is drawn: the segments share the control's width."""
     control = _item(root, "slidesInHolder")
-    segments = [_visual(control, f"segment{i}") for i in range(4)]
-    return next(s for s in segments if s.property("text") == label)
+    width = control.width() / len(COUNTS)
+    _click_at(root, control, width * (COUNTS.index(count) + 0.5), control.height() / 2)
 
 
 def _scan(bridge, tmp_path):
@@ -116,7 +141,7 @@ def test_switched_off_the_selector_is_not_in_the_window(window, tmp_path):
     bridge, root, warnings = window()
     assert not bridge.skipEmptyEnabled
     for name in ("scanOpeningsSelector", "slidesInHolder", "openingToggle1"):
-        assert root.findChild(QObject, name) is None and _item(root, name) is None, name
+        assert root.findChild(QObject, name) is None, name
     argv = _scan(bridge, tmp_path)
     assert argv[:7] == ["scan", "--slides", "1-4", "--dpi", "600", "--ir", "--no-clean"]
     assert warnings == []
@@ -125,23 +150,20 @@ def test_switched_off_the_selector_is_not_in_the_window(window, tmp_path):
 def test_two_slides_in_this_holder_scans_1_to_2_and_resets_to_four(window, tmp_path):
     bridge, root, warnings = window(skip_empty=True)
     assert _item(root, "scanOpeningsSelector").isVisible()
-    assert _item(root, "openingToggle1") is None  # no gaps without SKIP_GAPS
+    assert not _item(root, "openingToggle1").isVisible()  # no gaps without SKIP_GAPS
     control = _item(root, "slidesInHolder")
-    assert [_visual(control, f"segment{i}").property("text") for i in range(4)] == list("4321")
-    assert _segment(root, "4").property("checked")
-    _click(root, _segment(root, "2"))
+    assert control.isVisible() and control.property("model").toVariant() == list("4321")
+    assert control.property("currentIndex") == 0
+    _click_count(root, 2)
     _wait(bridge, lambda: list(bridge.scanOpenings) == [1, 2])
     argv = _scan(bridge, tmp_path)
     assert argv[argv.index("--slides") + 1] == "1-2"
     _wait(bridge, lambda: list(bridge.scanOpenings) == [1, 2, 3, 4])
-    _wait(bridge, lambda: _segment(root, "4").property("checked"))
-    assert not _segment(root, "2").property("checked")
+    _wait(bridge, lambda: control.property("currentIndex") == 0)
     _wait(bridge, lambda: bridge.selectedTray == 1 and bridge.slides.rowCount() == 4)
     for position in (3, 4):
-        name = f"slideThumb_1_{position}"
-        _wait(bridge, lambda name=name: _item(root, name) is not None)
-        thumb = _item(root, name)
-        label = _visual(thumb, "thumbPlaceholder")
+        _wait(bridge, lambda position=position: _thumb_label(root, position) is not None)
+        label = _thumb_label(root, position)
         assert label.property("text") == "Empty (not scanned)" and label.isVisible()
     assert warnings == []
 

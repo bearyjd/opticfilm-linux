@@ -583,7 +583,9 @@ def test_unknown_scan_warns_and_latched_scan_does_not(build, tmp_path, monkeypat
     open_new(controller, tmp_path / "batch")
     wait_until(controller, lambda: controller.state().can_scan)
     calls = []
-    monkeypatch.setattr(controller._session.runner, "scan_tray", lambda: calls.append("scan"))
+    monkeypatch.setattr(
+        controller._session.runner, "scan_tray", lambda skipped=(): calls.append("scan")
+    )
     controller.scan()
     wait_until(controller, lambda: controller.state().holder_latch_warning and calls)
     wait_until(controller, lambda: not controller._scans_queued)
