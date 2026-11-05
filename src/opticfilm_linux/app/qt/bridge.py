@@ -387,8 +387,11 @@ class Bridge(StartBridge):
 
     @Slot("QVariantList")
     def setScanOpenings(self, openings: list) -> None:  # noqa: N802
-        # passed on as given: the controller checks the switch first, then refuses non-integers
-        self._controller.set_scan_openings(tuple(openings))
+        # A JavaScript number arrives as a float: only a whole one becomes an int. Anything else
+        # (1.9, True, "1", None) is passed on and refused by the controller, after its switch check.
+        self._controller.set_scan_openings(
+            tuple(int(p) if type(p) is float and p.is_integer() else p for p in openings)
+        )
 
     @Slot(int)
     def rescan(self, number: int) -> None:

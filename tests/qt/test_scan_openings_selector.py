@@ -45,12 +45,12 @@ def window(qapp, sweep600_dir, tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     made = []
 
-    def build(**switches):
+    def build(size=(1220, 780), **switches):
         config = DriverConfig(driver_dir=FAKE_DRIVER, log_dir=tmp_path / "logs")
         controller = Controller(lambda _dpi: DriverScanner(config), **switches)
         bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
         provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-        engine, warnings = create_engine(bridge, provider, size=(1220, 780))
+        engine, warnings = create_engine(bridge, provider, size=size)
         assert engine.rootObjects(), warnings
         made.append((bridge, engine))
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Holder", "", "", 600)
@@ -182,4 +182,52 @@ def test_with_gaps_four_toggles_and_the_last_one_cannot_be_cleared(window, tmp_p
     argv = _scan(bridge, tmp_path)
     assert argv[argv.index("--slides") + 1] == "1,4"
     _wait(bridge, lambda: list(bridge.scanOpenings) == [1, 2, 3, 4])
+    assert warnings == []
+
+
+def test_values_that_are_not_whole_openings_are_refused_by_the_bridge(window):
+    bridge, _root, _warnings = window(skip_empty=True)
+    for bad in ([1.9], [True], ["1"], [None]):
+        bridge.setScanOpenings(bad)
+        _wait(bridge, lambda: bridge.hasBanner)
+        assert list(bridge.scanOpenings) == [1, 2, 3, 4], bad
+        bridge.dismissBanner()
+
+
+def test_mark_empty_is_disabled_for_a_skipped_slide(window, tmp_path, monkeypatch):
+    from opticfilm_linux.app.qt import bridge as bridge_module
+
+    bridge, root, _warnings = window(skip_empty=True)
+    _scan(bridge, tmp_path)
+    _wait(bridge, lambda: bridge.selectedTray == 1 and bridge.slides.rowCount() == 4)
+    bridge.selectSlide(1, 1, 0)
+    _wait(bridge, lambda: _item(root, "markEmpty_1") is not None)
+    button = _item(root, "markEmpty_1")
+    _wait(bridge, lambda: button.property("enabled") is True)
+    real = bridge_module.focused_slide
+    monkeypatch.setattr(
+        bridge_module, "focused_slide", lambda state: {**real(state), "status": "skipped"}
+    )
+    bridge.changed.emit()
+    _wait(bridge, lambda: button.property("enabled") is False)
+
+
+def _scene_rect(item):
+    corner = item.mapToScene(QPointF(0, 0))
+    return corner.x(), corner.y(), item.width(), item.height()
+
+
+@pytest.mark.parametrize("size", [(800, 700), (1920, 1080)], ids=["compact", "wide"])
+def test_the_selector_with_both_switches_fits_and_keeps_scan_in_view(window, size):
+    bridge, root, warnings = window(size=size, skip_empty=True, skip_gaps=True)
+    QTest.qWait(100)
+    QCoreApplication.processEvents()
+    width = root.width()
+    names = ["scanOpeningsSelector", *(f"openingToggle{p}" for p in (1, 2, 3, 4))]
+    for name in [*names, "ejectButton", "primaryActionButton"]:
+        item = _item(root, name)
+        assert item is not None and item.isVisible(), name
+        x, _y, w, _h = _scene_rect(item)
+        assert x >= 0 and x + w <= width + 0.5, (name, x, w, width)
+        assert w + 0.5 >= item.implicitWidth(), (name, w, item.implicitWidth())
     assert warnings == []
