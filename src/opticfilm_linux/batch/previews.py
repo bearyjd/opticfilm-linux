@@ -1,11 +1,14 @@
 """Small 8-bit JPEG previews so a UI never has to read the huge raw or 16-bit files."""
 
 import os
+import zlib
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, PngImagePlugin
+
+from opticfilm_linux.batch.model import ROTATIONS
 
 FULL_SCALE = 65535.0
 JPEG_QUALITY = 90
@@ -54,12 +57,23 @@ def write_master(rgb8: np.ndarray, orientation: tuple[int, bool], path: Path) ->
         raise
 
 
+def _parse_orientation(text: object) -> tuple[int, bool] | None:
+    """``"<rotation>,<0|1>"`` with a quarter turn, exactly; anything else is not a tag."""
+    if not isinstance(text, str):
+        return None
+    rotation, comma, mirror = text.partition(",")
+    if not comma or mirror not in ("0", "1") or rotation not in {str(r) for r in ROTATIONS}:
+        return None
+    return int(rotation), mirror == "1"
+
+
 def read_master(path: Path) -> tuple[np.ndarray, tuple[int, bool]] | None:
-    """The master's pixels and orientation, or None when it is missing or not readable."""
+    """The master's pixels and orientation, or None when it is missing, damaged or untagged."""
     try:
         with Image.open(path) as image:
-            rotation, mirror = image.text[MASTER_ORIENTATION].split(",")
+            image.load()  # reads every chunk: a truncated file or a bad CRC fails here
+            orientation = _parse_orientation(getattr(image, "text", {}).get(MASTER_ORIENTATION))
             pixels = np.asarray(image.convert("RGB"))
-        return pixels, (int(rotation), mirror == "1")
-    except (OSError, KeyError, ValueError, AttributeError):
+    except (OSError, SyntaxError, ValueError, zlib.error):
         return None
+    return None if orientation is None else (pixels, orientation)

@@ -4,6 +4,7 @@ import itertools
 
 import numpy as np
 import pytest
+from PIL import Image, PngImagePlugin
 
 from opticfilm_linux.batch.model import ROTATIONS, BatchDefaults, SlideSettings, SlotOrientation
 from opticfilm_linux.batch.preview_transform import (
@@ -11,7 +12,12 @@ from opticfilm_linux.batch.preview_transform import (
     preview_transform,
     transform_preview,
 )
-from opticfilm_linux.batch.previews import make_preview
+from opticfilm_linux.batch.previews import (
+    MASTER_ORIENTATION,
+    make_preview,
+    read_master,
+    write_master,
+)
 from opticfilm_linux.pipeline.orient import apply_orientation
 
 ORIENTATIONS = tuple(itertools.product(ROTATIONS, (False, True)))
@@ -106,3 +112,53 @@ def test_turning_a_downscaled_preview_matches_downscaling_the_turned_slide(old, 
     turned = transform_preview(shown, preview_transform(old, new))
     assert turned.shape == wanted.shape
     assert float(np.abs(turned.astype(np.int16) - wanted.astype(np.int16)).mean()) < 1.0
+
+
+def _tagged(path, text):
+    info = PngImagePlugin.PngInfo()
+    if text is not None:
+        info.add_text(MASTER_ORIENTATION, text)
+    Image.fromarray(_sample().astype(np.uint8)).save(path, format="PNG", pnginfo=info)
+
+
+@pytest.mark.parametrize("orientation", ORIENTATIONS)
+def test_a_master_reads_back_its_orientation(tmp_path, orientation):
+    write_master(_sample(), orientation, tmp_path / "m.png")
+    pixels, read = read_master(tmp_path / "m.png")
+    assert read == orientation and np.array_equal(pixels, _sample())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "",
+        "x,y",
+        "90",
+        "90,0,1",
+        "90,2",
+        "90,true",
+        "90, 1",
+        "45,0",
+        "-90,0",
+        "450,0",
+        "1e2,0",
+    ],
+)
+def test_a_master_with_a_bad_tag_is_no_master(tmp_path, text):
+    _tagged(tmp_path / "m.png", text)
+    assert read_master(tmp_path / "m.png") is None
+
+
+def test_a_truncated_or_corrupt_master_is_no_master(tmp_path):
+    good = tmp_path / "good.png"
+    write_master(_sample(), (90, True), good)
+    data = good.read_bytes()
+    (tmp_path / "short.png").write_bytes(data[: len(data) // 2])
+    idat = data.index(b"IDAT")
+    flipped = bytearray(data)
+    flipped[idat + 6] ^= 0xFF  # inside the compressed pixels: the chunk CRC no longer matches
+    (tmp_path / "crc.png").write_bytes(bytes(flipped))
+    (tmp_path / "junk.png").write_bytes(b"not a png at all")
+    for name in ("short.png", "crc.png", "junk.png", "missing.png"):
+        assert read_master(tmp_path / name) is None, name
