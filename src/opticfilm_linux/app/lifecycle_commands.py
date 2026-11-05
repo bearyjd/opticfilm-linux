@@ -122,6 +122,7 @@ class LifecycleCommands:
         with self._lock:
             session, self._session = self._session, None
             self._reset_load_phase()
+            self._forget_scan_openings()
         if session is not None:
             if session.poller is not None:
                 self._watch_poller = session.poller  # a read-only session keeps the earlier one

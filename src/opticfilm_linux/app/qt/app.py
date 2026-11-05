@@ -25,7 +25,12 @@ from opticfilm_linux.scanner.driver import (
     install_signal_cleanup,
 )
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.select import eject_button_enabled, next_strip_enabled
+from opticfilm_linux.scanner.select import (
+    eject_button_enabled,
+    next_strip_enabled,
+    skip_empty_enabled,
+    skip_gaps_enabled,
+)
 from opticfilm_linux.sweepstore import SweepFormatError, sweep_dpi
 
 EXIT_MISSING_QT = 3
@@ -190,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
         scanner_factory(args.fake),
         next_strip=next_strip_enabled(),
         eject_button=eject_button_enabled(),
+        skip_empty=skip_empty_enabled(),
+        skip_gaps=skip_gaps_enabled(),
         eject_watch=None if args.fake is not None else EjectWatch(),  # demo mode: no scanner
     )
     bridge = Bridge(

@@ -259,6 +259,18 @@ def test_argv_with_the_default_positions_is_identical_to_main(scanner_for, tmp_p
     assert argv[:-2] == MAIN_ARGV and argv[-2] == "-o" and argv[-1].endswith("/tray.tiff")
 
 
+SKIP_SWITCHES = {"OPTICFILM_SKIP_EMPTY": "1", "OPTICFILM_SKIP_GAPS": "1"}
+
+
+@pytest.mark.parametrize("switches", [{}, SKIP_SWITCHES])
+def test_the_skip_switches_alone_never_change_the_command(scanner_for, tmp_path, switches):
+    """They only enable the app's choice; a scan of all four openings stays main's command."""
+    log = tmp_path / "argv.json"
+    scanner_for(FAKE_DRIVER_ARGV=str(log), **switches).scan_holder(ScanSettings(dpi=3600))
+    argv = json.loads(log.read_text())
+    assert argv[:-2] == MAIN_ARGV and argv[-2] == "-o"
+
+
 @pytest.mark.parametrize(
     "positions, spec",
     [((1, 2, 3, 4), "1-4"), ((1, 2, 3), "1-3"), ((1, 2), "1-2"), ((1,), "1"), ((1, 3), "1,3")]

@@ -130,7 +130,7 @@ QQC2.ScrollView {
                     QQC2.Label {
                         anchors.centerIn: parent
                         visible: !(panel.showBefore ? panel.slide.beforeUrl : panel.slide.afterUrl || panel.slide.beforeUrl)
-                        text: panel.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
+                        text: panel.slide.status === "skipped" ? qsTr("Empty (not scanned)") : panel.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
                         color: Theme.muted
                     }
                 }
@@ -165,7 +165,7 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "markEmpty_" + (panel.slide.position || 0)
                     text: qsTr("Mark empty")
-                    enabled: !bridge.readonly && panel.slide.status !== "blank"
+                    enabled: !bridge.readonly && panel.slide.status !== "blank" && panel.slide.status !== "skipped"
                     onClicked: bridge.markEmpty(panel.slide.tray, panel.slide.position)
                 }
             }

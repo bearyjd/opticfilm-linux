@@ -203,6 +203,7 @@ class HolderCommands:
         self, latch: holder_latch.HolderLatch, scanner=None, *, sequence: int | None = None
     ) -> None:
         with self._lock:
+            self._forget_scan_openings()  # any latch news may mean a different holder
             if sequence is None:
                 sequence = self._next_latch_sequence()
             session = self._session
@@ -239,6 +240,7 @@ class HolderCommands:
             ):
                 return
             self._holder_latch = holder_latch.HolderLatch.LATCHED
+            self._forget_scan_openings()  # the owner has just seated a holder
             self._latch_applied = self._next_latch_sequence()
             self._latch_invalidated = False
             self._save_holder_latch()

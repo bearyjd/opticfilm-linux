@@ -24,7 +24,11 @@ if TYPE_CHECKING:
 
 class ReviewCommands:
     def scan(self) -> None:
-        self._reserved_scan(lambda runner: runner.scan_tray(), "Could not start a scan")
+        with self._lock:
+            skipped = self._take_scan_openings()  # fixed now: a later choice cannot change it
+        self._reserved_scan(
+            lambda runner: runner.scan_tray(skipped=skipped), "Could not start a scan"
+        )
 
     def rescan(self, number: int) -> None:
         def job(runner: BatchRunner) -> None:
