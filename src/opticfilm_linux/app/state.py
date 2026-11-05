@@ -12,6 +12,7 @@ from opticfilm_linux.batch.empty import (
     is_empty_confirmed,
     is_known_empty,
 )
+from opticfilm_linux.batch.meta_sync import metadata_out_of_date, out_of_date_keys
 from opticfilm_linux.batch.metadata import resolve
 from opticfilm_linux.batch.model import (
     NO_DELIVERY,
@@ -41,6 +42,7 @@ class SlideCard:
     updating: bool
     preview_token: int  # cached version of the "after" preview; 0 when there is none
     before_preview_token: int = 0
+    metadata_pending: bool = False  # exported, but the JPEG's description or date is not current
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,7 @@ class AppState:
     selection_summary: SelectionSummary = SelectionSummary()
     undo_label: str = ""
     scan_openings: tuple[int, ...] = ALL_POSITIONS  # what the next scan covers (SKIP_EMPTY only)
+    metadata_pending: int = 0  # exported JPEGs whose description or date is not current
 
 
 EMPTY_STATE = AppState(
@@ -307,6 +310,7 @@ def _slide_card(
     slide: SlideRecord,
     tokens: Mapping[tuple[int, int], int],
     updating: frozenset[tuple[int, int]],
+    manifest: BatchManifest | None = None,
 ) -> SlideCard:
     key = (tray.number, slide.position)
     return SlideCard(
@@ -319,6 +323,7 @@ def _slide_card(
         updating=key in updating,
         preview_token=tokens.get(key, 0),
         before_preview_token=tokens.get((*key, "before"), 0),
+        metadata_pending=manifest is not None and metadata_out_of_date(manifest, tray, slide),
     )
 
 
@@ -333,9 +338,12 @@ def _batch_fields(
     return {
         "batch_name": manifest.name if manifest is not None else None,
         "selected": current.number if current is not None else None,
-        "slides": tuple(_slide_card(current, s, preview_tokens, updating) for s in current.slides)
+        "slides": tuple(
+            _slide_card(current, s, preview_tokens, updating, manifest) for s in current.slides
+        )
         if current is not None
         else (),
+        "metadata_pending": len(out_of_date_keys(manifest)) if manifest is not None else 0,
         "default_rotation": manifest.defaults.rotation if manifest is not None else 0,
         "default_mirror": manifest.defaults.mirror if manifest is not None else False,
         "export_dir": manifest.defaults.export_dir if manifest is not None else "",
@@ -426,7 +434,9 @@ def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverab
 
 def _sheet_trays(manifest, rows, tokens, updating):
     cards = {
-        tray.number: tuple(_slide_card(tray, slide, tokens, updating) for slide in tray.slides)
+        tray.number: tuple(
+            _slide_card(tray, slide, tokens, updating, manifest) for slide in tray.slides
+        )
         for tray in (manifest.trays if manifest else ())
     }
     return tuple(replace(row, slides=cards[row.number]) for row in rows)

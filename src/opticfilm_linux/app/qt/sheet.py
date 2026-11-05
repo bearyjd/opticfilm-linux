@@ -49,6 +49,7 @@ def _slide_dict(tray: int, card: SlideCard) -> dict[str, Any]:
         "ownerDecided": card.owner_decided,
         "exported": card.exported,
         "updating": card.updating,
+        "metadataPending": card.metadata_pending,
         "previewToken": card.preview_token,
         "beforePreviewToken": card.before_preview_token,
         "afterUrl": f"{base}/after/{card.preview_token}" if shown and card.preview_token else "",
