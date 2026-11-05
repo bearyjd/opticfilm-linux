@@ -55,3 +55,10 @@ def test_meta_scope_tells_the_strip_what_it_would_edit():
     assert _summary(manifest).meta_scope == "batch"
     tray_only = selection_fields(manifest, Selection(trays=frozenset({2})))["selection_summary"]
     assert tray_only.meta_scope == "tray"
+
+
+def test_a_tray_only_selection_shows_that_trays_own_values():
+    manifest = _manifest(description="Lake", date="1978")
+    summary = selection_fields(manifest, Selection(trays=frozenset({2})))["selection_summary"]
+    assert dict(summary.meta) == {"description": "Lake", "date": "1980-05"}
+    assert dict(summary.meta_levels) == {"description": "batch", "date": "tray"}

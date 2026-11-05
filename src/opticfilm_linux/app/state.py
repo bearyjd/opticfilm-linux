@@ -119,7 +119,9 @@ def _meta_fields(manifest, pairs, selection: Selection) -> dict:
     if manifest is None:
         return {}
     batch = resolve(manifest, TrayRecord(0, TrayStage.REVIEW))
-    found = [resolve(manifest, tray, slide) for tray, slide in pairs] or [batch]
+    # with only trays selected (no selectable slides), the strip edits and shows those trays
+    trays = [resolve(manifest, tray) for tray in manifest.trays if tray.number in selection.trays]
+    found = [resolve(manifest, tray, slide) for tray, slide in pairs] or trays or [batch]
 
     def text(meta):
         return meta.date.text() if meta.date else ""
