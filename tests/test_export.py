@@ -16,7 +16,7 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.batch.review import accept_all, apply_slide_settings
 from opticfilm_linux.batch.runner import BatchRunner
-from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_positions, split_slides
 from opticfilm_linux.scanner.fake import FakeScanner
@@ -174,3 +174,20 @@ def test_a_three_slide_tray_exports_each_position_from_its_own_opening(tmp_path)
     assert np.array_equal(tifffile.imread(result.written[1]), expected)
     cleanup_raw(store, 1)
     assert store.snapshot().trays[0].raw_removed
+
+
+def test_a_pending_slide_whose_opening_was_not_scanned_is_refused_before_any_write(tmp_path):
+    sweep = dataclasses.replace(make_sweep(dpi=600, filled=(True,) * 3), positions=(1, 3, 4))
+    store = BatchStore.create(tmp_path / "batch", name="T", defaults=BatchDefaults(dpi=600))
+    save_sweep(sweep, store.sweep_dir(1, 1))
+    tray = TrayRecord(number=1, stage=TrayStage.SCANNED, mode="positive")
+    store.update(lambda m: dataclasses.replace(m, trays=(tray,)))
+    enhance_tray(store, 1)
+    accept_all(store)
+    tray = store.snapshot().trays[0]
+    stray = dataclasses.replace(tray.slides[0], position=2)
+    slides = tuple(sorted((*tray.slides, stray), key=lambda s: s.position))
+    store.update_tray(1, slides=slides)
+    with pytest.raises(BatchError, match="no scanned opening 2"):
+        export_batch(store, tmp_path / "out")
+    assert not list((tmp_path / "out").rglob("*.tif*"))

@@ -6,7 +6,7 @@ settings, and only its previews and flags are refreshed.
 
 import dataclasses
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from opticfilm_linux.batch.flags import compute_flags
@@ -233,6 +233,16 @@ def enhance_tray(
     store.update_tray_if(number, current, stage=TrayStage.REVIEW)
 
 
+def require_scanned(
+    slides: dict[int, Slide], number: int, positions: Iterable[int]
+) -> dict[int, Slide]:
+    """``slides``, unless a slide record's holder opening is not in the sweep (no raw data)."""
+    if missing := sorted(set(positions) - set(slides)):
+        names = ", ".join(map(str, missing))
+        raise BatchError(f"tray {number} has no scanned opening {names}")
+    return slides
+
+
 def reenhance_slide(store: BatchStore, number: int, position: int) -> None:
     tray = _tray(store.snapshot(), number)
     if tray.raw_removed:
@@ -241,7 +251,5 @@ def reenhance_slide(store: BatchStore, number: int, position: int) -> None:
     if snapshot is None:
         raise BatchError(f"tray {number} has no slide {position}")
     sweep = load_sweep(store.sweep_dir(number, tray.sweep_version))
-    slides = split_positions(sweep)
-    if position not in slides:
-        raise BatchError(f"tray {number} has no scanned opening {position}")
+    slides = require_scanned(split_positions(sweep), number, (position,))
     _process_slide(store, number, slides[position], sweep, tray, snapshot)

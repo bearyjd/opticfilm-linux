@@ -43,7 +43,7 @@ from opticfilm_linux.batch.cleanup_recovery import (
     recover_interrupted_cleanup as recover_interrupted_cleanup,
 )
 from opticfilm_linux.batch.empty import is_empty_confirmed
-from opticfilm_linux.batch.enhance import RawRemoved, options_for
+from opticfilm_linux.batch.enhance import RawRemoved, options_for, require_scanned
 from opticfilm_linux.batch.export_contract import (
     _export_receipt,
     _metadata_spec,
@@ -300,7 +300,7 @@ def _export_tray(
     _checked_export_parent(spec.directory, root, store)
     sweep = load_sweep(store.sweep_dir(tray.number, tray.sweep_version))
     spec = dataclasses.replace(spec, scan_dpi=sweep.dpi)
-    slides = split_positions(sweep)
+    slides = require_scanned(split_positions(sweep), tray.number, (r.position for r in pending))
     for record in pending:
         if cancel is not None and cancel.is_set():
             return False
