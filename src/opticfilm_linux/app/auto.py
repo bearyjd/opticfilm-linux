@@ -19,6 +19,7 @@ from opticfilm_linux.batch.export import (
     export_batch,
     verify_tray_export,
 )
+from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import NO_DELIVERY, SlideStatus, TrayStage
 from opticfilm_linux.batch.review import accept_tray
 from opticfilm_linux.batch.store import BatchError, BatchStore
@@ -73,7 +74,7 @@ class AutoPipeline:
             ):
                 if self.store.update_tray_if(
                     tray.number,
-                    lambda current, previous=tray: current == previous,
+                    lambda current, previous=tray: without_meta(current) == without_meta(previous),
                     auto="freed",
                     auto_error="",
                     auto_failed=(),

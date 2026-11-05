@@ -96,6 +96,11 @@ def selection_summary(state: AppState) -> dict:
         "settings": dict(summary.settings),
         "mixed": list(summary.mixed),
         "trays": list(summary.trays),
+        "meta": dict(summary.meta),  # description and date ("1978-07", "" none); null: mixed
+        "metaLevels": dict(summary.meta_levels),  # "batch", "tray", "slide", ""; null: mixed
+        "metaNote": summary.meta_note,
+        "batchMeta": dict(summary.batch_meta),  # the default for trays scanned next
+        "metaScope": summary.meta_scope,  # "slides", "tray" (only trays selected) or "batch"
     }
 
 

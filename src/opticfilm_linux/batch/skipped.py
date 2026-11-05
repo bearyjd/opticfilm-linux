@@ -34,9 +34,10 @@ def scan_positions(skipped: tuple[int, ...]) -> tuple[int, ...]:
 def _skipped_record(position: int, old: SlideRecord | None) -> SlideRecord:
     # On a rescan the old record was already reset to its delivery history (``exports``);
     # nothing else of the earlier scan belongs to an opening that is not scanned now.
-    return SlideRecord(
-        position, status=SlideStatus.SKIPPED, exports=() if old is None else old.exports
-    )
+    # Its description and date are the owner's and stay.
+    if old is None:
+        return SlideRecord(position, status=SlideStatus.SKIPPED)
+    return SlideRecord(position, status=SlideStatus.SKIPPED, exports=old.exports, meta=old.meta)
 
 
 def mark_skipped(

@@ -16,6 +16,7 @@ import weakref
 from pathlib import Path
 
 from opticfilm_linux.batch.empty import check_raw_coverage, scanned_slides
+from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import BatchManifest, SlideStatus, TrayRecord, TrayStage
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.provenance import raw_region_sha256
@@ -238,10 +239,10 @@ def _compare_cleanup_evidence(
             batch.defaults,
             batch.first_tray_released,
             batch.released_render,
-            export._tray(batch, number),
+            without_meta(export._tray(batch, number)),  # a description edit needs no retry
             candidate,
             automatic,
-            tuple(t for t in batch.trays if t.number != number and t.raw_removed),
+            tuple(without_meta(t) for t in batch.trays if t.number != number and t.raw_removed),
         )
 
     if policy_key(manifest) != policy_key(evidence):
