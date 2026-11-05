@@ -111,7 +111,7 @@ def _canonical(value: object) -> str:
 
 
 def _clean_description(text: str) -> str:
-    """Owner text for the packet: line breaks and tabs become spaces, other control characters go."""
+    """Owner text for the packet: line breaks and tabs become spaces, other controls go."""
     spaced = text.replace("\r\n", " ").translate({ord("\n"): " ", ord("\r"): " ", ord("\t"): " "})
     return "".join(c for c in spaced if unicodedata.category(c) != "Cc").strip()
 
