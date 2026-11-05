@@ -2,7 +2,8 @@
 
 Both switches are off by default, and then the choice can never leave all four openings, so a
 scan runs exactly today's driver command. The choice is for one tray only: it goes back to all
-four once a scan has been handed to the runner (owner decision QA2).
+four when the Scan button is pressed (whether or not the scan starts), on any holder move or
+latch change, and on any batch change: a forgotten choice must never skip a real slide (QA2).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from opticfilm_linux.scanner.select import (
 SKIP_EMPTY_OFF = (
     f"Choosing openings is switched off. Set {SKIP_EMPTY_ENV}=1 and restart the app to use it."
 )
+SCAN_PENDING = "Wait for the scan to start before choosing the openings of the next holder."
 NO_OPENINGS = "Choose at least one opening. If the holder is empty, eject it instead of scanning."
 GAPS_OFF = (
     "Only the first openings can be scanned (for example 1 to 3). "
@@ -48,13 +50,26 @@ class ScanOpeningsCommands:
     def skip_gaps_enabled(self) -> bool:
         return self._skip_gaps
 
+    @property
+    def scan_openings(self) -> tuple[int, ...]:
+        return self._scan_openings
+
     def set_scan_openings(self, openings: tuple[int, ...]) -> None:
-        """Choose the openings of the next scan; a choice the switches do not allow is refused."""
+        """Choose the openings of the next scan; a choice the switches do not allow is refused,
+        and so is any change while a scan is queued or running."""
         refusal = self._openings_refusal(openings)
-        if refusal is not None:
-            self._set(_banner=Banner(refusal))
-            return
-        self._set(_scan_openings=openings)
+        with self._lock:
+            if refusal is None and self._scan_waiting():
+                refusal = SCAN_PENDING
+            if refusal is None:
+                self._scan_openings = openings
+            else:
+                self._banner = Banner(refusal)
+
+    def _scan_waiting(self) -> bool:
+        session = self._session
+        runner = session.runner if session is not None else None
+        return bool(self._scans_queued or (runner is not None and runner.scan_pending()))
 
     def _openings_refusal(self, openings: tuple[int, ...]) -> str | None:
         if not self._skip_empty:
@@ -69,10 +84,13 @@ class ScanOpeningsCommands:
             return GAPS_OFF
         return None
 
-    def _next_scan_skipped(self) -> tuple[int, ...]:
-        """Called under the controller lock when a scan is requested."""
-        return skipped_openings(self._scan_openings) if self._skip_empty else ()
+    def _take_scan_openings(self) -> tuple[int, ...]:
+        """Called under the controller lock when Scan is pressed: the skipped openings of that
+        scan, fixed now; the choice itself goes back to all four, refused scan or not."""
+        skipped = skipped_openings(self._scan_openings) if self._skip_empty else ()
+        self._scan_openings = ALL_POSITIONS
+        return skipped
 
-    def _scan_openings_used(self) -> None:
-        """A scan was handed to the runner: the next tray starts again from all four openings."""
-        self._set(_scan_openings=ALL_POSITIONS)
+    def _forget_scan_openings(self) -> None:
+        """Called under the controller lock: the holder or the batch may now be a different one."""
+        self._scan_openings = ALL_POSITIONS

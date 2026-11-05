@@ -364,6 +364,7 @@ class Controller(
             self._latch_applied = self._latch_sequence
             self._session = session
             self._batch_session += 1
+            self._forget_scan_openings()
             self._reset_load_phase()
             self._holder_latch = HolderLatch.UNKNOWN
             self._latch_address = None

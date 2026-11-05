@@ -490,19 +490,3 @@ def test_skip_gaps_alone_does_nothing(sweep600_dir):
         assert not c.skip_gaps_enabled
     finally:
         c.shutdown()
-
-
-def test_a_refused_scan_keeps_the_choice(sweep600_dir, tmp_path):
-    c = Controller(
-        lambda _dpi: FakeScanner(sweep600_dir, (ScannerStatus.NOT_READY,)), skip_empty=True
-    )
-    try:
-        open_new(c, tmp_path / "b")
-        c.set_scan_openings((1, 2))
-        c._set(_holder_busy=True)
-        c.scan()
-        c._set(_holder_busy=False)
-        wait_until(c, lambda: c.state().banner is not None)
-        assert c.state().scan_openings == (1, 2) and c.state().trays == ()
-    finally:
-        c.shutdown()

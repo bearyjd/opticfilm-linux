@@ -387,7 +387,8 @@ class Bridge(StartBridge):
 
     @Slot("QVariantList")
     def setScanOpenings(self, openings: list) -> None:  # noqa: N802
-        self._controller.set_scan_openings(tuple(int(p) for p in openings))
+        # passed on as given: the controller checks the switch first, then refuses non-integers
+        self._controller.set_scan_openings(tuple(openings))
 
     @Slot(int)
     def rescan(self, number: int) -> None:
