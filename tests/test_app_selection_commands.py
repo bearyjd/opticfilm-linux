@@ -367,6 +367,8 @@ def test_meta_edit_requeues_verified_trays_and_no_op_leaves_no_undo(selected, mo
     selected.set_tray_meta(1, "date", "1980")
     wait_until(selected, lambda: selected._auto_due == {1})
     assert submit.called
+    # the first edit's undo entry is pushed by the same job; wait for it before the baseline
+    wait_until(selected, lambda: len(selected._undo) >= 1)
     depth = len(selected._undo)
     selected.set_tray_meta(1, "date", "1980")  # the same value again: nothing to undo
     selected.set_batch_meta("description", "")  # already blank
