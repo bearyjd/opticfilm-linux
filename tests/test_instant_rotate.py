@@ -340,20 +340,23 @@ def _grainy(height=320, width=480, seed=7):
     return np.clip(base + 25 + rng.normal(0, 12, base.shape), 0, 255).astype(np.uint8)
 
 
-def test_forty_turns_stay_one_jpeg_save_from_the_render(store, runner, renders):
+def test_forty_turns_stay_one_jpeg_save_from_the_render(store, runner, renders, tmp_path):
     truth = _grainy()
-    orientation = _orientation_of(store, 1, 3)
-    write_master(truth, orientation, store.master_path(1, 3))
+    rendered = _orientation_of(store, 1, 3)
+    write_master(truth, rendered, store.master_path(1, 3))
     write_preview(truth, store.preview_path(1, 3, "after"))
-    single_save = float(np.abs(_pixels(store, 1, 3) - truth).mean())
-    for _ in range(40):
+    reference = tmp_path / "reference.jpg"
+    for turn in range(40):
         current = _slide(store, 1, 3).settings
         runner.edit_slide(
             1, 3, dataclasses.replace(current, rotation=(current.rotation + 90) % 360)
         )
+        # every turn shows exactly one JPEG save of the render, turned: no generation loss
+        wanted = preview_transform(rendered, _orientation_of(store, 1, 3))
+        write_preview(transform_preview(truth, wanted), reference)
+        with Image.open(reference) as image:
+            assert np.array_equal(_pixels(store, 1, 3), np.asarray(image.convert("RGB"))), turn
     assert _slide(store, 1, 3).settings.rotation == 0 and renders == []
-    drift = float(np.abs(_pixels(store, 1, 3) - truth).mean())
-    assert drift <= single_save + 0.05, (single_save, drift)
 
 
 def _widen(store, trays=8):
