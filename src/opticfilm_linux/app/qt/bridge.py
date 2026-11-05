@@ -39,6 +39,7 @@ from opticfilm_linux.app.qt.sheet import (
 )
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState
+from opticfilm_linux.batch.metadata import EstimatedDate
 from opticfilm_linux.batch.model import ROTATIONS, SlideStatus
 from opticfilm_linux.batch.slots import slot_orientations
 
@@ -450,6 +451,27 @@ class Bridge(SelectionBridge):
         bool,
         bool,
     )
+    @Slot(
+        str,
+        str,
+        str,
+        str,
+        int,
+        int,
+        bool,
+        "QVariantList",
+        "QVariantList",
+        str,
+        str,
+        str,
+        str,
+        int,
+        str,
+        int,
+        bool,
+        bool,
+        str,
+    )
     def newBatch(  # noqa: N802
         self,
         parent_url: str,
@@ -470,6 +492,7 @@ class Bridge(SelectionBridge):
         section_size: int = 140,
         auto_export: bool = False,
         keep_raw: bool = False,
+        description: str = "",
     ) -> None:
         """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
         rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
@@ -495,7 +518,19 @@ class Bridge(SelectionBridge):
             box=box,
             section=section,
             section_size=section_size,
+            description=description,
         )
+
+    @Slot(str, result=str)
+    def validateDate(self, text: str) -> str:  # noqa: N802
+        """The reason a start-page date ("1978" or "1978-07", blank allowed) is refused, or ""."""
+        if not text.strip():
+            return ""
+        try:
+            EstimatedDate.parse(text.strip())
+        except ValueError as exc:
+            return str(exc)
+        return ""
 
     @Slot(bool)
     def finishBox(self, next_box: bool) -> None:  # noqa: N802

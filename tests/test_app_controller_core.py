@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import date as _date
 
 import pytest
 
@@ -319,3 +320,42 @@ def test_failed_reenhance_clears_the_updating_marker(sweep600_dir, tmp_path, mon
         wait_until(c, lambda: not any(s.updating for s in c.state().slides))
     finally:
         c.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("date", "stored"), [("1978", "1978"), ("1978-07", "1978-07"), (None, None)]
+)
+def test_new_batch_passes_description_and_estimated_date_through(
+    controller, tmp_path, date, stored
+):
+    c = controller()
+    c.new_batch(tmp_path / "b", "Meta", "", date, 600, description="  Lake trip  ")
+    wait_until(c, lambda: c.state().batch_name == "Meta")
+    c.close_batch()
+    wait_until(c, lambda: c.state().batch_name is None)
+    with BatchStore.open(tmp_path / "b", readonly=True) as store:
+        manifest = store.snapshot()
+    assert (manifest.description, manifest.date) == ("Lake trip", stored)
+
+
+@pytest.mark.parametrize(
+    ("date", "description"),
+    [
+        ("1850", ""),
+        (str(_date.today().year), ""),
+        ("1978-13", ""),
+        ("78", ""),
+        ("1978-07-14", ""),
+        (None, "x" * 501),
+    ],
+)
+def test_new_batch_refuses_a_bad_date_or_description_without_creating(
+    controller, tmp_path, date, description
+):
+    c = controller()
+    c.new_batch(tmp_path / "b", "Meta", "", date, 600, description=description)
+    c._command.submit(lambda: None).result(10)
+    c._rebuild()
+    assert c.state().banner is not None
+    assert c.state().batch_name is None
+    assert not (tmp_path / "b").exists()
