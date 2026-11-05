@@ -22,6 +22,7 @@ owner deliberately hand-forging export receipts in the manifest.
 
 import dataclasses
 import hashlib
+import logging
 import os
 import shutil
 import threading
@@ -83,6 +84,8 @@ from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_slides
 from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
+
+log = logging.getLogger(__name__)
 
 _CLEANUP_LOCK = threading.Lock()
 _PENDING_CLEANUP_RESETS: weakref.WeakKeyDictionary[
@@ -716,7 +719,17 @@ def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
     before = _commit_cleanup(store, tray, folders, release_first=release_first)
     _delete(store, before, number, folders, release_first=release_first)
     _record_cleanup_complete(store, tray)
+    _drop_turn_masters(store, number)
     return freed
+
+
+def _drop_turn_masters(store: BatchStore, number: int) -> None:
+    """Free the lossless preview masters: a tray without raw scans is never turned again."""
+    for path in (store.tray_dir(number) / "previews").glob("*-master*.png"):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:  # the raw scans are gone either way; a leftover master only costs disk
+            log.warning("could not remove the preview master %s", path, exc_info=True)
 
 
 def _retry_cleanup_resets(store: BatchStore) -> None:

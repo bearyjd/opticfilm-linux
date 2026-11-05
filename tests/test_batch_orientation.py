@@ -241,6 +241,20 @@ def test_orientation_changed_just_before_cleanup_commits_keeps_the_raw_scans(sto
     assert store.sweep_dir(1, tray.sweep_version).is_dir()
 
 
+def test_freeing_the_raw_scans_drops_the_turn_masters_but_keeps_the_previews(store):
+    _exported(store, 1)
+    positions = [s.position for s in _tray(store, 1).slides]
+    masters = [store.master_path(1, p) for p in positions if store.master_path(1, p).is_file()]
+    assert masters  # the fixture rendered these slides
+    kept = [store.master_path(2, s.position) for s in _tray(store, 2).slides]
+    kept = [p for p in kept if p.is_file()]
+    export_module.cleanup_raw(store, 1)
+    assert _tray(store, 1).raw_removed
+    assert not any(p.exists() for p in masters)  # a tray without raw scans is never turned
+    assert all(store.preview_path(1, p, "after").is_file() for p in positions)
+    assert all(p.is_file() for p in kept)
+
+
 def test_orientation_changed_while_raw_scans_are_deleted_skips_that_tray(store, monkeypatch):
     _exported(store, 1)
     real = shutil.rmtree
