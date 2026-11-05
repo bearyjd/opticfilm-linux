@@ -1,6 +1,8 @@
+import json
 import threading
 import time
 from datetime import date as _date
+from pathlib import Path
 
 import pytest
 
@@ -11,9 +13,12 @@ from controller_helpers import (
     wait_all_in_review,
     wait_until,
 )
-from opticfilm_linux.batch.model import BatchDefaults, TrayStage
+from opticfilm_linux.app.controller import Controller
+from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayStage
 from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.scanner.base import ScannerStatus
+from opticfilm_linux.scanner.driver import DriverConfig, DriverScanner
 from opticfilm_linux.scanner.fake import FakeScanner
 
 
@@ -359,3 +364,145 @@ def test_new_batch_refuses_a_bad_date_or_description_without_creating(
     assert c.state().banner is not None
     assert c.state().batch_name is None
     assert not (tmp_path / "b").exists()
+
+
+# -- openings chosen for the next scan (OPTICFILM_SKIP_EMPTY / OPTICFILM_SKIP_GAPS) ---------
+
+FAKE_DRIVER = Path(__file__).parent / "fake_driver"
+MAIN_ARGV_PREFIX = ["scan", "--slides", "1-4", "--dpi", "600", "--ir", "--no-clean"]
+MAIN_ARGV_SUFFIX = ["--dark-fallback", "default", "-o"]
+
+
+@pytest.fixture
+def driver_controller(sweep600_dir, tmp_path, monkeypatch):
+    """A controller on the real driver backend, running the fake driver that logs its argv."""
+    monkeypatch.setenv("FAKE_DRIVER_SWEEP", str(sweep600_dir))
+    for name in ("OPTICFILM_SKIP_EMPTY", "OPTICFILM_SKIP_GAPS", "OPTICFILM_DRIVER_CLEAN"):
+        monkeypatch.delenv(name, raising=False)
+    made = []
+
+    def build(**kwargs):
+        config = DriverConfig(driver_dir=FAKE_DRIVER, log_dir=tmp_path / "logs")
+        c = Controller(lambda _dpi: DriverScanner(config), **kwargs)
+        made.append(c)
+        return c
+
+    yield build
+    for c in made:
+        c.shutdown()
+
+
+def _scan_and_log(c, tmp_path, monkeypatch, openings=None):
+    log = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_DRIVER_ARGV", str(log))
+    open_new(c, tmp_path / "b")
+    wait_until(c, lambda: c.state().can_scan)
+    if openings is not None:
+        c.set_scan_openings(openings)
+    scan_when_ready(c)
+    wait_all_in_review(c, 1)
+    return json.loads(log.read_text())
+
+
+def _assert_main_argv(argv):
+    assert argv[:7] == MAIN_ARGV_PREFIX and argv[7:10] == MAIN_ARGV_SUFFIX
+    assert len(argv) == 11 and argv[-1].endswith("/tray.tiff")
+
+
+def test_flag_off_offers_no_choice_and_the_argv_is_main_s(driver_controller, tmp_path, monkeypatch):
+    c = driver_controller()
+    assert not c.skip_empty_enabled and not c.skip_gaps_enabled
+    c.set_scan_openings((1, 2))  # whatever the window sends, the flag-off scan is unchanged
+    wait_until(c, lambda: c.state().banner is not None)
+    assert c.state().scan_openings == ALL_POSITIONS
+    _assert_main_argv(_scan_and_log(c, tmp_path, monkeypatch, openings=(1, 2)))
+
+
+def test_flag_on_with_all_four_chosen_keeps_main_s_argv(driver_controller, tmp_path, monkeypatch):
+    c = driver_controller(skip_empty=True)
+    _assert_main_argv(_scan_and_log(c, tmp_path, monkeypatch, openings=ALL_POSITIONS))
+
+
+def test_two_slides_in_this_holder_scans_openings_1_to_2(driver_controller, tmp_path, monkeypatch):
+    c = driver_controller(skip_empty=True)
+    argv = _scan_and_log(c, tmp_path, monkeypatch, openings=(1, 2))
+    assert argv[argv.index("--slides") + 1] == "1-2"
+    assert argv[:1] + argv[3:7] == ["scan", "--dpi", "600", "--ir", "--no-clean"]
+    tray = BatchStore.open(tmp_path / "b", readonly=True).snapshot().trays[0]
+    assert tray.skipped == (3, 4)
+    assert [s.status is SlideStatus.SKIPPED for s in tray.slides] == [False, False, True, True]
+    assert c.state().scan_openings == ALL_POSITIONS  # the choice is for one tray only (QA2)
+    c.accept_all()
+    wait_until(c, lambda: not c.state().scan_pending)
+    out = tmp_path / "out"
+    c.export(out, "jpeg")
+    wait_until(c, lambda: c.state().export is not None and c.state().export.finished)
+    written = sorted(p.name for p in out.rglob("*.jpg"))
+    assert len(written) == 2, written
+
+
+def test_the_choice_is_published_in_the_state(tmp_path, sweep600_dir):
+    c = Controller(lambda _dpi: FakeScanner(sweep600_dir), skip_empty=True)
+    try:
+        open_new(c, tmp_path / "b")
+        c.set_scan_openings((1, 2, 3))
+        wait_until(c, lambda: c.state().scan_openings == (1, 2, 3))
+        assert c.skip_empty_enabled
+        c.set_scan_openings(ALL_POSITIONS)
+        wait_until(c, lambda: c.state().scan_openings == ALL_POSITIONS)
+    finally:
+        c.shutdown()
+
+
+@pytest.mark.parametrize("openings", [(), (1, 3), (2, 3), (3, 1), (2, 2), (0,), (5,)])
+def test_without_skip_gaps_only_openings_1_to_n_are_accepted(sweep600_dir, openings):
+    c = Controller(lambda _dpi: FakeScanner(sweep600_dir), skip_empty=True)
+    try:
+        c.set_scan_openings(openings)
+        wait_until(c, lambda: c.state().banner is not None)
+        assert c.state().scan_openings == ALL_POSITIONS
+    finally:
+        c.shutdown()
+
+
+def test_an_empty_choice_says_to_eject_instead(sweep600_dir):
+    c = Controller(lambda _dpi: FakeScanner(sweep600_dir), skip_empty=True, skip_gaps=True)
+    try:
+        c.set_scan_openings(())
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "eject" in c.state().banner.message.lower()
+    finally:
+        c.shutdown()
+
+
+def test_skip_gaps_allows_any_ascending_set(driver_controller, tmp_path, monkeypatch):
+    c = driver_controller(skip_empty=True, skip_gaps=True)
+    assert c.skip_gaps_enabled
+    argv = _scan_and_log(c, tmp_path, monkeypatch, openings=(1, 3, 4))
+    assert argv[argv.index("--slides") + 1] == "1,3,4"
+    tray = BatchStore.open(tmp_path / "b", readonly=True).snapshot().trays[0]
+    assert tray.skipped == (2,)
+
+
+def test_skip_gaps_alone_does_nothing(sweep600_dir):
+    c = Controller(lambda _dpi: FakeScanner(sweep600_dir), skip_empty=False, skip_gaps=True)
+    try:
+        assert not c.skip_gaps_enabled
+    finally:
+        c.shutdown()
+
+
+def test_a_refused_scan_keeps_the_choice(sweep600_dir, tmp_path):
+    c = Controller(
+        lambda _dpi: FakeScanner(sweep600_dir, (ScannerStatus.NOT_READY,)), skip_empty=True
+    )
+    try:
+        open_new(c, tmp_path / "b")
+        c.set_scan_openings((1, 2))
+        c._set(_holder_busy=True)
+        c.scan()
+        c._set(_holder_busy=False)
+        wait_until(c, lambda: c.state().banner is not None)
+        assert c.state().scan_openings == (1, 2) and c.state().trays == ()
+    finally:
+        c.shutdown()

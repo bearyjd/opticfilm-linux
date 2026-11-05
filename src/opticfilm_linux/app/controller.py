@@ -36,6 +36,7 @@ from opticfilm_linux.app.lifecycle_commands import (
 from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.preview_tokens import PreviewTokens
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
+from opticfilm_linux.app.scan_openings import ScanOpeningsCommands
 from opticfilm_linux.app.selection import Selection, prune, selectable_keys
 from opticfilm_linux.app.selection_commands import SelectionCommands
 from opticfilm_linux.app.state import (
@@ -83,7 +84,12 @@ class _Session:
 
 
 class Controller(
-    FirstLoadCommands, HolderCommands, LifecycleCommands, ReviewCommands, SelectionCommands
+    FirstLoadCommands,
+    HolderCommands,
+    LifecycleCommands,
+    ReviewCommands,
+    ScanOpeningsCommands,
+    SelectionCommands,
 ):
     def __init__(
         self,
@@ -92,12 +98,15 @@ class Controller(
         next_strip: bool | None = None,
         eject_button: bool = True,
         eject_watch: EjectWatch | None = None,
+        skip_empty: bool | None = None,  # None: read OPTICFILM_SKIP_EMPTY
+        skip_gaps: bool | None = None,  # None: read OPTICFILM_SKIP_GAPS
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
         self._next_strip = next_strip_enabled() if next_strip is None else next_strip
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
+        self._init_scan_openings(skip_empty, skip_gaps)
         self._init_holder_workers()
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
         self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker
@@ -553,7 +562,11 @@ class Controller(
                 raw_recoverable=raw_recoverable,
             )
         )
-        self._state = dataclasses.replace(self._state, undo_label=self._selection_undo_label())
+        self._state = dataclasses.replace(
+            self._state,
+            undo_label=self._selection_undo_label(),
+            scan_openings=self._scan_openings,
+        )
 
     @staticmethod
     def _poll_status(session):
