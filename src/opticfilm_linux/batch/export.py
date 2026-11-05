@@ -22,7 +22,6 @@ owner deliberately hand-forging export receipts in the manifest.
 
 import dataclasses
 import hashlib
-import logging
 import os
 import shutil
 import threading
@@ -43,7 +42,7 @@ from opticfilm_linux.batch.cleanup_recovery import (
 from opticfilm_linux.batch.cleanup_recovery import (
     recover_interrupted_cleanup as recover_interrupted_cleanup,
 )
-from opticfilm_linux.batch.empty import is_empty_confirmed
+from opticfilm_linux.batch.empty import check_raw_coverage, is_empty_confirmed, scanned_slides
 from opticfilm_linux.batch.enhance import RawRemoved, options_for, require_scanned
 from opticfilm_linux.batch.export_contract import (
     _export_receipt,
@@ -60,6 +59,7 @@ from opticfilm_linux.batch.export_contract import (
 )
 from opticfilm_linux.batch.layout import section_directory
 from opticfilm_linux.batch.model import (
+    NO_DELIVERY,
     BatchDefaults,
     BatchManifest,
     ExportRecord,
@@ -72,6 +72,7 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
+from opticfilm_linux.batch.turn_masters import drop_turn_masters, turn_masters_size
 from opticfilm_linux.output import (
     Format,
     JpegSize,
@@ -84,8 +85,6 @@ from opticfilm_linux.pipeline.run import enhance_slide
 from opticfilm_linux.pipeline.split import split_positions
 from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
-
-log = logging.getLogger(__name__)
 
 _CLEANUP_LOCK = threading.Lock()
 _PENDING_CLEANUP_RESETS: weakref.WeakKeyDictionary[
@@ -181,7 +180,7 @@ def _finish_tray_if_done(store: BatchStore, number: int) -> None:
     def done(tray: TrayRecord) -> bool:  # judged on the live tray, under the store's lock
         if tray.raw_removed:
             return False
-        real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
+        real = [s for s in tray.slides if s.status not in NO_DELIVERY]
         everything = all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
         return tray.stage is TrayStage.REVIEW and bool(tray.slides) and everything
 
@@ -394,7 +393,7 @@ def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
     if tray.stage is not TrayStage.EXPORTED or not tray.slides:
         raise BatchError(f"tray {tray.number} is not fully exported")
     for slide in tray.slides:
-        if slide.status is SlideStatus.BLANK:
+        if slide.status in NO_DELIVERY:
             continue
         try:
             if (
@@ -457,7 +456,7 @@ def _half_cleaned(store: BatchStore, tray: TrayRecord) -> bool:
 def _safe_receipt_paths(store: BatchStore, tray: TrayRecord) -> None:
     root = store.directory.resolve()
     for slide in tray.slides:
-        if slide.status is not SlideStatus.BLANK:
+        if slide.status not in NO_DELIVERY:
             try:
                 path, *_ = _export_receipt(slide)
             except ValueError:
@@ -486,14 +485,8 @@ def _verify_raw(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) 
         raise CleanupRefused("current raw sweep is missing; cleanup refused")
     try:
         slides = split_positions(load_sweep(current))
-        positions = [slide.position for slide in tray.slides]
-        if (
-            any(type(position) is not int for position in positions)
-            or len(positions) != len(slides)
-            or set(positions) != set(slides)
-        ):
-            raise ValueError("manifest positions must cover every raw position exactly once")
-        for slide in tray.slides:
+        check_raw_coverage(tray, slides)
+        for slide in scanned_slides(tray):
             current_digest = raw_region_sha256(slides[slide.position])
             if slide.status is SlideStatus.BLANK:
                 if not is_empty_confirmed(tray, slide) or slide.blank_fingerprint != current_digest:
@@ -578,7 +571,7 @@ def _delete(
 def _check_render_receipts(manifest: BatchManifest, tray: TrayRecord) -> None:
     defaults = manifest.defaults
     for slide in tray.slides:
-        if slide.status is SlideStatus.BLANK:
+        if slide.status in NO_DELIVERY:
             continue
         if not slide.exports or not slide.exports[-1].render_signature:
             raise CleanupPolicyRefused(
@@ -719,35 +712,7 @@ def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
     before = _commit_cleanup(store, tray, folders, release_first=release_first)
     _delete(store, before, number, folders, release_first=release_first)
     _record_cleanup_complete(store, tray)
-    return freed + _drop_turn_masters(store, number)
-
-
-def _size(path: Path) -> int:
-    try:
-        return path.stat().st_size
-    except FileNotFoundError:  # removed meanwhile (a render replaced or dropped it)
-        return 0
-
-
-def _turn_masters(store: BatchStore, number: int) -> list[Path]:
-    return sorted((store.tray_dir(number) / "previews").glob("*-master*.png"))
-
-
-def _drop_turn_masters(store: BatchStore, number: int) -> int:
-    """Free the lossless preview masters (a tray without raw scans is never turned again);
-    returns the bytes freed."""
-    freed = 0
-    for path in _turn_masters(store, number):
-        try:
-            size = path.stat().st_size
-            path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError:  # the raw scans are gone either way; a leftover master only costs disk
-            log.warning("could not remove the preview master %s", path, exc_info=True)
-            continue
-        freed += size
-    return freed
+    return freed + drop_turn_masters(store, number)
 
 
 def _retry_cleanup_resets(store: BatchStore) -> None:
@@ -802,7 +767,7 @@ def freeable_trays(store: BatchStore, *, release_first: bool = False) -> tuple[F
         candidate = _still_freeable(tray) or _half_cleaned(store, tray)
         if candidate and _cleanup_listable(store, tray.number, release_first=release_first):
             size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
-            size += sum(_size(p) for p in _turn_masters(store, tray.number))
+            size += turn_masters_size(store, tray.number)
             found.append(FreeableTray(number=tray.number, bytes=size))
     return tuple(found)
 

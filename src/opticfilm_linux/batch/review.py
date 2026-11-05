@@ -11,6 +11,7 @@ from types import MappingProxyType
 from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.enhance import RawRemoved
 from opticfilm_linux.batch.model import (
+    NO_DELIVERY,
     BatchManifest,
     EmptyConfirmation,
     Mode,
@@ -46,6 +47,8 @@ def _replace_slide(
     manifest: BatchManifest, tray: TrayRecord, slide: SlideRecord, **changes
 ) -> BatchManifest:
     _require_raw(tray)
+    if slide.status is SlideStatus.SKIPPED:
+        raise BatchError(f"opening {slide.position} of tray {tray.number} was not scanned")
     new_slide = dataclasses.replace(slide, empty_confirmed=None, **changes)
     slides = tuple(new_slide if s.position == slide.position else s for s in tray.slides)
     trays = tuple(
@@ -191,7 +194,7 @@ def apply_slide_settings(
 
 def accept_all(store: BatchStore) -> None:
     def accepted(slide: SlideRecord) -> SlideRecord:
-        if slide.status is SlideStatus.BLANK or slide.owner_decided:
+        if slide.status in NO_DELIVERY or slide.owner_decided:
             return slide
         return dataclasses.replace(
             slide,
@@ -227,6 +230,7 @@ def accept_tray(store: BatchStore, number: int, *, automatic: bool = False) -> N
         slides = tuple(
             s
             if s.owner_decided
+            or s.status is SlideStatus.SKIPPED
             or (automatic and s.status in (SlideStatus.BLANK, SlideStatus.NEEDS_LOOK))
             else dataclasses.replace(
                 s,
@@ -278,7 +282,7 @@ def _reoriented(tray: TrayRecord) -> TrayRecord:
     """Every non-blank slide needs a new preview and a new export; owner choices are kept."""
     slides = tuple(
         dataclasses.replace(s, empty_confirmed=None)
-        if s.status is SlideStatus.BLANK
+        if s.status in NO_DELIVERY
         else dataclasses.replace(s, preview_stale=True, exported=False, empty_confirmed=None)
         for s in tray.slides
     )
@@ -345,6 +349,8 @@ def _bulk_skip(tray: TrayRecord, slide: SlideRecord) -> str | None:
         return "not_editable"
     if slide.status is SlideStatus.BLANK:
         return "blank"
+    if slide.status is SlideStatus.SKIPPED:
+        return "skipped"
     return None
 
 
