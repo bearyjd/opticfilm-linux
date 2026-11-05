@@ -7,9 +7,9 @@
   "base-version": "6.11",
   "command": "opticfilm",
   "x-notes": [
-    "DRAFT, NOT BUILDABLE YET: every PLACEHOLDER_* value below must be replaced by a real pin before a build.",
+    "DRAFT, NOT BUILDABLE YET: every remaining PLACEHOLDER_* value below must be replaced by a real pin before a build.",
     "numpy comes from io.qt.PySide.BaseApp (6.11), so it is not installed from a wheel here.",
-    "The scanner driver is an EXTERNAL dependency (github.com/cgillinger/opticfilm135i-linux), fetched by pinned commit. Nothing from Plustek or the vendor driver is vendored here.",
+    "The scanner driver is an EXTERNAL dependency: the owner's fork (github.com/bearyjd/opticfilm135i-linux) pinned at commit eaa6f88, which has the calibration stop gate default 'enforce'. Upstream cgillinger master (6270867) has the gate OFF by default and exits 4 on slide scans here, so it is NOT used. Nothing from Plustek or the vendor driver is vendored here.",
     "--device=all is the broad choice for raw USB access (07b3:1436): it works on the host but is untested inside the sandbox, and it also grants GPU access that Qt Quick may rely on, so narrowing to --device=usb needs --device=dri alongside and is untested."
   ],
   "cleanup-commands": [
@@ -63,8 +63,8 @@
       "sources": [
         {
           "type": "git",
-          "url": "https://github.com/cgillinger/opticfilm135i-linux.git",
-          "commit": "PLACEHOLDER_COMMIT_DRIVER"
+          "url": "https://github.com/bearyjd/opticfilm135i-linux.git",
+          "commit": "eaa6f889f09796bc8f4ddab73cd5daa0bdb273fd"
         }
       ]
     },
