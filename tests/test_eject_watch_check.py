@@ -188,7 +188,7 @@ def rig(tmp_path: Path):
     )
     (tmp_path / "src" / "opticfilm_linux" / "app").mkdir()
     shutil.copy(APP_SRC / "__init__.py", tmp_path / "src" / "opticfilm_linux")
-    for name in ("__init__.py", "eject_watch.py"):
+    for name in ("__init__.py", "eject_watch.py", "sandbox.py"):
         shutil.copy(APP_SRC / "app" / name, tmp_path / "src" / "opticfilm_linux" / "app")
     (proc / "1").mkdir()
     (proc / "1" / "cmdline").write_bytes(b"/sbin/init\0")
