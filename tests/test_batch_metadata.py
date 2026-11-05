@@ -8,6 +8,7 @@ from opticfilm_linux.batch.metadata import (
     EstimatedDate,
     MetaOverride,
     resolve,
+    validate_description,
 )
 from opticfilm_linux.batch.model import BatchManifest, SlideRecord, TrayRecord, TrayStage
 
@@ -64,15 +65,57 @@ def test_latest_year_is_accepted_and_frozen():
         est.year = 1980  # type: ignore[misc]
 
 
-def test_override_checks_types_and_is_frozen():
+def test_override_is_frozen_and_lenient_about_content():
     assert MetaOverride() == MetaOverride(None, None)
+    long = MetaOverride(description="x" * (MAX_DESCRIPTION + 1))
+    assert len(long.description) == MAX_DESCRIPTION + 1
+    with pytest.raises(FrozenInstanceError):
+        long.date = "1980"  # type: ignore[misc]
+
+
+def test_validate_description_is_the_write_rule():
+    assert validate_description("  Lake trip \n") == "Lake trip"
+    assert validate_description("e\u0301") == "\u00e9"
+    assert validate_description("") == ""
+    assert validate_description("x" * MAX_DESCRIPTION) == "x" * MAX_DESCRIPTION
+    with pytest.raises(ValueError, match="500"):
+        validate_description("x" * (MAX_DESCRIPTION + 1))
     with pytest.raises(ValueError):
-        MetaOverride(description=5)  # type: ignore[arg-type]
-    with pytest.raises(ValueError):
-        MetaOverride(date=1978)  # type: ignore[arg-type]
-    with pytest.raises(ValueError):
-        MetaOverride(description="x" * (MAX_DESCRIPTION + 1))
-    MetaOverride(description="x" * MAX_DESCRIPTION)
+        validate_description(5)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", [1978, 1978.5, [1978], True, {"y": 1978}, 0, []])
+def test_non_string_date_never_raises(bad):
+    for kwargs in ({"batch": {"date": bad}}, {"slide": MetaOverride(date=bad)}):
+        got = resolve(*_tree(**kwargs))
+        assert got.date is None
+        assert "unrecognised date" in got.legacy_note
+
+
+@pytest.mark.parametrize("bad", [5, ["x"], True, {"a": 1}])
+def test_non_string_description_is_ignored_with_a_note(bad):
+    got = resolve(*_tree(batch={"description": "B"}, slide=MetaOverride(description=bad)))
+    assert got.description == "B"
+    assert got.description_note
+    got = resolve(*_tree(batch={"description": bad}))
+    assert got.description == "" and got.description_note
+
+
+def test_overlong_description_is_kept_with_a_note():
+    text = "x" * (MAX_DESCRIPTION + 10)
+    got = resolve(*_tree(batch={"description": text}))
+    assert got.description == text
+    assert "500" in got.description_note
+    assert resolve(*_tree(batch={"description": "ok"})).description_note == ""
+
+
+def test_descriptions_are_nfc_at_every_level():
+    for kwargs in (
+        {"batch": {"description": "e\u0301"}},
+        {"tray": MetaOverride(description="e\u0301")},
+        {"slide": MetaOverride(description="e\u0301")},
+    ):
+        assert resolve(*_tree(**kwargs)).description == "\u00e9"
 
 
 def test_nothing_set_resolves_empty():

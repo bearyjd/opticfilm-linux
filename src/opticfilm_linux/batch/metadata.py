@@ -11,7 +11,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from opticfilm_linux.batch.model import BatchManifest, SlideRecord, TrayRecord
@@ -53,23 +53,25 @@ class EstimatedDate:
         return f"{self.year}" if self.month is None else f"{self.year}-{self.month:02d}"
 
 
-def _check_text(name: str, value: object) -> None:
-    if value is not None and not isinstance(value, str):
-        raise ValueError(f"{name} must be a string or null")
+def validate_description(text: str) -> str:
+    """The rule for text being written (create, CLI, edits); loading never applies it."""
+    if not isinstance(text, str):
+        raise ValueError("description must be text")
+    text = unicodedata.normalize("NFC", text).strip()
+    if len(text) > MAX_DESCRIPTION:
+        raise ValueError(f"description must be at most {MAX_DESCRIPTION} characters")
+    return text
 
 
 @dataclass(frozen=True)
 class MetaOverride:
-    """What one tray or slide says about itself; ``None`` inherits, ``""`` blanks."""
+    """What one tray or slide says about itself; ``None`` inherits, ``""`` blanks.
+
+    Loading is lenient, so the values are not checked here: ``resolve`` copes with odd ones.
+    """
 
     description: str | None = None
     date: str | None = None  # kept as text so an unreadable legacy value never blocks loading
-
-    def __post_init__(self) -> None:
-        _check_text("description", self.description)
-        _check_text("date", self.date)
-        if self.description is not None and len(self.description) > MAX_DESCRIPTION:
-            raise ValueError(f"description must be at most {MAX_DESCRIPTION} characters")
 
 
 @dataclass(frozen=True)
@@ -79,10 +81,13 @@ class ResolvedMeta:
     date: EstimatedDate | None
     date_level: Level
     legacy_note: str = ""
+    description_note: str = ""
 
 
-def _read_date(text: str) -> tuple[EstimatedDate | None, str]:
+def _read_date(text: object) -> tuple[EstimatedDate | None, str]:
     """Read stored date text leniently: never raises, explains what it could not use."""
+    if not isinstance(text, str):
+        return None, f"unrecognised date: {text!r}, set a year"
     try:
         return EstimatedDate.parse(text), ""
     except ValueError:
@@ -99,26 +104,43 @@ def _read_date(text: str) -> tuple[EstimatedDate | None, str]:
     return None, f"unrecognised date: {text}, set a year"
 
 
-def _pick(values: tuple[tuple[Level, str | None], ...]) -> tuple[str, Level]:
+def _pick(values: tuple[tuple[Level, Any], ...]) -> tuple[str, Level]:
     for level, value in values:
         if value is not None:
             return value, level
     return "", ""
 
 
+def _description_at(level: Level, value: object) -> tuple[str | None, str]:
+    """A stored description made safe to use, and a note when it was not usable as stored."""
+    if value is None:
+        return None, ""
+    if not isinstance(value, str):
+        return None, f"ignored a description of the wrong type at {level} level"
+    note = (
+        f"description longer than {MAX_DESCRIPTION} characters"
+        if len(value) > MAX_DESCRIPTION
+        else ""
+    )
+    return unicodedata.normalize("NFC", value), note
+
+
 def resolve(
     manifest: BatchManifest, tray: TrayRecord, slide: SlideRecord | None = None
 ) -> ResolvedMeta:
     """Slide beats tray beats batch, for each field on its own."""
-    levels = [("tray", tray.meta)]
+    levels: list[tuple[Level, MetaOverride]] = [("tray", tray.meta)]
     if slide is not None:
         levels.insert(0, ("slide", slide.meta))
-    batch_description = unicodedata.normalize("NFC", manifest.description) or None
-    description, description_level = _pick(
-        (*((lv, m.description) for lv, m in levels), ("batch", batch_description))
-    )
+    stored = [(lv, m.description) for lv, m in levels] + [("batch", manifest.description or None)]
+    checked = [(lv, *_description_at(lv, v)) for lv, v in stored]
+    description, description_level = _pick(tuple((lv, v) for lv, v, _ in checked))
+    notes = [n for _, _, n in checked if n]
     date_text, date_level = _pick(
-        (*((lv, m.date) for lv, m in levels), ("batch", manifest.date or None))
+        (
+            *((lv, m.date) for lv, m in levels),
+            ("batch", None if manifest.date == "" else manifest.date),
+        )
     )
-    parsed, note = _read_date(date_text) if date_text else (None, "")
-    return ResolvedMeta(description, description_level, parsed, date_level, note)
+    parsed, note = _read_date(date_text) if date_text != "" else (None, "")
+    return ResolvedMeta(description, description_level, parsed, date_level, note, "; ".join(notes))

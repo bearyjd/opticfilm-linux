@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
-from opticfilm_linux.batch.metadata import MAX_DESCRIPTION, MetaOverride
+from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.output import Format, JpegSize
 
 if TYPE_CHECKING:
@@ -269,8 +269,6 @@ class BatchManifest:
     description: str = ""
 
     def __post_init__(self) -> None:
-        if not isinstance(self.description, str) or len(self.description) > MAX_DESCRIPTION:
-            raise ValueError(f"description must be text of at most {MAX_DESCRIPTION} characters")
         if type(self.first_tray_released) is not bool:
             raise ValueError("first_tray_released must be a boolean")
         object.__setattr__(

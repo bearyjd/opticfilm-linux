@@ -311,13 +311,7 @@ def test_legacy_date_shapes_load_and_round_trip_unchanged(date):
 @pytest.mark.parametrize(
     ("where", "key", "value"),
     [
-        ("top", "description", 5),
-        ("top", "description", None),
-        ("top", "description", "x" * 501),
         ("tray", "meta", "oops"),
-        ("tray", "meta", {"description": 5}),
-        ("tray", "meta", {"date": 1978}),
-        ("tray", "meta", {"bogus": "x"}),
         ("slide", "meta", ["x"]),
     ],
 )
@@ -327,3 +321,23 @@ def test_bad_metadata_types_raise_manifest_format_error(where, key, value):
     target[key] = value
     with pytest.raises(ManifestFormatError):
         from_json(json.dumps(data))
+
+
+def test_load_is_lenient_about_description_and_date_values():
+    data = _plain_json()
+    data["description"] = "x" * 600
+    data["date"] = 1978
+    data["trays"][0]["meta"] = {"description": 5, "date": ["x"]}
+    data["trays"][0]["slides"][0]["meta"] = {"description": "y" * 501}
+    manifest = from_json(json.dumps(data))
+    assert manifest.description == "x" * 600
+    assert manifest.trays[0].slides[0].meta.description == "y" * 501
+    assert manifest.date == 1978
+
+
+def test_unknown_meta_keys_are_ignored_and_dropped():
+    data = _plain_json()
+    data["trays"][0]["meta"] = {"date": "1978", "future": 1}
+    manifest = from_json(json.dumps(data))
+    assert manifest.trays[0].meta == MetaOverride(date="1978")
+    assert json.loads(to_json(manifest))["trays"][0]["meta"] == {"date": "1978"}

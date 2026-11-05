@@ -154,9 +154,10 @@ def _slide_delivery(data: dict[str, Any]) -> tuple[ExportRecord, ...]:
 
 def _meta(data: dict[str, Any]) -> MetaOverride:
     meta = data.get("meta", {})
-    if not isinstance(meta, dict) or set(meta) - {"description", "date"}:
-        raise ManifestFormatError("meta must be an object with only description and date")
-    return MetaOverride(**meta)
+    if not isinstance(meta, dict):
+        raise ManifestFormatError("meta must be an object")
+    # Keys from a later build are ignored, and values are checked by resolve, not here.
+    return MetaOverride(description=meta.get("description"), date=meta.get("date"))
 
 
 def _slide(data: dict[str, Any]) -> SlideRecord:

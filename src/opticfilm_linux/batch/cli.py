@@ -1,11 +1,13 @@
 """``ofscan batch ...``: drive a batch from a terminal (and exercise the core without a window)."""
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 from opticfilm_linux.batch import review
 from opticfilm_linux.batch.export import export_batch
+from opticfilm_linux.batch.metadata import EstimatedDate, validate_description
 from opticfilm_linux.batch.model import (
     ROTATIONS,
     BatchDefaults,
@@ -85,14 +87,41 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     export.add_argument("--format", choices=["tiff16", "png8", "jpeg"], default="tiff16")
 
 
+def _description_arg(text: str) -> str:
+    try:
+        return validate_description(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _date_arg(text: str) -> str | None:
+    text = text.strip()
+    if not text:
+        return None
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", text):
+        raise argparse.ArgumentTypeError(f"{text!r} has a day; use YYYY or YYYY-MM")
+    try:
+        return EstimatedDate.parse(text).text()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{exc}; use YYYY or YYYY-MM") from exc
+
+
 def _add_new_command(sub: argparse._SubParsersAction) -> None:
     new = sub.add_parser("new", help="create a batch folder")
     new.add_argument("directory", type=Path)
     new.add_argument("--name", required=True)
     new.add_argument("--album", default="")
-    new.add_argument("--description", default="", help="what this batch is about (inherited)")
     new.add_argument(
-        "--date", default=None, help="estimated date, YYYY or YYYY-MM (inherited by every slide)"
+        "--description",
+        type=_description_arg,
+        default="",
+        help="what this batch is about (inherited)",
+    )
+    new.add_argument(
+        "--date",
+        type=_date_arg,
+        default=None,
+        help="estimated date, YYYY or YYYY-MM (inherited by every slide)",
     )
     new.add_argument("--dpi", type=int, default=3600)
     add_orientation_options(new)
