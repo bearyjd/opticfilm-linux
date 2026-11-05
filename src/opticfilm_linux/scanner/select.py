@@ -17,6 +17,8 @@ EJECT_BUTTON_ENV = "OPTICFILM_EJECT_BUTTON"  # "0" switches the front-panel Ejec
 # Skipping openings changes what the motor scans and is untested on hardware: off by default.
 SKIP_EMPTY_ENV = "OPTICFILM_SKIP_EMPTY"  # on: offer "Slides in this holder" (scans 1..N)
 SKIP_GAPS_ENV = "OPTICFILM_SKIP_GAPS"  # on, with SKIP_EMPTY: any set of openings, e.g. 1,3,4
+# The app's own eject after a good tray (plan rungs H5/H7/H8, untested on hardware): off.
+AUTO_EJECT_ENV = "OPTICFILM_AUTO_EJECT"
 
 
 EJECT_BUTTON_OFF = ("0", "false", "no", "off")
@@ -35,6 +37,11 @@ def skip_empty_enabled() -> bool:
 def skip_gaps_enabled() -> bool:
     """Only meaningful with ``skip_empty_enabled``; the controller combines the two."""
     return _switched_on(SKIP_GAPS_ENV)
+
+
+def auto_eject_enabled() -> bool:
+    """Read once, when the controller is made; never passes ``--eject`` to the driver."""
+    return _switched_on(AUTO_EJECT_ENV)
 
 
 def next_strip_enabled() -> bool:

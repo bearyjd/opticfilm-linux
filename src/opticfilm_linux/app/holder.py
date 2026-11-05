@@ -11,11 +11,16 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import Future
 
-from opticfilm_linux.app.messages import holder_failed_text
+from opticfilm_linux.app.messages import (
+    EJECT_DID_NOT_RUN,
+    auto_eject_skipped_text,
+    holder_failed_text,
+)
 from opticfilm_linux.app.state import Banner
+from opticfilm_linux.batch.events import ScanFinished
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError
-from opticfilm_linux.scanner import holder_latch
+from opticfilm_linux.scanner import holder_latch, interrupted
 from opticfilm_linux.scanner.base import HolderControl, ScanError, ScannerStatus
 from opticfilm_linux.scanner.driver import ScannerInUse, confirm_scanner_reset
 from opticfilm_linux.scanner.interrupted import ScannerInterrupted, ScannerRefused
@@ -32,6 +37,10 @@ SCANNER_INTERRUPTED = (
     "reset: power-cycle it, load the holder again, then press Confirm scanner reset."
 )
 REFUSED = "The scanner command was refused before it started; nothing moved. See Details."
+AUTO_CUT_OFF = (
+    "a scan or holder move was cut off. Power-cycle the scanner and press Confirm scanner reset"
+)
+NO_HOLDER_CONTROL = "this scanner cannot move the holder"
 NEXT_STRIP_OFF = (
     "Load next holder is switched off by OPTICFILM_NEXT_STRIP. "
     'Follow "How to load the scanner" instead.'
@@ -105,6 +114,37 @@ class HolderCommands:
         with self._lock:
             if future is not None and not future.done():
                 self._holder_future = future
+
+    @property
+    def auto_eject_enabled(self) -> bool:
+        return self._auto_eject
+
+    def _auto_eject_after(self, event: ScanFinished) -> None:
+        """OPTICFILM_AUTO_EJECT: one eject through the usual path once a good scan has fully
+        ended. Called by the drain outside the lock, for the open session only. A refusal is
+        shown, never retried; a closing batch or failed scan simply ends without one."""
+        if not (self._auto_eject and event.ok) or self._closing.is_set():
+            return
+        session = self._session
+        with self._lock:
+            if self._lifecycle_pending:
+                return  # the batch is being closed or replaced
+            refusal = WAIT_HOLDER if self._holder_busy else self._holder_refusal()
+        if refusal is None and (self._scanner_cut_off() or interrupted.is_pending()):
+            refusal = AUTO_CUT_OFF
+        if refusal is None and (session is None or session.holder is None):
+            refusal = NO_HOLDER_CONTROL
+        if refusal is not None:
+            self._set(_banner=Banner(auto_eject_skipped_text(refusal)))
+            return
+        self._move_holder("eject", self._checked_eject, "Could not eject the holder")
+
+    def _checked_eject(self, holder: HolderControl) -> None:
+        """An eject that ended without the driver's ``ejected`` line (its loader sensor said no
+        magazine, so nothing was sent) is said out loud; the latch stays unknown either way."""
+        holder.eject()
+        if getattr(holder, "eject_outcome", None) != "ejected":
+            self._set(_banner=Banner(EJECT_DID_NOT_RUN))
 
     def confirm_scanner_reset(self) -> None:
         """The owner says the scanner was power-cycled and reloaded. Never talks to the scanner;

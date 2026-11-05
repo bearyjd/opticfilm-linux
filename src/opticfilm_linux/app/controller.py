@@ -48,7 +48,7 @@ from opticfilm_linux.app.state import (
     build_state,
 )
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
-from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
+from opticfilm_linux.batch.events import ScanFinished, SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
     TrayStage,
@@ -57,7 +57,7 @@ from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
-from opticfilm_linux.scanner.select import next_strip_enabled
+from opticfilm_linux.scanner.select import auto_eject_enabled, next_strip_enabled
 from opticfilm_linux.worker import lower_worker_priority
 
 SLIDES_PER_TRAY = 4
@@ -100,12 +100,14 @@ class Controller(
         eject_watch: EjectWatch | None = None,
         skip_empty: bool | None = None,  # None: read OPTICFILM_SKIP_EMPTY
         skip_gaps: bool | None = None,  # None: read OPTICFILM_SKIP_GAPS
+        auto_eject: bool | None = None,  # None: read OPTICFILM_AUTO_EJECT
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
         self._next_strip = next_strip_enabled() if next_strip is None else next_strip
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
+        self._auto_eject = auto_eject_enabled() if auto_eject is None else auto_eject
         self._init_scan_openings(skip_empty, skip_gaps)
         self._init_holder_workers()
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
@@ -446,17 +448,21 @@ class Controller(
         session = session or self._session
         if session is None or session.runner is None:
             return
-        events = session.runner.events
+        events, finished = session.runner.events, []
         while not events.empty():
             event = events.get_nowait()
+            if isinstance(event, ScanFinished):
+                finished.append(event)
             if isinstance(event, TrayFailed):
                 self._remember_holder_latch(
                     HolderLatch.UNKNOWN, session.scanner, sequence=event.operation_sequence
                 )
             with self._lock:
                 self._apply_event(event)
-        if session is self._session:
+        if session is self._session:  # never for a session being closed
             self._submit_auto_due()
+            for event in finished:
+                self._auto_eject_after(event)
 
     def _apply_event(self, event) -> None:
         if isinstance(event, TrayStageChanged):
