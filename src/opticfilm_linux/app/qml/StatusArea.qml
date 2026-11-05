@@ -70,7 +70,7 @@ QQC2.ScrollView {
     }
     function reflowScannerActions() {
         const target = compact ? scannerActions : scannerRow;
-        const actions = [loadHelpLink, confirmScannerButton, ejectButton, loadNextHost];
+        const actions = [loadHelpLink, confirmScannerButton, scanOpeningsHost, ejectButton, loadNextHost];
         actions.forEach(action => action.parent = null);
         actions.forEach(action => action.parent = target);
     }
@@ -258,7 +258,7 @@ QQC2.ScrollView {
         }
         GridLayout {
             id: scannerRow
-            columns: area.compact ? 1 : 5
+            columns: area.compact ? 1 : 6
             // the scanner's status and the holder controls: own row, so the text is never cut off
             Layout.fillWidth: true
             Layout.margins: Theme.spacingSmall / 2
@@ -296,6 +296,13 @@ QQC2.ScrollView {
                 text: qsTr("Confirm scanner reset…")
                 icon.name: "dialog-ok"
                 onClicked: area.confirmScanner()
+            }
+            Loader {
+                id: scanOpeningsHost
+                // not created at all without OPTICFILM_SKIP_EMPTY: the window is unchanged
+                active: bridge.skipEmptyEnabled && !bridge.readonly
+                visible: active
+                sourceComponent: ScanOpeningsSelector {}
             }
             QQC2.Button {
                 id: ejectButton
