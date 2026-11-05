@@ -12,6 +12,7 @@ from opticfilm_linux.batch.empty import (
     is_empty_confirmed,
     is_known_empty,
 )
+from opticfilm_linux.batch.metadata import resolve
 from opticfilm_linux.batch.model import (
     NO_DELIVERY,
     BatchManifest,
@@ -100,13 +101,50 @@ class SelectionSummary:
     settings: tuple[tuple[str, object], ...] = ()  # None means mixed or automatic
     mixed: tuple[str, ...] = ()
     trays: tuple[int, ...] = ()
+    # Resolved description and date ("1978-07"; "" none) of the selection, or of the batch when
+    # nothing is selected; None means mixed. Levels: "batch", "tray", "slide", "" or None.
+    meta: tuple[tuple[str, str | None], ...] = ()
+    meta_levels: tuple[tuple[str, str | None], ...] = ()
+    meta_note: str = ""  # a common note on an unusable stored value, else ""
+    batch_meta: tuple[tuple[str, str], ...] = ()  # the batch default, for "Next tray"
+    meta_scope: str = ""  # what a strip edit changes: "slides", "tray" (selected) or "batch"
+
+
+def _common(values):
+    return values[0] if all(value == values[0] for value in values) else None
+
+
+def _meta_fields(manifest, pairs, selection: Selection) -> dict:
+    """Common-or-mixed resolved metadata of ``(tray, slide)`` pairs, else of the batch."""
+    if manifest is None:
+        return {}
+    batch = resolve(manifest, TrayRecord(0, TrayStage.REVIEW))
+    found = [resolve(manifest, tray, slide) for tray, slide in pairs] or [batch]
+
+    def text(meta):
+        return meta.date.text() if meta.date else ""
+
+    notes = [" ".join(filter(None, (m.legacy_note, m.description_note))) for m in found]
+    return {
+        "meta": (
+            ("description", _common([m.description for m in found])),
+            ("date", _common([text(m) for m in found])),
+        ),
+        "meta_levels": (
+            ("description", _common([m.description_level for m in found])),
+            ("date", _common([m.date_level for m in found])),
+        ),
+        "meta_note": _common(notes) or "",
+        "batch_meta": (("description", batch.description), ("date", text(batch))),
+        "meta_scope": "slides" if pairs else "tray" if selection.trays else "batch",
+    }
 
 
 def selection_fields(manifest, selection: Selection) -> dict:
     selection = prune(selection, selectable_keys(manifest) if manifest else ())
-    slides = (
+    pairs = (
         tuple(
-            slide
+            (tray, slide)
             for tray in manifest.trays
             for slide in tray.slides
             if (tray.number, slide.position) in selection.keys
@@ -114,6 +152,7 @@ def selection_fields(manifest, selection: Selection) -> dict:
         if manifest
         else ()
     )
+    slides = tuple(slide for _, slide in pairs)
     common = (
         tuple(
             (
@@ -147,6 +186,7 @@ def selection_fields(manifest, selection: Selection) -> dict:
                 )
             ),
             tuple(sorted({number for number, _ in selection.keys} | selection.trays, reverse=True)),
+            **_meta_fields(manifest, pairs, selection),
         ),
     }
 

@@ -58,6 +58,7 @@ from opticfilm_linux.batch.export_contract import (
     _unreviewed_flags,
 )
 from opticfilm_linux.batch.layout import section_directory
+from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import (
     NO_DELIVERY,
     BatchDefaults,
@@ -728,19 +729,18 @@ def _commit_cleanup(
 ) -> BatchManifest:
     evidence = store.snapshot()
     current = _tray(evidence, tray.number)
-    if current != tray or not (current.raw_removed or _still_freeable(current)):
+    unchanged = without_meta(current) == without_meta(tray)  # a description edit is fine
+    if not unchanged or not (current.raw_removed or _still_freeable(current)):
         raise CleanupRetryRequired(f"tray {tray.number} changed meanwhile; retry cleanup")
     _cleanup_policy(evidence, tray.number, release_first=release_first)
-    released = (
-        release_first and not current.raw_removed and _release_candidate(evidence, tray.number)
-    )
-    if released:
+    first = release_first and not current.raw_removed
+    if released := first and _release_candidate(evidence, tray.number):
         _verify_release_evidence(evidence, current)
 
     def commit(manifest: BatchManifest) -> BatchManifest:
         _compare_cleanup_evidence(manifest, evidence, tray.number, release_first=release_first)
         updated = dataclasses.replace(
-            current,
+            _tray(manifest, tray.number),  # live: keeps a description or date edited meanwhile
             raw_removed=True,
             cleanup_sweeps=tuple(int(p.name.removeprefix("sweep-")) for p in folders),
         )

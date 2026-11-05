@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -70,6 +70,24 @@ def checked_meta(date: str | None, description: str) -> tuple[str | None, str]:
     return when, validate_description(description)
 
 
+FIELDS = ("description", "date")
+
+
+def checked_override(field: str, value: str | None) -> str | None:
+    """The strict rule for one tray or slide field being written: ``None`` inherits and
+    ``""`` (or only spaces) blanks; anything else must pass the same rules as ``checked_meta``.
+    """
+    if field not in FIELDS:
+        raise ValueError(f"metadata field must be one of {', '.join(FIELDS)}, not {field!r}")
+    if value is None:
+        return None
+    if field == "description":
+        return validate_description(value)
+    if not isinstance(value, str):
+        raise ValueError("date must be text")
+    return checked_meta(value, "")[0] or ""
+
+
 @dataclass(frozen=True)
 class MetaOverride:
     """What one tray or slide says about itself; ``None`` inherits, ``""`` blanks.
@@ -79,6 +97,13 @@ class MetaOverride:
 
     description: str | None = None
     date: str | None = None  # kept as text so an unreadable legacy value never blocks loading
+
+
+def without_meta(tray: TrayRecord) -> TrayRecord:
+    """``tray`` with its own and every slide's metadata at the default: for guards that must
+    notice any other change, but never a description or date edit made meanwhile."""
+    slides = tuple(replace(s, meta=MetaOverride()) for s in tray.slides)
+    return replace(tray, meta=MetaOverride(), slides=slides)
 
 
 @dataclass(frozen=True)
