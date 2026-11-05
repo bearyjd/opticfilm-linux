@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from opticfilm_linux.batch.manifest import from_json, to_json
+from opticfilm_linux.batch.metadata import validate_description
 from opticfilm_linux.batch.model import BatchDefaults, BatchManifest, TrayRecord, TrayStage
 from opticfilm_linux.scanner.interrupted import INTERRUPTED_TEXT
 
@@ -59,6 +60,7 @@ class BatchStore:
         box: int = 1,
         section: str = "a",
         section_size: int = 140,
+        description: str = "",
     ) -> "BatchStore":
         if (directory / MANIFEST_FILE).exists():
             raise BatchError(f"a batch already exists in {directory}")
@@ -71,6 +73,7 @@ class BatchStore:
             box=box,
             section=section,
             section_size=section_size,
+            description=validate_description(description),
         )
         directory.mkdir(parents=True, exist_ok=True)
         lock_file = _acquire_lock(directory)
