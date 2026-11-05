@@ -236,3 +236,11 @@ def test_a_failed_directory_sync_after_the_rename_is_not_fatal(tmp_path, monkeyp
     assert (new_digest, new_size) == (hashlib.sha256(data).hexdigest(), len(data))
     assert _fields(data)["PhotoDate"] == "1980"
 
+
+
+def test_a_read_only_file_is_refused(tmp_path):
+    path, digest, size = _on_disk(tmp_path, 0o444)
+    before = path.read_bytes()
+    with pytest.raises(RewriteRefused, match="read-only"):
+        rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    assert path.read_bytes() == before

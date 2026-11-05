@@ -172,5 +172,7 @@ def rewrite_xmp_file(
         return hashlib.sha256(data).hexdigest(), len(data)
     if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:
         raise RewriteRefused("the file changed since it was exported; it was left untouched")
+    if not mode & stat.S_IWUSR:
+        raise RewriteRefused("the export is read-only; it was left untouched")
     _replace(path, new, mode)
     return hashlib.sha256(new).hexdigest(), len(new)
