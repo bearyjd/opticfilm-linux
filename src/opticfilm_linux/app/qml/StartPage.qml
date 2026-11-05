@@ -11,6 +11,8 @@ Kirigami.ScrollablePage {
     property url exportFolder: ""
     readonly property string automaticExportProblem: autoExportSwitch.checked ? bridge.automaticExportProblem : ""
     readonly property var automaticExportInputs: [autoExportSwitch.checked, parentFolder.toString(), nameField.text, exportFolder.toString()]
+    readonly property string dateText: yearField.text === "" ? "" : yearField.text + (monthBox.currentIndex > 0 ? "-" + String(monthBox.currentIndex).padStart(2, "0") : "")
+    readonly property string dateProblem: bridge.validateDate(dateText)
     onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
     Component.onCompleted: exportFolder = bridge.lastExportFolder
     background: Rectangle {
@@ -75,6 +77,58 @@ Kirigami.ScrollablePage {
                     placeholderText: qsTr("Family trips")
                 }
                 QQC2.TextField {
+                    id: descriptionField
+                    objectName: "newBatchDescription"
+                    Kirigami.FormData.label: qsTr("Description:")
+                    placeholderText: qsTr("e.g. Lake trip, Grandpa's 70th")
+                    maximumLength: 500
+                    Accessible.name: qsTr("Description")
+                }
+                RowLayout {
+                    Kirigami.FormData.label: qsTr("Date (estimate):")
+                    QQC2.TextField {
+                        id: yearField
+                        objectName: "newBatchYear"
+                        placeholderText: qsTr("Year")
+                        Accessible.name: qsTr("Year")
+                        inputMethodHints: Qt.ImhDigitsOnly
+                        Layout.preferredWidth: Theme.gu * 8
+                        validator: RegularExpressionValidator {
+                            regularExpression: /[0-9]{0,4}/
+                        }
+                        onTextChanged: if (text === "") monthBox.currentIndex = 0
+                    }
+                    QQC2.ComboBox {
+                        id: monthBox
+                        objectName: "newBatchMonth"
+                        Accessible.name: qsTr("Month")
+                        model: ["—", qsTr("Jan"), qsTr("Feb"), qsTr("Mar"), qsTr("Apr"), qsTr("May"), qsTr("Jun"), qsTr("Jul"), qsTr("Aug"), qsTr("Sep"), qsTr("Oct"), qsTr("Nov"), qsTr("Dec")]
+                        enabled: yearField.text !== ""
+                    }
+                    PillButton {
+                        objectName: "newBatchDateClear"
+                        text: qsTr("Clear")
+                        enabled: yearField.text !== ""
+                        onClicked: yearField.text = ""
+                    }
+                }
+                QQC2.Label {
+                    objectName: "newBatchDateError"
+                    visible: page.dateProblem !== ""
+                    text: page.dateProblem
+                    color: Kirigami.Theme.negativeTextColor
+                    font.pixelSize: Theme.fontBody
+                    wrapMode: Text.WordWrap
+                    Layout.maximumWidth: Theme.gu * 24
+                }
+                QQC2.Label {
+                    font.pixelSize: Theme.fontBody
+                    text: qsTr("A guess is fine. Saved as approximate.")
+                    color: Theme.muted
+                    wrapMode: Text.WordWrap
+                    Layout.maximumWidth: Theme.gu * 24
+                }
+                QQC2.TextField {
                     id: collectionField
                     objectName: "newBatchCollection"
                     Kirigami.FormData.label: qsTr("Collection:")
@@ -111,11 +165,6 @@ Kirigami.ScrollablePage {
                     id: albumField
                     Kirigami.FormData.label: qsTr("Album:")
                     placeholderText: qsTr("Optional")
-                }
-                QQC2.TextField {
-                    id: dateField
-                    Kirigami.FormData.label: qsTr("Date:")
-                    placeholderText: qsTr("YYYY-MM-DD (optional)")
                 }
                 QQC2.ComboBox {
                     id: dpiBox
@@ -270,11 +319,11 @@ Kirigami.ScrollablePage {
                     text: qsTr("Create batch")
                     icon.name: "document-new"
                     highlighted: true
-                    enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== "" && page.automaticExportProblem === ""
+                    enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== "" && page.dateProblem === "" && page.automaticExportProblem === ""
                     onClicked: {
                         // hidden slot rows do not count: the owner said all slots are loaded alike
                         const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
-                        bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value, autoExportSwitch.checked, keepRawBox.checked);
+                        bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, page.dateText, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value, autoExportSwitch.checked, keepRawBox.checked, descriptionField.text);
                     }
                 }
             }
