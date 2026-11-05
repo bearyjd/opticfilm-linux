@@ -1,15 +1,19 @@
 {
-  "app-id": "io.github.bearyjd.OpticFilm",
+  "app-id": "io.github.bearyjd.OpticFilmLinux",
   "runtime": "org.kde.Platform",
-  "runtime-version": "6.8",
+  "runtime-version": "6.11",
   "sdk": "org.kde.Sdk",
   "base": "io.qt.PySide.BaseApp",
-  "base-version": "6.8",
+  "base-version": "6.11",
   "command": "opticfilm",
   "x-notes": [
     "DRAFT, NOT BUILDABLE YET: every PLACEHOLDER_* value below must be replaced by a real pin before a build.",
+    "numpy comes from io.qt.PySide.BaseApp (6.11), so it is not installed from a wheel here.",
     "The scanner driver is an EXTERNAL dependency (github.com/cgillinger/opticfilm135i-linux), fetched by pinned commit. Nothing from Plustek or the vendor driver is vendored here.",
     "--device=all is the broad choice for raw USB access (07b3:1436): it works on the host but is untested inside the sandbox, and it also grants GPU access that Qt Quick may rely on, so narrowing to --device=usb needs --device=dri alongside and is untested."
+  ],
+  "cleanup-commands": [
+    "/app/cleanup-BaseApp.sh"
   ],
   "finish-args": [
     "--share=ipc",
@@ -24,14 +28,9 @@
       "name": "python-dependencies",
       "buildsystem": "simple",
       "build-commands": [
-        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} --no-deps numpy pillow tifffile opencv-python-headless pyusb"
+        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} --no-deps pillow tifffile opencv-python-headless pyusb"
       ],
       "sources": [
-        {
-          "type": "file",
-          "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/numpy-PLACEHOLDER_VERSION.whl",
-          "sha256": "PLACEHOLDER_SHA256_NUMPY"
-        },
         {
           "type": "file",
           "url": "https://files.pythonhosted.org/PLACEHOLDER_PATH/pillow-PLACEHOLDER_VERSION.whl",

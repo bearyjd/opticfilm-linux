@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "packaging" / "flatpak" / "io.github.bearyjd.OpticFilm.json"
+MANIFEST = ROOT / "packaging" / "flatpak" / "io.github.bearyjd.OpticFilmLinux.json"
 REQUIRED_KEYS = (
     "app-id",
     "runtime",
@@ -29,6 +29,9 @@ ALLOWED_FINISH_ARGS = re.compile(
     r"|env=OPTICFILM_[A-Z_]+=[\w/.-]+)"
 )
 BASE_APP = "io.qt.PySide.BaseApp"
+APP_ID = "io.github.bearyjd.OpticFilmLinux"
+RUNTIME_VERSION = "6.11"
+BASE_PROVIDED = {"numpy"}  # shipped by the PySide BaseApp, so not a wheel source here
 WHEEL_NAME = re.compile(r"https://\S+/([A-Za-z0-9_.]+?)-")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -72,6 +75,8 @@ def lint_build(manifest: dict) -> list[str]:
     names = {m.group(1).replace("_", "-") for m in matches if m}
     listed = {w for c in pips for w in c.split() if re.fullmatch(r"[a-z][a-z0-9-]+", w)}
     listed -= {"pip3", "install", "verbose"}
+    if listed & BASE_PROVIDED or names & BASE_PROVIDED:
+        problems.append(f"{sorted(BASE_PROVIDED)} comes from the BaseApp; do not install it")
     if names != listed:
         problems.append(f"pip packages {sorted(listed)} differ from wheel sources {sorted(names)}")
     return problems
@@ -224,6 +229,7 @@ def test_driver_is_pinned_as_external_dependency():
 def test_python_dependencies_cover_pyproject():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     wanted = {re.split(r"[<>=!~ ]", d, maxsplit=1)[0].lower().replace("-", "_") for d in project}
+    wanted -= BASE_PROVIDED
     urls = " ".join(
         s["url"].lower().replace("-", "_") for s in sources(json.loads(MANIFEST.read_text()))
     )
@@ -242,7 +248,7 @@ def test_flatpak_builder_accepts_the_manifest():
     )
     assert done.returncode == 0 and "WARNING" not in done.stderr and "ERROR" not in done.stderr
     shown = json.loads(done.stdout)
-    assert shown["id"] == "io.github.bearyjd.OpticFilm" and shown["command"] == "opticfilm"
+    assert shown["id"] == APP_ID and shown["command"] == "opticfilm"
     assert [m["name"] for m in shown["modules"]] == [
         m["name"] for m in json.loads(MANIFEST.read_text())["modules"]
     ]
@@ -352,3 +358,32 @@ def test_launcher_commands_write_runnable_scripts(tmp_path):
         lines = (tmp_path / "bin" / name).read_text().splitlines()
         assert lines[0] == "#!/bin/sh" and len(lines) == 2 and lines[1].endswith('"$@"')
         subprocess.run(["sh", "-n", str(tmp_path / "bin" / name)], check=True)
+
+
+def test_runtime_base_and_app_id_are_retargeted():
+    manifest = json.loads(MANIFEST.read_text())
+    assert manifest["app-id"] == APP_ID and MANIFEST.name == f"{APP_ID}.json"
+    assert manifest["runtime-version"] == manifest["base-version"] == RUNTIME_VERSION
+    assert manifest["runtime"] == "org.kde.Platform" and manifest["sdk"] == "org.kde.Sdk"
+
+
+def test_app_id_matches_the_code():
+    code = (ROOT / "src" / "opticfilm_linux" / "app" / "qt" / "app.py").read_text()
+    assert f'APP_ID = "{APP_ID}"' in code
+
+
+def test_baseapp_cleanup_command_is_present():
+    assert json.loads(MANIFEST.read_text())["cleanup-commands"] == ["/app/cleanup-BaseApp.sh"]
+
+
+def test_numpy_is_not_installed_from_a_wheel():
+    manifest = json.loads(MANIFEST.read_text())
+    assert not any("numpy" in s.get("url", "").lower() for s in sources(manifest))
+    assert not any("numpy" in c for m in manifest["modules"] for c in m.get("build-commands", []))
+
+
+def test_installing_numpy_is_reported():
+    def add(m):
+        m["modules"][0]["build-commands"][0] += " numpy"
+
+    assert any("BaseApp" in p for p in mutated(add))
