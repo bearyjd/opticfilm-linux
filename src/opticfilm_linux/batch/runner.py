@@ -329,8 +329,9 @@ class BatchRunner:
 
     # -- worker jobs ---------------------------------------------------------------------
 
-    def _scan_job(self, number: int) -> bool:
-        """True only once the sweep is saved and the tray is SCANNED (``ScanFinished.ok``)."""
+    def _scan_job(self, number: int) -> int | None:
+        """The driver's exit code once the sweep is saved and the tray is SCANNED; None if the
+        scan failed (``ScanFinished``)."""
         tray = self._tray(number)
         defaults = self._store.snapshot().defaults
         settings = ScanSettings(
@@ -343,6 +344,7 @@ class BatchRunner:
         final = self._store.sweep_dir(number, tray.sweep_version)
         try:
             sweep = self._scanner.scan_holder(settings)
+            exit_code = getattr(self._scanner, "scan_exit_code", None) or 0  # this scan's own
             check_scanned_positions(sweep, settings)
             save_sweep(sweep, tmp)
             os.replace(tmp, final)
@@ -353,11 +355,11 @@ class BatchRunner:
                 raise  # cut off (Ctrl-C): _report_crash flags the tray as interrupted
             message = str(exc) if isinstance(exc, ScanInterrupted) else _describe(exc)
             self._fail(number, message, (TrayStage.SCANNING,))
-            return False
+            return None
         self._store.update_tray(number, stage=TrayStage.SCANNED, evidence=sweep.evidence)
         self._emit(TrayStageChanged(number, TrayStage.SCANNED))
         self._submit(self._enhance_pool, self._enhance_job, number)
-        return True
+        return exit_code
 
     def _enhance_job(self, number: int) -> None:
         self._emit(TrayStageChanged(number, TrayStage.ENHANCING))
@@ -617,7 +619,8 @@ class BatchRunner:
                 self._scans.discard(future)
                 stopping = self._stopping
             if scan:  # after leaving _scans, before _pending: wait_idle() sees it queued
-                self._emit(ScanFinished(number, not stopping and _returned_true(future)))
+                code = _scan_exit(future)
+                self._emit(ScanFinished(number, not stopping and code is not None, code or 0))
             with self._lock:
                 self._pending.discard(future)
 
@@ -651,8 +654,12 @@ class BatchRunner:
                 return False
 
 
-def _returned_true(future: Future) -> bool:
-    return not future.cancelled() and future.exception() is None and future.result() is True
+def _scan_exit(future: Future) -> int | None:
+    """The exit code a scan job returned; None if it failed, crashed or never ran."""
+    if future.cancelled() or future.exception() is not None:
+        return None
+    result = future.result()
+    return result if type(result) is int else None
 
 
 def _describe(exc: BaseException) -> str:

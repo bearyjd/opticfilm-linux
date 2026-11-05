@@ -67,8 +67,15 @@ class HolderCommands:
         )
 
     def _move_holder(
-        self, action: str, move: Callable[[HolderControl], None], message: str
+        self,
+        action: str,
+        move: Callable[[HolderControl], None],
+        message: str,
+        refused: Callable[[str], str] | None = None,
     ) -> None:
+        """``refused`` rewords a refusal (an automatic eject); without it a second click while a
+        move is pending is ignored."""
+
         def job(_runner: BatchRunner) -> None:
             session = self._session
             if session is None or session.holder is None:
@@ -101,14 +108,7 @@ class HolderCommands:
                 if session.poller is not None:
                     session.poller.poll()  # ask again now: the holder moved, or the move failed
 
-        cut_off = self._scanner_cut_off()  # read outside the lock: the poller may report
-        with self._lock:
-            if self._holder_busy:
-                return  # a second click while one is pending
-            refusal = SCANNER_INTERRUPTED if cut_off else self._holder_refusal()
-            self._holder_busy = refusal is None
-        if refusal is not None:
-            self._set(_banner=Banner(refusal))
+        if not self._reserve_holder(refused):
             return
         future = self._run_writer(job, message, pool=self._holder_pool)
         self._track(future, lambda: self._set(_holder_busy=False, _holder_future=None))
@@ -135,12 +135,14 @@ class HolderCommands:
             refusal = AUTO_CUT_OFF
         if refusal is None and (session is None or session.holder is None):
             refusal = NO_HOLDER_CONTROL
-        if refusal is None and getattr(session.scanner, "scan_exit_code", 0) not in (0, None):
+        if refusal is None and event.driver_exit != 0:  # this scan's own code, not the latest
             refusal = DRIVER_ERROR  # frames complete, so the tray is kept; the eject waits
         if refusal is not None:
             self._set(_banner=Banner(auto_eject_skipped_text(refusal)))
             return
-        self._move_holder("eject", self._checked_eject, "Could not eject the holder")
+        self._move_holder(
+            "eject", self._checked_eject, "Could not eject the holder", auto_eject_skipped_text
+        )
 
     def _checked_eject(self, holder: HolderControl) -> None:
         """An eject that ended without the driver's ``ejected`` line (its loader sensor said no
@@ -148,6 +150,20 @@ class HolderCommands:
         holder.eject()
         if getattr(holder, "eject_outcome", None) != "ejected":
             self._set(_banner=Banner(EJECT_DID_NOT_RUN))
+
+    def _reserve_holder(self, refused: Callable[[str], str] | None) -> bool:
+        """Claim the holder worker; False after showing why not (a pending move, unworded)."""
+        cut_off = self._scanner_cut_off()  # read outside the lock: the poller may report
+        with self._lock:
+            busy = self._holder_busy
+            refusal = WAIT_HOLDER if busy else None
+            if not busy:
+                refusal = SCANNER_INTERRUPTED if cut_off else self._holder_refusal()
+                self._holder_busy = refusal is None
+        if refusal is None or (busy and refused is None):
+            return refusal is None
+        self._set(_banner=Banner(refusal if refused is None else refused(refusal)))
+        return False
 
     def confirm_scanner_reset(self) -> None:
         """The owner says the scanner was power-cycled and reloaded. Never talks to the scanner;

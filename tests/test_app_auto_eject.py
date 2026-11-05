@@ -6,6 +6,7 @@ other ending of a scan means no eject at all. These tests use the in-process fak
 fake-driver tests are in ``test_app_auto_eject_driver.py``.
 """
 
+import dataclasses
 import threading
 import time
 
@@ -333,3 +334,50 @@ def test_after_the_eject_the_next_scan_waits_for_the_next_holder(build):
     c.scan()
     wait_until(c, lambda: c.state().banner is not None)
     assert "latch" in _banner(c) and len(c._session.store.snapshot().trays) == 1
+
+
+@pytest.mark.parametrize(("event_exit", "latest_exit", "ejects"), [(1, 0, 0), (0, 1, 1)])
+def test_the_decision_uses_the_exit_code_of_the_event_own_scan(
+    build, event_exit, latest_exit, ejects
+):
+    """The scanner object only remembers its LATEST scan; the event carries its own."""
+    c, scanner = build()
+    scanner.scan_exit_code = latest_exit  # as if a later scan had ended meanwhile
+    c._session.runner.events.put(ScanFinished(1, ok=True, driver_exit=event_exit))
+    _settle(c)
+    wait_until(c, lambda: scanner.ejects == ejects and (ejects or _banner(c) != ""))
+    _settle(c)
+    assert scanner.ejects == ejects
+    assert ("driver ended the scan with an error" in _banner(c)) is (ejects == 0)
+
+
+def test_no_eject_and_no_banner_once_the_window_is_closing(build):
+    c, scanner = build()
+    _scan_held(c)
+    c._closing.set()  # the window closes between the event and the eject
+    c.tick()
+    c._closing.clear()
+    _settle(c)
+    assert scanner.ejects == 0 and SKIPPED not in _banner(c)
+
+
+def test_an_event_of_a_replaced_session_never_ejects(build):
+    c, scanner = build()
+    _scan_held(c)
+    old = c._session
+    c._session = dataclasses.replace(old)  # another session of the same batch is open now
+    try:
+        c._drain_events(old)
+    finally:
+        c._session = old
+    _settle(c, 0.1)
+    assert scanner.ejects == 0
+
+
+def test_a_refusal_found_by_the_holder_move_itself_says_automatic_eject_skipped(build):
+    c, scanner = build()
+    _scan_held(c)
+    answers = iter([False, True])  # clear at the auto-eject's check, cut off at the move's
+    c._scanner_cut_off = lambda: next(answers, True)
+    wait_until(c, lambda: _banner(c) != "")
+    assert scanner.ejects == 0 and _banner(c).startswith(SKIPPED)

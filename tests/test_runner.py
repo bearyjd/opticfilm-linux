@@ -498,21 +498,60 @@ def test_rescan_after_interrupted_cleanup_starts_fresh_capture(tmp_path, sweep_d
     runner.close()
 
 
-def test_scan_finished_comes_after_the_scan_has_left_the_runner(tmp_path, sweep_dir):
-    store, runner = _make(tmp_path, sweep_dir)
+def test_scan_finished_is_sent_after_leaving_scans_and_before_leaving_pending(tmp_path, sweep_dir):
+    """Held at the scanner, the scan future is caught; at the event it must already be out of
+    ``_scans`` (no holder refusal) and still in ``_pending`` (``wait_idle`` sees the event)."""
+    started, release = threading.Event(), threading.Event()
+
+    def held() -> None:
+        started.set()
+        release.wait(30)
+
+    store, runner = _make(tmp_path, sweep_dir, before_scan=held)
     original, seen = runner._emit, []
 
     def emit(event):
         if isinstance(event, ScanFinished):
-            seen.append((event, runner.scan_pending(), _tray(store).stage))
+            with runner._lock:
+                seen.append((event, future in runner._scans, future in runner._pending))
         original(event)
 
     runner._emit = emit
     runner.scan_tray()
+    assert started.wait(30)
+    with runner._lock:
+        [future] = runner._scans
+    assert not any(isinstance(e, ScanFinished) for e in _drain(runner))
+    release.set()
     assert runner.wait_idle(TIMEOUT)
-    [(event, pending, stage)] = seen
-    assert event == ScanFinished(1, ok=True) and not pending and stage is not TrayStage.SCANNING
-    assert ScanFinished(1, ok=True) in _drain(runner)  # queued before wait_idle() returned
+    assert seen == [(ScanFinished(1, ok=True), False, True)]
+    assert ScanFinished(1, ok=True) in _drain(runner)
+    runner.close()
+
+
+class _ExitCodes(FakeScanner):
+    """A fake whose driver exit code is set per scan, at the start of each, as the real one."""
+
+    def __init__(self, sweep_dir, codes):
+        super().__init__(sweep_dir)
+        self._codes = list(codes)
+        self.scan_exit_code = None
+
+    def scan_holder(self, settings):
+        self.scan_exit_code = self._codes.pop(0)
+        return super().scan_holder(settings)
+
+
+@pytest.mark.parametrize("codes", [(1, 0), (0, 1)])
+def test_each_scan_finished_carries_its_own_driver_exit_code(tmp_path, sweep_dir, codes):
+    store = BatchStore.create(tmp_path / "batch", name="T", defaults=BatchDefaults(dpi=600))
+    runner = BatchRunner(store, _ExitCodes(sweep_dir, codes))
+    runner.scan_tray()
+    assert runner.wait_scans_idle(TIMEOUT)
+    runner.scan_tray()  # the second scan ends before the first event is read
+    assert runner.wait_idle(TIMEOUT)
+    finished = [e for e in _drain(runner) if isinstance(e, ScanFinished)]
+    assert finished == [ScanFinished(1, True, codes[0]), ScanFinished(2, True, codes[1])]
     runner.close()
 
 
