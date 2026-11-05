@@ -1,3 +1,5 @@
+import pytest
+
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.cli import main
 
@@ -140,3 +142,28 @@ def test_new_defaults_to_upright_and_unmirrored(tmp_path):
     assert _new(tmp_path / "b") == 0
     defaults = _defaults(tmp_path / "b")
     assert (defaults.rotation, defaults.mirror) == (0, False)
+
+
+def test_new_stores_description_and_date(tmp_path):
+    assert _new(tmp_path / "b", "--description", "  Lake trip ", "--date", " 1978-07 ") == 0
+    with BatchStore.open(tmp_path / "b") as store:
+        assert store.snapshot().description == "Lake trip"
+        assert store.snapshot().date == "1978-07"
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    [
+        ("--date", "garbage", "--date"),
+        ("--date", "2030", "--date"),
+        ("--date", "1978-07-14", "use YYYY or YYYY-MM"),
+        ("--description", "x" * 501, "--description"),
+    ],
+)
+def test_new_refuses_bad_values_cleanly(tmp_path, capsys, flag, value, message):
+    with pytest.raises(SystemExit) as exc:
+        _new(tmp_path / "b", flag, value)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert message in err and "Traceback" not in err
+    assert not (tmp_path / "b" / "batch.json").exists()
