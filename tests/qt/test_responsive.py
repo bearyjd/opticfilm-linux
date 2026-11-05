@@ -65,6 +65,8 @@ def test_contact_sheet_controls_are_reachable(layout, size, theme):
             "undoSelection",
             "selectFlagged",
             "themeToggle",
+            "metaDescription",
+            "nextTrayMeta",
         ),
     )
     assert_clear(
@@ -204,7 +206,7 @@ def close_drawer(layout, popup):
 
 def assert_pane_controls_reachable(layout, names):
     groups = {
-        "tray": {"selectFlagged", "selectFailed"},
+        "tray": {"selectFlagged", "selectFailed", "nextTrayMeta"},
         "inspector": {"acceptSelection", "reexportSelection", "undoSelection"},
     }
     nodes = tree(layout.engine, layout.root)

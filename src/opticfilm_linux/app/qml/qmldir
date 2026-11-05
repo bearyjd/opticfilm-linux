@@ -3,3 +3,6 @@ Card 1.0 Card.qml
 PillButton 1.0 PillButton.qml
 SegmentedControl 1.0 SegmentedControl.qml
 WindowPalette 1.0 WindowPalette.qml
+EstimatedDateField 1.0 EstimatedDateField.qml
+MetadataStrip 1.0 MetadataStrip.qml
+TrayMetaDialog 1.0 TrayMetaDialog.qml

@@ -13,6 +13,10 @@ Kirigami.Page {
     focus: true
     readonly property bool shortWindow: height < Theme.shortMax
     readonly property real reviewMinimum: shortWindow ? 0.4 * (page.Window.window ? page.Window.window.height : page.height) : Theme.reviewMin(height)
+    // A short window gives the status area (safety rows) and one tray row priority over the
+    // metadata strip; asking for it (Next tray: Edit) still shows it.
+    readonly property bool metaStripFits: !shortWindow || statusArea.implicitHeight + metaStrip.rowHeight + Math.max(reviewMinimum, Theme.shortReviewFloor) <= reviewColumn.height
+    readonly property real metaStripHeight: metaStrip.visible ? metaStrip.implicitHeight : 0
     readonly property bool compact: width < Theme.compactMax
     readonly property bool expanded: width >= Theme.expandedMin
     readonly property string widthClass: compact ? "compact" : expanded ? "expanded" : "medium"
@@ -48,7 +52,7 @@ Kirigami.Page {
     // they give way before the toolbar is starved).
     readonly property real toolbarFloor: Theme.controlHeight
     readonly property real headerInset: width < 7 * toolbarFloor ? Theme.spacingSmall / 2 : Theme.spacing
-    readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo")
+    readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo (outside text fields)")
 
     function focusReview() {
         const active = page.Window.window ? page.Window.window.activeFocusItem : null;
@@ -71,6 +75,7 @@ Kirigami.Page {
     function handleKey(event) {
         const active = page.Window.window ? page.Window.window.activeFocusItem : null;
         if (active && typeof active.cursorPosition === "number") return;
+        if (active && holdsFocus(metaStrip, active)) return;  // keys typed into the strip
         const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
         const shift = (event.modifiers & Qt.ShiftModifier) !== 0;
         if (ctrl && event.key === Qt.Key_A) bridge.selectAll();
@@ -172,6 +177,30 @@ Kirigami.Page {
     }
     LoadHelpDialog {
         id: loadHelpDialog
+    }
+    TrayMetaDialog {
+        id: trayMetaDialog
+        onClosed: page.focusReview()
+    }
+    property bool nextTrayEditPending: false
+    property bool metaEditPending: false
+    // Inspector: Edit description / date shows the strip for the selection, even in a crowded
+    // short window, without changing the selection
+    function editSelectionMeta() {
+        if (inspectorDrawer.opened) {
+            metaEditPending = true;
+            inspectorDrawer.close();
+        } else {
+            metaStrip.focusSelection();
+        }
+    }
+    function editNextTray() {
+        if (trayDrawer.opened) {
+            nextTrayEditPending = true;  // after the drawer hands focus back to the review
+            trayDrawer.close();
+        } else {
+            metaStrip.focusBatch();
+        }
     }
 
     QQC2.Popup {
@@ -339,12 +368,20 @@ Kirigami.Page {
         objectName: "trayDrawer"
         edge: Qt.LeftEdge
         host: page
+        onClosed: if (page.nextTrayEditPending) {
+            page.nextTrayEditPending = false;
+            metaStrip.focusBatch();
+        }
     }
     ReviewDrawer {
         id: inspectorDrawer
         objectName: "inspectorDrawer"
         edge: Qt.RightEdge
         host: page
+        onClosed: if (page.metaEditPending) {
+            page.metaEditPending = false;
+            metaStrip.focusSelection();
+        }
     }
     TrayPane {
         id: trayPane
@@ -352,6 +389,7 @@ Kirigami.Page {
         anchors.fill: parent
         shortWindow: page.shortWindow
         onRecoverRequested: number => { recoverDialog.tray = number; recoverDialog.open(); }
+        onNextTrayEditRequested: page.editNextTray()
         onReviewFocusRequested: {
             if (page.compact)
                 trayDrawer.close();
@@ -365,9 +403,11 @@ Kirigami.Page {
         anchors.fill: parent
         onReexportRequested: reexportDialog.open()
         onRescanRequested: rescanDialog.open()
+        onMetaEditRequested: page.editSelectionMeta()
     }
 
     ColumnLayout {
+        id: reviewColumn
         anchors.fill: parent
         spacing: 0
 
@@ -377,7 +417,7 @@ Kirigami.Page {
             // One budget for both: the column's real height (what enforces the review minimum),
             // floored so the always-visible scanner row can never be squashed away.
             readonly property real budget: Math.min(parent.height, Math.max(minimumStatusHeight, parent.height - page.reviewMinimum
-                - (shortcuts.visible ? shortcuts.implicitHeight + 2 * Theme.spacingSmall : 0)))
+                - page.metaStripHeight - (shortcuts.visible ? shortcuts.implicitHeight + 2 * Theme.spacingSmall : 0)))
             Layout.maximumHeight: budget
             Layout.preferredHeight: Math.max(minimumStatusHeight, heightForBudget(budget))
             shortWindow: page.shortWindow
@@ -393,12 +433,21 @@ Kirigami.Page {
             }
         }
 
+        MetadataStrip {
+            id: metaStrip
+            shortWindow: page.shortWindow
+            visible: page.metaStripFits || requested
+            Layout.fillWidth: true
+            Layout.preferredHeight: implicitHeight
+            onReviewFocusRequested: Qt.callLater(() => page.focusReview())
+        }
+
         RowLayout {
             objectName: "reviewArea"
             Layout.fillWidth: true
             Layout.fillHeight: true
             // At large font scales the review area can drop below 240 px by design: the status area keeps its minimum so safety rows stay reachable.
-            Layout.minimumHeight: Math.min(page.reviewMinimum, Math.max(0, parent.height - statusArea.minimumStatusHeight))
+            Layout.minimumHeight: Math.min(page.reviewMinimum, Math.max(0, parent.height - statusArea.minimumStatusHeight - page.metaStripHeight))
             spacing: 0
 
             Item {
@@ -416,6 +465,12 @@ Kirigami.Page {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 onReviewFocusRequested: page.focusReview()
+                onAboutToSelect: metaStrip.commitPending()
+                onTrayMetaRequested: number => {
+                    trayMetaDialog.tray = number;
+                    trayMetaDialog.meta = bridge.sheet.get(bridge.sheet.indexOfTray(number)).meta || {};
+                    trayMetaDialog.open();
+                }
             }
             Kirigami.Separator { visible: page.expanded; Layout.fillHeight: true }
             Item {
