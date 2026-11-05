@@ -3,11 +3,13 @@
 A turn or a flip is the last step of the pipeline, so when it is the only change, the last full
 render turned and flipped is what a full re-enhance would produce. The turn is made from the
 render's lossless master (tagged with the orientation it was rendered at), never from the JPEG,
-so any number of turns stays one JPEG save away from the render. The "before" preview
-is the raw slide, never oriented, so it is left alone. Flags are kept: brightness, clipping and
-infrared dust do not depend on orientation. Anything else changed, a preview already stale or
-missing, no master, or a blank slide: this does nothing and the caller keeps the background
-re-enhance.
+so any number of turns stays one JPEG save away from the render. A slide without a readable
+master (a batch rendered before masters existed, or a damaged one) is turned once from its JPEG
+preview: that costs ONE extra JPEG generation, accepted, and the turned picture becomes its
+master, so every later turn is lossless from there. The "before" preview is the raw slide,
+never oriented, so it is left alone. Flags are kept: brightness, clipping and infrared dust do
+not depend on orientation. Anything else changed, a preview already stale or missing, or a
+blank slide: this does nothing and the caller keeps the background re-enhance.
 """
 
 import dataclasses
@@ -15,6 +17,9 @@ import os
 import threading
 from collections.abc import Mapping
 from pathlib import Path
+
+import numpy as np
+from PIL import Image
 
 from opticfilm_linux.batch.model import (
     BatchManifest,
@@ -30,10 +35,23 @@ from opticfilm_linux.batch.preview_transform import (
     preview_transform,
     transform_preview,
 )
-from opticfilm_linux.batch.previews import read_master, write_preview
+from opticfilm_linux.batch.previews import read_master, write_master, write_preview
 from opticfilm_linux.batch.store import BatchStore
 
 SHOWN_STAGES = (TrayStage.REVIEW, TrayStage.EXPORTED)
+
+
+@dataclasses.dataclass(frozen=True)
+class StagedTurn:
+    """A turned preview written beside the shown one, and a new master when one is made."""
+
+    preview: Path
+    master: Path | None = None
+
+    def discard(self) -> None:
+        self.preview.unlink(missing_ok=True)
+        if self.master is not None:
+            self.master.unlink(missing_ok=True)
 
 
 def _find(manifest: BatchManifest, key: SlideKey) -> tuple[TrayRecord, SlideRecord] | None:
@@ -80,6 +98,11 @@ def _staged(path: Path) -> Path:
     return path.with_name(f"{path.stem}.turned-{threading.get_ident()}.jpg")
 
 
+def _staged_master(store: BatchStore, key: SlideKey) -> Path:
+    master = store.master_path(*key)
+    return master.with_name(f"{master.stem}.turned-{threading.get_ident()}.png")
+
+
 def _still_wanted(manifest: BatchManifest, target: BatchManifest, key: SlideKey) -> bool:
     found, wanted = _find(manifest, key), _find(target, key)
     if found is None or not _same_tray(wanted[0], found[0]):
@@ -94,7 +117,7 @@ def _still_wanted(manifest: BatchManifest, target: BatchManifest, key: SlideKey)
 
 
 def publish_turns(
-    store: BatchStore, target: BatchManifest, staged: Mapping[SlideKey, Path]
+    store: BatchStore, target: BatchManifest, staged: Mapping[SlideKey, StagedTurn]
 ) -> frozenset[SlideKey]:
     """Rename turned previews into place and mark them current in ONE manifest write.
 
@@ -105,9 +128,11 @@ def publish_turns(
 
     def change(manifest: BatchManifest) -> BatchManifest:
         published.clear()
-        for key, path in staged.items():
+        for key, turn in staged.items():
             if _still_wanted(manifest, target, key):  # else a newer edit or render owns it
-                os.replace(path, store.preview_path(*key, "after"))
+                if turn.master is not None:
+                    os.replace(turn.master, store.master_path(*key))
+                os.replace(turn.preview, store.preview_path(*key, "after"))
                 published.add(key)
         if not published:
             return manifest
@@ -131,27 +156,34 @@ def publish_turns(
 
 def stage_turn(
     store: BatchStore, old: BatchManifest, new: BatchManifest, key: SlideKey
-) -> Path | None:
+) -> StagedTurn | None:
     """Write the "after" preview of ``key`` as it looks in ``new`` beside the current one.
 
-    Returns the staged file, or None when the slide cannot be turned (see the module text). On
+    Returns what was staged, or None when the slide cannot be turned (see the module text). On
     a failure nothing half-written remains and the exception goes to the caller.
     """
     after = store.preview_path(*key, "after")
     if not _eligible(old, new, key) or not after.is_file():
         return None
+    wanted = _orientation(new, key)
     master = read_master(store.master_path(*key))
-    if master is None:  # a batch rendered before masters existed: re-enhance once
-        return None
-    pixels, rendered = master
-    transform = preview_transform(rendered, _orientation(new, key))
-    staged = _staged(after)
+    turn = StagedTurn(_staged(after), None if master is not None else _staged_master(store, key))
     try:
-        write_preview(transform_preview(pixels, transform), staged)
+        if master is not None:
+            pixels, rendered = master
+            write_preview(
+                transform_preview(pixels, preview_transform(rendered, wanted)), turn.preview
+            )
+        else:  # no usable master: one generation from the JPEG, then lossless from the new one
+            with Image.open(after) as image:
+                shown = np.asarray(image.convert("RGB"))
+            turned = transform_preview(shown, preview_transform(_orientation(old, key), wanted))
+            write_preview(turned, turn.preview)
+            write_master(turned, wanted, turn.master)
     except BaseException:
-        staged.unlink(missing_ok=True)
+        turn.discard()
         raise
-    return staged
+    return turn
 
 
 def reorient_preview(
@@ -168,4 +200,4 @@ def reorient_preview(
     try:
         return key in publish_turns(store, new, {key: staged})
     finally:
-        staged.unlink(missing_ok=True)
+        staged.discard()

@@ -719,17 +719,35 @@ def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
     before = _commit_cleanup(store, tray, folders, release_first=release_first)
     _delete(store, before, number, folders, release_first=release_first)
     _record_cleanup_complete(store, tray)
-    _drop_turn_masters(store, number)
-    return freed
+    return freed + _drop_turn_masters(store, number)
 
 
-def _drop_turn_masters(store: BatchStore, number: int) -> None:
-    """Free the lossless preview masters: a tray without raw scans is never turned again."""
-    for path in (store.tray_dir(number) / "previews").glob("*-master*.png"):
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:  # removed meanwhile (a render replaced or dropped it)
+        return 0
+
+
+def _turn_masters(store: BatchStore, number: int) -> list[Path]:
+    return sorted((store.tray_dir(number) / "previews").glob("*-master*.png"))
+
+
+def _drop_turn_masters(store: BatchStore, number: int) -> int:
+    """Free the lossless preview masters (a tray without raw scans is never turned again);
+    returns the bytes freed."""
+    freed = 0
+    for path in _turn_masters(store, number):
         try:
-            path.unlink(missing_ok=True)
+            size = path.stat().st_size
+            path.unlink()
+        except FileNotFoundError:
+            continue
         except OSError:  # the raw scans are gone either way; a leftover master only costs disk
             log.warning("could not remove the preview master %s", path, exc_info=True)
+            continue
+        freed += size
+    return freed
 
 
 def _retry_cleanup_resets(store: BatchStore) -> None:
@@ -784,6 +802,7 @@ def freeable_trays(store: BatchStore, *, release_first: bool = False) -> tuple[F
         candidate = _still_freeable(tray) or _half_cleaned(store, tray)
         if candidate and _cleanup_listable(store, tray.number, release_first=release_first):
             size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
+            size += sum(_size(p) for p in _turn_masters(store, tray.number))
             found.append(FreeableTray(number=tray.number, bytes=size))
     return tuple(found)
 

@@ -5,6 +5,7 @@ settings, and only its previews and flags are refreshed.
 """
 
 import dataclasses
+import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -29,6 +30,8 @@ from opticfilm_linux.pipeline.run import ProcessOptions, enhance_slide
 from opticfilm_linux.pipeline.split import SlideSplitError, is_blank, split_slides
 from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import SweepFormatError, load_sweep
+
+log = logging.getLogger(__name__)
 
 BEFORE_GAMMA = 2.2  # raw scans are linear; this makes the "before" preview look natural
 
@@ -160,17 +163,16 @@ def _process_slide(
     def publish() -> None:
         os.replace(_pending(before), before)
         os.replace(_pending(after), after)
-        if blank:  # a blank "after" is the raw slide, never oriented: nothing to turn from
-            master.unlink(missing_ok=True)
-        else:
+        if mastered:
             os.replace(pending_master, master)
+        else:  # blank (the raw slide, never oriented) or unwritten: an old master would lie
+            master.unlink(missing_ok=True)
 
     try:
         write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
         shown = make_preview(enhanced, gamma=BEFORE_GAMMA if blank else 1.0)
         write_preview(shown, _pending(after))
-        if not blank:
-            write_master(shown, (options.rotation, options.mirror), pending_master)
+        mastered = not blank and _write_master(shown, options, pending_master)
         flags = () if blank else compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
         _merge_slide(
             store,
@@ -187,6 +189,25 @@ def _process_slide(
         _pending(before).unlink(missing_ok=True)
         _pending(after).unlink(missing_ok=True)
         pending_master.unlink(missing_ok=True)
+
+
+def _write_master(shown, options: ProcessOptions, path: Path) -> bool:
+    """The master only speeds up later turns: failing to write it never fails the render."""
+    try:
+        write_master(shown, (options.rotation, options.mirror), path)
+    except OSError:
+        log.warning("could not write the preview master %s", path, exc_info=True)
+        path.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _drop_stray_masters(store: BatchStore, number: int, positions: set[int]) -> None:
+    """A rescan with fewer slides leaves no master for a position that no longer exists."""
+    for path in (store.tray_dir(number) / "previews").glob("*-master*.png"):
+        prefix = path.name.partition("-")[0]
+        if not prefix.isdigit() or int(prefix) not in positions:
+            path.unlink(missing_ok=True)
 
 
 def _existing(tray: TrayRecord, position: int) -> SlideRecord | None:
@@ -236,6 +257,7 @@ def enhance_tray(
         _process_slide(store, number, slide, sweep, tray, snapshot)
         if on_progress is not None:
             on_progress(position, len(slides))
+    _drop_stray_masters(store, number, {slide.index + 1 for slide in slides})
     store.update_tray_if(number, current, stage=TrayStage.REVIEW)
 
 
