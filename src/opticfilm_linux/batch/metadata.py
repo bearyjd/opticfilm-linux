@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -97,6 +97,13 @@ class MetaOverride:
 
     description: str | None = None
     date: str | None = None  # kept as text so an unreadable legacy value never blocks loading
+
+
+def without_meta(tray: TrayRecord) -> TrayRecord:
+    """``tray`` with its own and every slide's metadata at the default: for guards that must
+    notice any other change, but never a description or date edit made meanwhile."""
+    slides = tuple(replace(s, meta=MetaOverride()) for s in tray.slides)
+    return replace(tray, meta=MetaOverride(), slides=slides)
 
 
 @dataclass(frozen=True)

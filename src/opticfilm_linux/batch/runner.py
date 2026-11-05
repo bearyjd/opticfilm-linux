@@ -24,6 +24,7 @@ from opticfilm_linux.batch import export, review
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
 from opticfilm_linux.batch.events import BatchEvent, SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.layout import allocate_location, location_is_active
+from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import (
     BatchManifest,
     Mode,
@@ -65,14 +66,17 @@ def _restart_rescan(
         review._require_raw(current)
     if not location_is_active(manifest, current):
         raise BatchError("This tray belongs to a closed section; scan a fresh tray.")
-    if current != tray:
+    if without_meta(current) != without_meta(tray):  # a description edit is no reason to refuse
         raise BatchError(f"tray {number} changed meanwhile; try again")
     updated = dataclasses.replace(
         current,
         stage=TrayStage.SCANNING,
         sweep_version=current.sweep_version + 1,
         slides=mark_skipped(
-            tuple(SlideRecord(position=s.position, exports=s.exports) for s in current.slides),
+            tuple(
+                SlideRecord(position=s.position, exports=s.exports, meta=s.meta)
+                for s in current.slides
+            ),
             skipped,
         ),
         error=None,
