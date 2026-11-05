@@ -23,7 +23,8 @@ No build has been run.
   imagecodecs is not needed (uncompressed TIFFs only). The import inside the sandbox is still
   unverified.
 - Sandbox awareness (code, unit-tested with injected runners only; nothing has run inside a Flatpak):
-  the app detects a sandbox (`FLATPAK_ID` or `/.flatpak-info`). Inside it, the Eject-button watcher
+  the app detects a sandbox by the file `/.flatpak-info` only (an env var could leak in). Inside it,
+  the Eject-button watcher
   is stopped and restored with `flatpak-spawn --host systemctl --user ...` instead of plain
   `systemctl`, and the shown first-load command is the host-terminal form (no distrobox, driver
   folder left as a placeholder because `/app/...` does not exist on the host).
