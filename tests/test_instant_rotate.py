@@ -2,6 +2,7 @@
 
 import dataclasses
 import shutil
+import threading
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ from opticfilm_linux.batch.enhance import reenhance_slide
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed
 from opticfilm_linux.batch.export import export_batch
 from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatus
+from opticfilm_linux.batch.previews import write_preview
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.fake import FakeScanner
@@ -43,13 +45,21 @@ def store(tmp_path, template):
         yield opened
 
 
+class _Renders(list):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = threading.Event()
+        self.gate.set()
+
+
 @pytest.fixture
 def renders(monkeypatch):
-    """Every full re-enhance the runner starts, by key."""
-    calls = []
+    """Every full re-enhance the runner starts, by key; clear ``calls.gate`` to hold them."""
+    calls = _Renders()
 
     def recording(store, number, position):
         calls.append((number, position))
+        assert calls.gate.wait(TIMEOUT)
         reenhance_slide(store, number, position)
 
     monkeypatch.setattr(runner_module, "reenhance_slide", recording)
@@ -127,8 +137,11 @@ def test_turning_keeps_status_flags_and_owner_fields(store, runner):
 
 def test_four_quick_turns_end_where_they_started(store, runner, renders):
     start = _pixels(store, 1, 3)
-    for rotation in (90, 180, 270, 0):
-        runner.edit_slide(1, 3, SlideSettings(rotation=rotation))
+    for _ in range(4):  # as the app does: each turn reads what is stored now
+        current = _slide(store, 1, 3).settings
+        runner.edit_slide(
+            1, 3, dataclasses.replace(current, rotation=(current.rotation + 90) % 360)
+        )
     assert _slide(store, 1, 3).settings.rotation == 0 and renders == []
     assert float(np.abs(_pixels(store, 1, 3) - start).mean()) < 2 * TOLERANCE
 
@@ -140,8 +153,10 @@ def test_other_changes_keep_the_background_re_enhance(store, runner, renders):
 
 
 def test_a_stale_preview_is_re_enhanced_not_turned(store, runner, renders):
-    runner.edit_slide(1, 1, SlideSettings(brightness_ev=0.5))  # queued, preview stale
+    renders.gate.clear()  # the first re-enhance cannot finish before the turn arrives
+    runner.edit_slide(1, 1, SlideSettings(brightness_ev=0.5))
     runner.edit_slide(1, 1, SlideSettings(rotation=90, brightness_ev=0.5))
+    renders.gate.set()
     assert runner.wait_idle(TIMEOUT)
     assert renders == [(1, 1), (1, 1)] and not _slide(store, 1, 1).preview_stale
     _assert_matches_full_render(store, 1, 1)
@@ -225,12 +240,15 @@ def test_a_failed_turn_keeps_the_old_preview_and_falls_back(store, runner, rende
         raise OSError("disk full")
 
     monkeypatch.setattr(reorient_module, "write_preview", broken)
+    renders.gate.clear()  # hold the fallback so the untouched preview can be checked
     runner.edit_slide(1, 1, SlideSettings(rotation=90))
     assert any(isinstance(e, TrayFailed) and "disk full" in e.message for e in _events(runner))
     assert path.read_bytes() == original
     assert sorted(p.name for p in path.parent.glob("01-after*")) == ["01-after.jpg"]
-    assert renders == [(1, 1)]  # the full re-enhance still brings the preview up to date
+    renders.gate.set()
     assert runner.wait_idle(TIMEOUT)
+    assert renders == [(1, 1)]  # the full re-enhance still brings the preview up to date
+    assert not _slide(store, 1, 1).preview_stale
 
 
 def test_rotate_then_export_renders_from_raw_with_the_new_orientation(store, runner, tmp_path):
@@ -257,3 +275,15 @@ def test_rotate_then_export_renders_from_raw_with_the_new_orientation(store, run
     written = record.exports[-1]
     assert (written.width > written.height) == (height > width)  # turned a quarter
     assert max(written.width, written.height) >= max(width, height)  # full size, not a preview
+
+
+def test_a_full_size_preview_is_turned_without_a_re_enhance(store, runner, renders):
+    """(e) A 1600 px preview, as a 7200 dpi scan makes: turned at once, nothing submitted."""
+    rng = np.random.default_rng(3)
+    big = rng.integers(0, 255, size=(1067, 1600, 3), dtype=np.uint8)
+    write_preview(big, store.preview_path(1, 4, "after"))
+    runner.edit_slide(1, 4, SlideSettings(rotation=270))
+    assert renders == [] and not _slide(store, 1, 4).preview_stale
+    assert not runner.work_pending()  # no re-enhance job was queued
+    with Image.open(store.preview_path(1, 4, "after")) as image:
+        assert image.size == (1067, 1600)

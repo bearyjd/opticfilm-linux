@@ -11,6 +11,7 @@ from opticfilm_linux.batch.preview_transform import (
     preview_transform,
     transform_preview,
 )
+from opticfilm_linux.batch.previews import make_preview
 from opticfilm_linux.pipeline.orient import apply_orientation
 
 ORIENTATIONS = tuple(itertools.product(ROTATIONS, (False, True)))
@@ -92,3 +93,16 @@ def test_transform_returns_a_new_array():
 def test_quarter_turns_swap_the_preview_dimensions():
     image = _sample()
     assert transform_preview(image, preview_transform((0, False), (90, False))).shape == (3, 5, 3)
+
+
+@pytest.mark.parametrize("old", ORIENTATIONS)
+@pytest.mark.parametrize("new", ORIENTATIONS)
+def test_turning_a_downscaled_preview_matches_downscaling_the_turned_slide(old, new):
+    """At full resolution the preview is a downscale: turning must commute with it."""
+    rng = np.random.default_rng(11)
+    slide = rng.integers(0, 65535, size=(400, 2100, 3), dtype=np.uint16)
+    shown = make_preview(apply_orientation(slide, *old))
+    wanted = make_preview(apply_orientation(slide, *new))
+    turned = transform_preview(shown, preview_transform(old, new))
+    assert turned.shape == wanted.shape
+    assert float(np.abs(turned.astype(np.int16) - wanted.astype(np.int16)).mean()) < 1.0
