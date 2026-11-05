@@ -68,7 +68,9 @@ def type_into(root, name, text, enter=True):
     for char in text:
         key = Qt.Key(ord(char.upper()))  # the real key code, as the review shortcuts see it
         for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
-            QGuiApplication.sendEvent(root, QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier, char))
+            QGuiApplication.sendEvent(
+                root, QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier, char)
+            )
     if enter:
         QTest.keyClick(root, Qt.Key.Key_Return)
     QCoreApplication.processEvents()
