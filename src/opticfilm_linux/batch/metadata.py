@@ -63,6 +63,13 @@ def validate_description(text: str) -> str:
     return text
 
 
+def checked_meta(date: str | None, description: str) -> tuple[str | None, str]:
+    """The strict rules for text being written; a bad value is refused before anything is made."""
+    estimate = (date or "").strip()
+    when = EstimatedDate.parse(estimate).text() if estimate else None
+    return when, validate_description(description)
+
+
 @dataclass(frozen=True)
 class MetaOverride:
     """What one tray or slide says about itself; ``None`` inherits, ``""`` blanks.
