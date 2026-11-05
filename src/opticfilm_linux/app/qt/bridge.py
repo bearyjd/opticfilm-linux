@@ -17,7 +17,6 @@ from opticfilm_linux.app.prefs import (
     DPI_CHOICES,
     THEMES,
     Prefs,
-    batch_subfolder,
     export_defaults,
     forget_batch,
     read_theme,
@@ -28,7 +27,7 @@ from opticfilm_linux.app.prefs import (
 )
 from opticfilm_linux.app.qt.destination import DestinationCheck
 from opticfilm_linux.app.qt.models import DictListModel, SheetModel
-from opticfilm_linux.app.qt.selection import FIELDS, SelectionBridge
+from opticfilm_linux.app.qt.selection import FIELDS
 from opticfilm_linux.app.qt.sheet import (
     _slide_dict,
     _tray_dict,
@@ -37,11 +36,10 @@ from opticfilm_linux.app.qt.sheet import (
     selection_summary,
     sheet_rows,
 )
+from opticfilm_linux.app.qt.start_bridge import StartBridge
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
 from opticfilm_linux.app.state import EMPTY_STATE, AppState
-from opticfilm_linux.batch.metadata import EstimatedDate
 from opticfilm_linux.batch.model import ROTATIONS, SlideStatus
-from opticfilm_linux.batch.slots import slot_orientations
 
 TICK_MS = 500
 DEBOUNCE_MS = 300
@@ -83,7 +81,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
     return Property(kind, lambda self: read(self._state, self), notify=changed)
 
 
-class Bridge(SelectionBridge):
+class Bridge(StartBridge):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
@@ -346,191 +344,6 @@ class Bridge(SelectionBridge):
     automaticExportProblem = Property(  # noqa: N815
         str, lambda self: self._destination.problem, notify=automaticExportProblemChanged
     )
-
-    @Slot(bool, str, str, str)
-    def checkAutomaticExport(
-        self, enabled: bool, parent_url: str, name: str, export_url: str
-    ) -> None:  # noqa: N802
-        """Debounce filesystem checks and invalidate any result for previous inputs."""
-        destination = QUrl(export_url)
-        parent = QUrl(parent_url)
-        problem = ""
-        if not enabled:
-            problem = "Automatic export is off."
-        elif not export_url.strip():
-            problem = "Choose an export folder for automatic export."
-        elif not destination.isLocalFile():
-            problem = "Choose a local export folder for automatic export."
-        elif not parent.isLocalFile() or not name.strip():
-            problem = "Choose a batch folder and enter a batch name."
-        self._destination.request(parent.toLocalFile(), name, destination.toLocalFile(), problem)
-
-    @Slot(str, str, str, str, int)
-    @Slot(str, str, str, str, int, int)
-    @Slot(str, str, str, str, int, int, bool)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList")
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList")
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str)
-    @Slot(
-        str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str, int
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-        int,
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-        int,
-        bool,
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-        int,
-        bool,
-        bool,
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-        int,
-        bool,
-        bool,
-        str,
-    )
-    def newBatch(  # noqa: N802
-        self,
-        parent_url: str,
-        name: str,
-        album: str,
-        date: str,
-        dpi: int,
-        rotation: int = 0,
-        mirror: bool = False,
-        slot_rotations: list[int] | None = None,
-        slot_mirrors: list[bool] | None = None,
-        export_dir: str = "",
-        export_format: str = "jpeg",
-        jpeg_size: str = "full",
-        collection: str = "",
-        box: int = 1,
-        section: str = "a",
-        section_size: int = 140,
-        auto_export: bool = False,
-        keep_raw: bool = False,
-        description: str = "",
-    ) -> None:
-        """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
-        rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
-        mirrored = [i for i, m in enumerate(slot_mirrors or (), start=1) if m]
-        folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
-        self._pending.clear()
-        self._opening = self._last_attempt = folder
-        self._controller.new_batch(
-            folder,
-            name.strip() or folder.name,
-            album,
-            date or None,
-            dpi,
-            rotation,
-            mirror,
-            slot_orientations(rotations, mirrored),
-            export_dir=QUrl(export_dir).toLocalFile() or export_dir,
-            export_format=export_format,  # type: ignore[arg-type]
-            jpeg_size=jpeg_size,  # type: ignore[arg-type]
-            auto_export=auto_export,
-            keep_raw=keep_raw,
-            collection=collection,
-            box=box,
-            section=section,
-            section_size=section_size,
-            description=description,
-        )
-
-    @Slot(str, result=str)
-    def validateDate(self, text: str) -> str:  # noqa: N802
-        """The reason a start-page date ("1978" or "1978-07", blank allowed) is refused, or ""."""
-        if not text.strip():
-            return ""
-        try:
-            EstimatedDate.parse(text.strip())
-        except ValueError as exc:
-            return str(exc)
-        return ""
 
     @Slot(bool)
     def finishBox(self, next_box: bool) -> None:  # noqa: N802
