@@ -11,10 +11,10 @@ Kirigami.ScrollablePage {
     property url exportFolder: ""
     readonly property string automaticExportProblem: autoExportSwitch.checked ? bridge.automaticExportProblem : ""
     readonly property var automaticExportInputs: [autoExportSwitch.checked, parentFolder.toString(), nameField.text, exportFolder.toString()]
-    readonly property string dateText: yearField.text === "" ? "" : yearField.text + (monthBox.currentIndex > 0 ? "-" + String(monthBox.currentIndex).padStart(2, "0") : "")
-    readonly property string dateProblem: bridge.validateDate(dateText)
-    // Create stays disabled while the date is invalid; the message waits until the year looks finished
-    readonly property bool showDateProblem: dateProblem !== "" && (yearField.text.length >= 4 || !yearField.activeFocus)
+    readonly property string dateText: dateField.dateText
+    // Create stays disabled while the date is invalid
+    readonly property string dateProblem: dateField.dateProblem
+    readonly property bool showDateProblem: dateField.showDateProblem
     readonly property string dateHelp: qsTr("A guess is fine. Saved as approximate.")
     onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
     Component.onCompleted: exportFolder = bridge.lastExportFolder
@@ -87,35 +87,11 @@ Kirigami.ScrollablePage {
                     maximumLength: 500
                     Accessible.name: qsTr("Description")
                 }
-                RowLayout {
+                EstimatedDateField {
+                    id: dateField
                     Kirigami.FormData.label: qsTr("Date (estimate):")
-                    QQC2.TextField {
-                        id: yearField
-                        objectName: "newBatchYear"
-                        placeholderText: qsTr("Year")
-                        Accessible.name: qsTr("Year")
-                        Accessible.description: page.dateHelp
-                        inputMethodHints: Qt.ImhDigitsOnly
-                        Layout.preferredWidth: Theme.gu * 8
-                        validator: RegularExpressionValidator {
-                            regularExpression: /[0-9]{0,4}/
-                        }
-                        onTextChanged: if (text === "") monthBox.currentIndex = 0
-                    }
-                    QQC2.ComboBox {
-                        id: monthBox
-                        objectName: "newBatchMonth"
-                        Accessible.name: qsTr("Month")
-                        Accessible.description: page.dateHelp
-                        model: ["—", qsTr("Jan"), qsTr("Feb"), qsTr("Mar"), qsTr("Apr"), qsTr("May"), qsTr("Jun"), qsTr("Jul"), qsTr("Aug"), qsTr("Sep"), qsTr("Oct"), qsTr("Nov"), qsTr("Dec")]
-                        enabled: yearField.text !== ""
-                    }
-                    PillButton {
-                        objectName: "newBatchDateClear"
-                        text: qsTr("Clear")
-                        enabled: yearField.text !== ""
-                        onClicked: yearField.text = ""
-                    }
+                    namePrefix: "newBatch"
+                    help: page.dateHelp
                 }
                 QQC2.Label {
                     objectName: "newBatchDateError"
