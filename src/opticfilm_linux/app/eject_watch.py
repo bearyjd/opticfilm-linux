@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from opticfilm_linux.app.sandbox import HOST_PREFIX, in_flatpak
+from opticfilm_linux.app.sandbox import HOST_PREFIX, host_terminal_hint, in_flatpak
 
 UNIT = "opticfilm-eject-watch.service"
 # The watcher is stopped with SIGINT and may be finishing a holder move, so allow it time.
@@ -108,6 +108,12 @@ class EjectWatch:
         """Stop the watcher if it is running. Raises ``WatchStillActive`` if it stays up."""
         state = self._state()
         asked = state is not None
+        if not asked and in_flatpak():  # the /proc check below cannot see host processes
+            raise WatchStillActive(
+                "Cannot ask the host about the Eject-button watcher from the sandbox, so the "
+                "scanner was not opened. Stop it on the host (`systemctl --user stop "
+                f"{self._unit}` in a host terminal) and try again."
+            )
         if state in RUNNING_STATES:
             self._was_running = True  # stays set across calls until ``restore``
             self._systemctl("stop")
@@ -115,7 +121,8 @@ class EjectWatch:
         if asked and self._wait_settled(state) not in SETTLED_STATES:
             raise WatchStillActive(
                 f"The Eject-button watcher ({self._unit}) is still running, so the scanner "
-                f"was not opened. Stop it with `systemctl --user stop {self._unit}` and try again."
+                f"was not opened. Stop it with `systemctl --user stop {self._unit}`"
+                f"{host_terminal_hint()} and try again."
             )
         if self._process_check():
             raise WatchStillActive(
@@ -137,7 +144,7 @@ class EjectWatch:
             return None
         return (
             "The Eject button watcher did not start again. Start it with "
-            f"`systemctl --user start {self._unit}`."
+            f"`systemctl --user start {self._unit}`{host_terminal_hint()}."
         )
 
     def _wait_settled(self, state: str | None) -> str | None:
