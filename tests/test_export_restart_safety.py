@@ -37,18 +37,18 @@ def test_receipt_cannot_attach_after_status_changes(delivery, status):
 
 def test_failed_postcommit_rollback_cannot_be_bypassed_by_reopen(delivery, monkeypatch):
     store, _ = _delivered(delivery)
-    update, split = store.update, export.split_slides
+    update, split = store.update, export.split_positions
 
     def changed_raw(sweep):
-        (slide,) = split(sweep)
-        return [dataclasses.replace(slide, rgb=np.zeros_like(slide.rgb))]
+        (slide,) = split(sweep).values()
+        return {1: dataclasses.replace(slide, rgb=np.zeros_like(slide.rgb))}
 
     def disk_full(change):
         if store.snapshot().trays[0].raw_removed:
             raise OSError("cleanup reset failed")
         result = update(change)
         if result.trays[0].raw_removed:
-            monkeypatch.setattr(export, "split_slides", changed_raw)
+            monkeypatch.setattr(export, "split_positions", changed_raw)
         return result
 
     monkeypatch.setattr(store, "update", disk_full)
@@ -79,9 +79,9 @@ def test_blank_confirmation_requires_current_raw_fingerprint(delivery, monkeypat
     store, _ = _delivered(delivery)
     (tray,) = store.snapshot().trays
     store.update_tray(1, slides=(_confirmed_blank(tray, tray.slides[0]),))
-    (slide,) = export.split_slides(None)
+    (slide,) = export.split_positions(None).values()
     altered = dataclasses.replace(slide, rgb=np.zeros_like(slide.rgb))
-    monkeypatch.setattr(export, "split_slides", lambda _: [altered])
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: altered})
     with pytest.raises(export.CleanupRefused, match="empty confirmation"):
         export.cleanup_raw(store, 1)
     assert store.sweep_dir(1, 1).exists()

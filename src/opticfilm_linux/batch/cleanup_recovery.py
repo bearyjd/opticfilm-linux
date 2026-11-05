@@ -121,12 +121,12 @@ def _recovery_raw(store: BatchStore, manifest: BatchManifest, tray: TrayRecord, 
     if current not in folders:
         raise ValueError("current raw sweep is missing")
     sweep = export.load_sweep(current)
-    regions = export.split_slides(sweep)
+    regions = export.split_positions(sweep)
     positions = [slide.position for slide in tray.slides]
     if (
         any(type(position) is not int for position in positions)
         or len(positions) != len(regions)
-        or set(positions) != set(range(1, len(regions) + 1))
+        or set(positions) != set(regions)
     ):
         raise ValueError("manifest positions must cover every raw position exactly once")
     for slide in tray.slides:
@@ -136,7 +136,7 @@ def _recovery_raw(store: BatchStore, manifest: BatchManifest, tray: TrayRecord, 
             else (slide.exports[-1].raw_sha256 if slide.exports else "")
         )
         if expected:
-            if raw_region_sha256(regions[slide.position - 1]) != expected:
+            if raw_region_sha256(regions[slide.position]) != expected:
                 raise ValueError("current raw scan differs from its recorded hash")
         elif manifest.defaults.infrared and sweep.ir is None:
             raise ValueError("configured infrared raw scan is missing")
