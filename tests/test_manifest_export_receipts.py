@@ -38,7 +38,7 @@ def test_receipt_text_fields_reject_non_strings(field, value):
         from_json(json.dumps(data))
 
 
-@pytest.mark.parametrize("field", ["raw_sha256", "sha256", "render_signature"])
+@pytest.mark.parametrize("field", ["raw_sha256", "sha256", "render_signature", "meta_signature"])
 @pytest.mark.parametrize("value", [True, 3, None, [], {}, "short", "z" * 64])
 def test_receipt_hashes_are_empty_or_sha256_hex(field, value):
     data = _data()
@@ -84,3 +84,17 @@ def test_legacy_receipt_optional_fields_remain_readable():
     loaded = from_json(json.dumps(data))
     expected = ExportRecord("slide.jpg", 40, 32, 600, 600, "T001S1")
     assert dataclasses.asdict(loaded.trays[0].slides[0].exports[0]) == dataclasses.asdict(expected)
+
+
+def test_receipt_without_meta_signature_reserialises_byte_identical():
+    text = to_json(from_json(json.dumps(_data())))
+    assert "meta_signature" not in text
+    assert to_json(from_json(text)) == text
+
+
+def test_receipt_meta_signature_round_trips():
+    data = _data()
+    data["trays"][0]["slides"][0]["exports"][0]["meta_signature"] = "a" * 64
+    manifest = from_json(json.dumps(data))
+    assert manifest.trays[0].slides[0].exports[0].meta_signature == "a" * 64
+    assert from_json(to_json(manifest)) == manifest

@@ -96,6 +96,9 @@ def _omit_tray_defaults(data: dict[str, Any]) -> None:
                 slide.pop("export_size")
             if not slide["export_sha256"]:
                 slide.pop("export_sha256")
+            for record in slide["exports"]:
+                if not record["meta_signature"]:
+                    del record["meta_signature"]
             if not slide["exports"]:
                 del slide["exports"]
 
@@ -127,7 +130,7 @@ def _export_record(data: Any) -> ExportRecord:
         raise ManifestFormatError("exports must contain JSON objects")
     for key in ("path", "scan_token", "export_path"):
         _receipt_text(data, key)
-    for key in ("raw_sha256", "sha256", "render_signature"):
+    for key in ("raw_sha256", "sha256", "render_signature", "meta_signature"):
         _receipt_text(data, key, digest=True)
     for key in ("width", "height", "scan_dpi", "delivered_dpi", "size_bytes"):
         minimum = 0 if key == "size_bytes" else 1

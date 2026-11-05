@@ -94,6 +94,7 @@ class ExportRecord:
     size_bytes: int = 0
     sha256: str = ""
     render_signature: str = ""
+    meta_signature: str = ""  # what the JPEG says about description and date; "" = nothing
 
 
 @dataclass(frozen=True)
