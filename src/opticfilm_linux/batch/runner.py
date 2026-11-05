@@ -118,6 +118,11 @@ class BatchRunner:
         self._stale_requested = False
         self._stopping = False
 
+    @property
+    def store(self) -> BatchStore:
+        """For edits that need no scanner, preview or turn (description and date)."""
+        return self._store
+
     # -- requests from the caller (never block) ------------------------------------------
 
     def scan_tray(self, skipped: tuple[int, ...] = ()) -> int:

@@ -11,6 +11,7 @@ from opticfilm_linux.batch.model import (
     SlideStatus,
     TrayStage,
 )
+from opticfilm_linux.batch.review import BeforeMeta
 
 SlideSnapshot = tuple[SlideSettings, SlideStatus, bool]
 
@@ -34,6 +35,14 @@ class UndoEntry:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "before", MappingProxyType(dict(self.before)))
+
+
+@dataclass(frozen=True)
+class MetaUndoEntry:
+    """A metadata edit on the same undo stack as render and status edits."""
+
+    label: str
+    before: BeforeMeta
 
 
 def selectable_keys(manifest: BatchManifest) -> tuple[SlideKey, ...]:
@@ -132,13 +141,16 @@ def prune(sel: Selection, order: Sequence[SlideKey]) -> Selection:
     )
 
 
-def push_undo(stack: tuple[UndoEntry, ...], entry: UndoEntry) -> tuple[UndoEntry, ...]:
+Undoable = UndoEntry | MetaUndoEntry
+
+
+def push_undo(stack: tuple[Undoable, ...], entry: Undoable) -> tuple[Undoable, ...]:
     return (*stack[-19:], entry)
 
 
 def pop_undo(
-    stack: tuple[UndoEntry, ...],
-) -> tuple[tuple[UndoEntry, ...], UndoEntry | None]:
+    stack: tuple[Undoable, ...],
+) -> tuple[tuple[Undoable, ...], Undoable | None]:
     return (stack[:-1], stack[-1]) if stack else ((), None)
 
 

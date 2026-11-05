@@ -9,6 +9,7 @@ from opticfilm_linux.app import selection
 from opticfilm_linux.app.state import Banner, selection_fields
 from opticfilm_linux.batch import review
 from opticfilm_linux.batch.export import clear_exported
+from opticfilm_linux.batch.metadata import checked_override
 from opticfilm_linux.batch.model import SlideSettings, SlideStatus, TrayStage
 
 
@@ -210,20 +211,73 @@ class SelectionCommands:
         self._bulk_result(result)
 
     def undo(self) -> None:
+        """Undo the latest render, status or metadata edit, in the order they were made."""
+
         def job(runner):
             with self._lock:
                 self._selection_undo_label()
                 entry = self._undo[-1] if self._undo else None
-            if entry is None:
-                return
-            result = runner.restore_many(entry.before)
-            with self._lock:
-                self._undo, _ = selection.pop_undo(self._undo)
-                self._auto_due.update(number for number, _ in result.before)
-            self._bulk_result(result)
-            self._submit_auto_due()
+            if isinstance(entry, selection.MetaUndoEntry):
+                self._undo_meta(runner, entry)
+            elif entry is not None:
+                self._undo_render(runner, entry)
 
         self._run_selection_writer(job, "Could not undo selected slides")
+
+    def _undo_render(self, runner, entry) -> None:
+        result = runner.restore_many(entry.before)
+        with self._lock:
+            self._undo, _ = selection.pop_undo(self._undo)
+            self._auto_due.update(number for number, _ in result.before)
+        self._bulk_result(result)
+        self._submit_auto_due()
+
+    def _undo_meta(self, runner, entry) -> None:
+        # metadata needs no previews, renders or automatic work: only the manifest changes
+        result = review.restore_meta_many(runner.store, entry.before)
+        with self._lock:
+            self._undo, _ = selection.pop_undo(self._undo)
+        self._bulk_result(result)
+        self._kick_refresh()
+
+    def set_selection_meta(self, field: str, value: str | None) -> None:
+        """Set one field on every selected slide: text, ``""`` blank, ``None`` inherit.
+
+        A value that breaks the rules raises ValueError at once, before any work starts.
+        """
+        change = {field: checked_override(field, value)}
+        keys = self._selection_keys()
+        if keys:
+            self._run_meta_edit(lambda store: review.edit_meta_many(store, keys, change))
+
+    def reset_selection_meta(self, field: str) -> None:
+        self.set_selection_meta(field, None)
+
+    def set_tray_meta(self, number: int, field: str, value: str | None) -> None:
+        change = {field: checked_override(field, value)}
+        self._run_meta_edit(lambda store: review.edit_tray_meta(store, number, change))
+
+    def set_batch_meta(self, field: str, value: str | None, scope: str = "from_now_on") -> None:
+        """Change the batch default; ``from_now_on`` (the default) keeps existing trays as
+        they are, ``inheriting`` changes every slide that still inherits it."""
+        if scope not in review.META_SCOPES:
+            raise ValueError(f"scope must be one of {', '.join(review.META_SCOPES)}")
+        checked_override(field, value)
+        change = {field: value}
+        self._run_meta_edit(lambda store: review.edit_batch_meta(store, change, scope=scope))
+
+    def _run_meta_edit(self, edit) -> None:
+        def job(runner):
+            result = edit(runner.store)
+            with self._lock:
+                self._selection_undo_label()
+                if not result.before.empty:
+                    entry = selection.MetaUndoEntry("Edit metadata", result.before)
+                    self._undo = selection.push_undo(self._undo, entry)
+            self._bulk_result(result)
+            self._kick_refresh()
+
+        self._run_selection_writer(job, "Could not change the description or date")
 
     def reexport_selection(self) -> None:
         from opticfilm_linux.app import controller
