@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
+from opticfilm_linux.batch.events import ScanFinished, SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     SlideSettings,
@@ -495,4 +495,33 @@ def test_rescan_after_interrupted_cleanup_starts_fresh_capture(tmp_path, sweep_d
     assert not tray.auto_flagged
     assert not manifest.first_tray_released and manifest.released_render is None
     assert store.sweep_dir(1, 2).is_dir()
+    runner.close()
+
+
+def test_scan_finished_comes_after_the_scan_has_left_the_runner(tmp_path, sweep_dir):
+    store, runner = _make(tmp_path, sweep_dir)
+    original, seen = runner._emit, []
+
+    def emit(event):
+        if isinstance(event, ScanFinished):
+            seen.append((event, runner.scan_pending(), _tray(store).stage))
+        original(event)
+
+    runner._emit = emit
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    [(event, pending, stage)] = seen
+    assert event == ScanFinished(1, ok=True) and not pending and stage is not TrayStage.SCANNING
+    assert ScanFinished(1, ok=True) in _drain(runner)  # queued before wait_idle() returned
+    runner.close()
+
+
+def test_a_failed_scan_finishes_not_ok(tmp_path, sweep_dir):
+    def fail() -> None:
+        raise ScanError("driver error")
+
+    store, runner = _make(tmp_path, sweep_dir, before_scan=fail)
+    runner.scan_tray()
+    assert runner.wait_idle(TIMEOUT)
+    assert [e for e in _drain(runner) if isinstance(e, ScanFinished)] == [ScanFinished(1, False)]
     runner.close()

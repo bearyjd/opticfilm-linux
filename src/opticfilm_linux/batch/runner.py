@@ -22,7 +22,13 @@ from contextlib import contextmanager
 
 from opticfilm_linux.batch import export, review
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
-from opticfilm_linux.batch.events import BatchEvent, SlideUpdated, TrayFailed, TrayStageChanged
+from opticfilm_linux.batch.events import (
+    BatchEvent,
+    ScanFinished,
+    SlideUpdated,
+    TrayFailed,
+    TrayStageChanged,
+)
 from opticfilm_linux.batch.layout import allocate_location, location_is_active
 from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import (
@@ -323,7 +329,8 @@ class BatchRunner:
 
     # -- worker jobs ---------------------------------------------------------------------
 
-    def _scan_job(self, number: int) -> None:
+    def _scan_job(self, number: int) -> bool:
+        """True only once the sweep is saved and the tray is SCANNED (``ScanFinished.ok``)."""
         tray = self._tray(number)
         defaults = self._store.snapshot().defaults
         settings = ScanSettings(
@@ -346,10 +353,11 @@ class BatchRunner:
                 raise  # cut off (Ctrl-C): _report_crash flags the tray as interrupted
             message = str(exc) if isinstance(exc, ScanInterrupted) else _describe(exc)
             self._fail(number, message, (TrayStage.SCANNING,))
-            return
+            return False
         self._store.update_tray(number, stage=TrayStage.SCANNED, evidence=sweep.evidence)
         self._emit(TrayStageChanged(number, TrayStage.SCANNED))
         self._submit(self._enhance_pool, self._enhance_job, number)
+        return True
 
     def _enhance_job(self, number: int) -> None:
         self._emit(TrayStageChanged(number, TrayStage.ENHANCING))
@@ -583,7 +591,7 @@ class BatchRunner:
         def sequenced_job():
             self._operation.sequence = sequence
             try:
-                job(number, *args)
+                return job(number, *args)
             finally:
                 del self._operation.sequence
 
@@ -605,8 +613,13 @@ class BatchRunner:
                 self._report_crash(number, error, scan, sequence)
         finally:
             with self._lock:
-                self._pending.discard(future)
+                scan = future in self._scans
                 self._scans.discard(future)
+                stopping = self._stopping
+            if scan:  # after leaving _scans, before _pending: wait_idle() sees it queued
+                self._emit(ScanFinished(number, not stopping and _returned_true(future)))
+            with self._lock:
+                self._pending.discard(future)
 
     def _report_crash(
         self, number: int, error: BaseException, scan: bool = False, sequence: int = 0
@@ -636,6 +649,10 @@ class BatchRunner:
             _done, not_done = wait(pending, timeout=remaining)
             if not_done:
                 return False
+
+
+def _returned_true(future: Future) -> bool:
+    return not future.cancelled() and future.exception() is None and future.result() is True
 
 
 def _describe(exc: BaseException) -> str:
