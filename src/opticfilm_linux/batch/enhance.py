@@ -155,24 +155,8 @@ def _process_slide(
     ) or (defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide))
     options = options_for(defaults, tray.mode, snapshot.settings, snapshot.position)
     enhanced = slide.rgb if blank else enhance_slide(slide, options, sweep.dpi)
-    before = store.preview_path(number, position, "before")
-    after = store.preview_path(number, position, "after")
-    master = store.master_path(number, position)
-    pending_master = master.with_name(master.stem + ".pending.png")
-
-    def publish() -> None:
-        os.replace(_pending(before), before)
-        os.replace(_pending(after), after)
-        if mastered:
-            os.replace(pending_master, master)
-        else:  # blank (the raw slide, never oriented) or unwritten: an old master would lie
-            master.unlink(missing_ok=True)
-
     try:
-        write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
-        shown = make_preview(enhanced, gamma=BEFORE_GAMMA if blank else 1.0)
-        write_preview(shown, _pending(after))
-        mastered = not blank and _write_master(shown, options, pending_master)
+        publish = _stage_previews(store, number, slide, enhanced, options, blank)
         flags = () if blank else compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
         _merge_slide(
             store,
@@ -186,9 +170,49 @@ def _process_slide(
             raw_region_sha256(slide) if blank else "",
         )
     finally:  # a result that was dropped leaves nothing behind
-        _pending(before).unlink(missing_ok=True)
-        _pending(after).unlink(missing_ok=True)
-        pending_master.unlink(missing_ok=True)
+        for path in _pending_files(store, number, position):
+            path.unlink(missing_ok=True)
+
+
+def _pending_master(master: Path) -> Path:
+    return master.with_name(master.stem + ".pending.png")
+
+
+def _pending_files(store: BatchStore, number: int, position: int) -> tuple[Path, ...]:
+    return (
+        _pending(store.preview_path(number, position, "before")),
+        _pending(store.preview_path(number, position, "after")),
+        _pending_master(store.master_path(number, position)),
+    )
+
+
+def _stage_previews(
+    store: BatchStore,
+    number: int,
+    slide: Slide,
+    enhanced,
+    options: ProcessOptions,
+    blank: bool,
+) -> Callable[[], None]:
+    """Write the pending previews and master; returns what puts them in place at publish."""
+    position = slide.index + 1
+    before = store.preview_path(number, position, "before")
+    after = store.preview_path(number, position, "after")
+    master = store.master_path(number, position)
+    write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
+    shown = make_preview(enhanced, gamma=BEFORE_GAMMA if blank else 1.0)
+    write_preview(shown, _pending(after))
+    mastered = not blank and _write_master(shown, options, _pending_master(master))
+
+    def publish() -> None:
+        os.replace(_pending(before), before)
+        os.replace(_pending(after), after)
+        if mastered:
+            os.replace(_pending_master(master), master)
+        else:  # blank (the raw slide, never oriented) or unwritten: an old master would lie
+            master.unlink(missing_ok=True)
+
+    return publish
 
 
 def _write_master(shown, options: ProcessOptions, path: Path) -> bool:
