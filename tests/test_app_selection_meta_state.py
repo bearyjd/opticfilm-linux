@@ -47,3 +47,11 @@ def test_no_selection_shows_the_batch_default_and_batch_values_are_always_there(
     assert summary.meta_note == "day dropped from 1978-07-14"
     assert dict(_summary(manifest, (2, 1)).batch_meta) == dict(summary.meta)
     assert dict(_summary(None).meta) == {}
+
+
+def test_meta_scope_tells_the_strip_what_it_would_edit():
+    manifest = _manifest()
+    assert _summary(manifest, (1, 1)).meta_scope == "slides"
+    assert _summary(manifest).meta_scope == "batch"
+    tray_only = selection_fields(manifest, Selection(trays=frozenset({2})))["selection_summary"]
+    assert tray_only.meta_scope == "tray"

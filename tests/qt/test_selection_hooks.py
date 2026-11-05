@@ -69,6 +69,7 @@ def test_properties_notify_and_return_copies(bridge):
         "metaLevels": {},
         "metaNote": "",
         "batchMeta": {},
+        "metaScope": "",
     }
     summary["settings"]["rotation"] = 0
     assert bridge.selectionSummary["settings"]["rotation"] == 90

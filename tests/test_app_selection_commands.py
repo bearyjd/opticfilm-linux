@@ -335,6 +335,41 @@ def test_invalid_meta_is_refused_at_once_and_starts_no_job(selected, monkeypatch
     ):
         with pytest.raises(ValueError):
             command()
-    selected.clear_selection()
-    selected.set_selection_meta("description", "nobody")  # nothing selected: no job
     writer.assert_not_called()
+
+
+def test_meta_commands_refuse_what_cannot_start_before_queueing(selected, monkeypatch):
+    writer = Mock()
+    monkeypatch.setattr(selected, "_run_writer", writer)
+    selected.clear_selection()
+    with pytest.raises(ValueError, match="Select at least one slide"):
+        selected.set_selection_meta("description", "nobody")
+    selected._session.store.update_tray(2, stage=TrayStage.ENHANCING)
+    wait_until(selected, lambda: (2, 1) not in selected._selection_order)
+    selected.select_tray_slides(2)  # a tray with nothing selectable: no slides selected
+    with pytest.raises(ValueError, match="Select at least one slide"):
+        selected.reset_selection_meta("date")
+    with pytest.raises(ValueError, match="no tray 9"):
+        selected.set_tray_meta(9, "date", "1980")
+    session = selected._session
+    monkeypatch.setattr(selected, "_session", dataclasses.replace(session, runner=None))
+    with pytest.raises(ValueError, match="read-only"):
+        selected.set_batch_meta("description", "x")
+    writer.assert_not_called()
+
+
+def test_meta_edit_requeues_verified_trays_and_no_op_leaves_no_undo(selected, monkeypatch):
+    store = selected._session.store
+    store.update_tray(1, auto="verified")
+    submit = Mock()
+    monkeypatch.setattr(selected, "_submit_auto_due", submit)
+    selected._auto_due = set()
+    selected.set_tray_meta(1, "date", "1980")
+    wait_until(selected, lambda: selected._auto_due == {1})
+    assert submit.called
+    depth = len(selected._undo)
+    selected.set_tray_meta(1, "date", "1980")  # the same value again: nothing to undo
+    selected.set_batch_meta("description", "")  # already blank
+    selected.set_tray_meta(2, "date", "1981")
+    wait_until(selected, lambda: store.snapshot().trays[1].meta.date == "1981")
+    assert len(selected._undo) == depth + 1

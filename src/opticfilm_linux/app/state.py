@@ -107,6 +107,7 @@ class SelectionSummary:
     meta_levels: tuple[tuple[str, str | None], ...] = ()
     meta_note: str = ""  # a common note on an unusable stored value, else ""
     batch_meta: tuple[tuple[str, str], ...] = ()  # the batch default, for "Next tray"
+    meta_scope: str = ""  # what a strip edit changes: "slides", "tray" (selected) or "batch"
 
 
 def _common(values):
@@ -136,6 +137,12 @@ def _meta_fields(manifest, pairs) -> dict:
         "meta_note": _common(notes) or "",
         "batch_meta": (("description", batch.description), ("date", text(batch))),
     }
+
+
+def _meta_scope(manifest, pairs, selection: Selection) -> str:
+    if manifest is None:
+        return ""
+    return "slides" if pairs else "tray" if selection.trays else "batch"
 
 
 def selection_fields(manifest, selection: Selection) -> dict:
@@ -185,6 +192,7 @@ def selection_fields(manifest, selection: Selection) -> dict:
             ),
             tuple(sorted({number for number, _ in selection.keys} | selection.trays, reverse=True)),
             **_meta_fields(manifest, pairs),
+            meta_scope=_meta_scope(manifest, pairs, selection),
         ),
     }
 

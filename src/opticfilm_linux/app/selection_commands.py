@@ -238,23 +238,52 @@ class SelectionCommands:
         with self._lock:
             self._undo, _ = selection.pop_undo(self._undo)
         self._bulk_result(result)
+        self._requeue_verified(runner, result.before)
         self._kick_refresh()
+
+    def _requeue_verified(self, runner, before) -> None:
+        """Hand verified trays the edit touched back to automatic work, so a raw cleanup that
+        gave up because of the edit is tried again rather than waiting for a reopen."""
+        touched = {number for number, _ in before.slides} | set(before.trays)
+        due = {
+            t.number
+            for t in runner.store.snapshot().trays
+            if t.auto == "verified" and (before.batch is not None or t.number in touched)
+        }
+        if due:
+            with self._lock:
+                self._auto_due.update(due)
+            self._submit_auto_due()
+
+    def _check_meta_target(self, tray: int | None = None) -> None:
+        """Refuse at once, before queueing, what could not start."""
+        with self._lock:
+            session, manifest = self._session, self._manifest
+        if session is None:
+            raise ValueError("Open a batch first")
+        if session.runner is None:
+            raise ValueError("This batch is open read-only")
+        if tray is not None and manifest and all(t.number != tray for t in manifest.trays):
+            raise ValueError(f"There is no tray {tray} in this batch")
 
     def set_selection_meta(self, field: str, value: str | None) -> None:
         """Set one field on every selected slide: text, ``""`` blank, ``None`` inherit.
 
-        A value that breaks the rules raises ValueError at once, before any work starts.
+        A value that breaks the rules, or nothing to edit, raises ValueError at once.
         """
         change = {field: checked_override(field, value)}
+        self._check_meta_target()
         keys = self._selection_keys()
-        if keys:
-            self._run_meta_edit(lambda store: review.edit_meta_many(store, keys, change))
+        if not keys:
+            raise ValueError("Select at least one slide first")
+        self._run_meta_edit(lambda store: review.edit_meta_many(store, keys, change))
 
     def reset_selection_meta(self, field: str) -> None:
         self.set_selection_meta(field, None)
 
     def set_tray_meta(self, number: int, field: str, value: str | None) -> None:
         change = {field: checked_override(field, value)}
+        self._check_meta_target(number)
         self._run_meta_edit(lambda store: review.edit_tray_meta(store, number, change))
 
     def set_batch_meta(self, field: str, value: str | None, scope: str = "from_now_on") -> None:
@@ -263,6 +292,7 @@ class SelectionCommands:
         if scope not in review.META_SCOPES:
             raise ValueError(f"scope must be one of {', '.join(review.META_SCOPES)}")
         checked_override(field, value)
+        self._check_meta_target()
         change = {field: value}
         self._run_meta_edit(lambda store: review.edit_batch_meta(store, change, scope=scope))
 
@@ -275,6 +305,7 @@ class SelectionCommands:
                     entry = selection.MetaUndoEntry("Edit metadata", result.before)
                     self._undo = selection.push_undo(self._undo, entry)
             self._bulk_result(result)
+            self._requeue_verified(runner, result.before)
             self._kick_refresh()
 
         self._run_selection_writer(job, "Could not change the description or date")
