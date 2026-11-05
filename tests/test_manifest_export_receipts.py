@@ -104,6 +104,7 @@ def test_receipt_with_unknown_keys_loads_and_ignores_them():
     data = _data()
     data["trays"][0]["slides"][0]["exports"][0]["from_a_newer_build"] = "x"
     loaded = from_json(json.dumps(data))
-    assert loaded.trays[0].slides[0].exports[0] == from_json(json.dumps(_data())).trays[
-        0
-    ].slides[0].exports[0]
+    assert (
+        loaded.trays[0].slides[0].exports[0]
+        == from_json(json.dumps(_data())).trays[0].slides[0].exports[0]
+    )
