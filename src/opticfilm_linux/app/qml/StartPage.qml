@@ -13,6 +13,9 @@ Kirigami.ScrollablePage {
     readonly property var automaticExportInputs: [autoExportSwitch.checked, parentFolder.toString(), nameField.text, exportFolder.toString()]
     readonly property string dateText: yearField.text === "" ? "" : yearField.text + (monthBox.currentIndex > 0 ? "-" + String(monthBox.currentIndex).padStart(2, "0") : "")
     readonly property string dateProblem: bridge.validateDate(dateText)
+    // Create stays disabled while the date is invalid; the message waits until the year looks finished
+    readonly property bool showDateProblem: dateProblem !== "" && (yearField.text.length >= 4 || !yearField.activeFocus)
+    readonly property string dateHelp: qsTr("A guess is fine. Saved as approximate.")
     onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
     Component.onCompleted: exportFolder = bridge.lastExportFolder
     background: Rectangle {
@@ -91,6 +94,7 @@ Kirigami.ScrollablePage {
                         objectName: "newBatchYear"
                         placeholderText: qsTr("Year")
                         Accessible.name: qsTr("Year")
+                        Accessible.description: page.dateHelp
                         inputMethodHints: Qt.ImhDigitsOnly
                         Layout.preferredWidth: Theme.gu * 8
                         validator: RegularExpressionValidator {
@@ -102,6 +106,7 @@ Kirigami.ScrollablePage {
                         id: monthBox
                         objectName: "newBatchMonth"
                         Accessible.name: qsTr("Month")
+                        Accessible.description: page.dateHelp
                         model: ["—", qsTr("Jan"), qsTr("Feb"), qsTr("Mar"), qsTr("Apr"), qsTr("May"), qsTr("Jun"), qsTr("Jul"), qsTr("Aug"), qsTr("Sep"), qsTr("Oct"), qsTr("Nov"), qsTr("Dec")]
                         enabled: yearField.text !== ""
                     }
@@ -114,8 +119,10 @@ Kirigami.ScrollablePage {
                 }
                 QQC2.Label {
                     objectName: "newBatchDateError"
-                    visible: page.dateProblem !== ""
+                    visible: page.showDateProblem
                     text: page.dateProblem
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: page.dateProblem
                     color: Kirigami.Theme.negativeTextColor
                     font.pixelSize: Theme.fontBody
                     wrapMode: Text.WordWrap
@@ -123,7 +130,7 @@ Kirigami.ScrollablePage {
                 }
                 QQC2.Label {
                     font.pixelSize: Theme.fontBody
-                    text: qsTr("A guess is fine. Saved as approximate.")
+                    text: page.dateHelp
                     color: Theme.muted
                     wrapMode: Text.WordWrap
                     Layout.maximumWidth: Theme.gu * 24
