@@ -13,6 +13,9 @@ Generated from environment reads and assignments in `src/`, `scripts/`, and `pac
 | `OPTICFILM_NEXT_STRIP` | Optional | `load --next-strip` is on by default. `0`, `false`, `no`, or `off` (case-insensitive exact tokens) disables it; unset, empty, and all other values enable it. First load after power-on still needs the interactive terminal command. | `src/opticfilm_linux/scanner/select.py:21` |
 | `OPTICFILM_DRIVER_CLEAN` | Optional | `1` (exact) lets the driver run its own IR dust clean again (omits `--no-clean`); unset or anything else passes `--no-clean`, so the app's own dust repair works on the unfilled frames. | `src/opticfilm_linux/scanner/driver.py` |
 | `OPTICFILM_EJECT_BUTTON` | Optional | Front-panel Eject support is enabled by default. Stripped, case-insensitive `0`, `false`, `no`, or `off` disables it; all other values leave it enabled. | `src/opticfilm_linux/scanner/select.py:26` |
+| `OPTICFILM_SKIP_EMPTY` | Optional | Off by default. Stripped, case-insensitive `1`, `true`, `yes`, or `on` shows "Slides in this holder: 4 3 2 1" next to Eject; choosing N scans openings 1..N (`--slides 1-N`) and records the rest as empty, not scanned, with their numbers kept free. The choice goes back to 4 after each scan. Unset or any other value: no selector and today's `--slides 1-4` command. Untested on hardware. | `src/opticfilm_linux/scanner/select.py:28` |
+| `OPTICFILM_SKIP_GAPS` | Optional | Off by default; same accepted values as `OPTICFILM_SKIP_EMPTY` and does nothing without it. On: four opening toggles instead, so any ascending set can be scanned (for example `--slides 1,3,4`). Non-consecutive lists are untested on hardware. | `src/opticfilm_linux/scanner/select.py:28` |
+| `OPTICFILM_AUTO_EJECT` | Optional | Not implemented yet (planned, off by default): eject the holder automatically after a good tray scan. | - |
 
 ## Driver and scanner
 
