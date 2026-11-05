@@ -1,18 +1,18 @@
 """Turn and flip a finished preview in place of re-enhancing a slide whose orientation changed.
 
-A turn or a flip is the last step of the pipeline, so when it is the only change, the current
-"after" preview turned and flipped is what a full re-enhance would produce. The "before" preview
+A turn or a flip is the last step of the pipeline, so when it is the only change, the last full
+render turned and flipped is what a full re-enhance would produce. The turn is made from the
+render's lossless master (tagged with the orientation it was rendered at), never from the JPEG,
+so any number of turns stays one JPEG save away from the render. The "before" preview
 is the raw slide, never oriented, so it is left alone. Flags are kept: brightness, clipping and
 infrared dust do not depend on orientation. Anything else changed, a preview already stale or
-missing, or a blank slide: this does nothing and the caller keeps the background re-enhance.
+missing, no master, or a blank slide: this does nothing and the caller keeps the background
+re-enhance.
 """
 
 import dataclasses
 import os
 from pathlib import Path
-
-import numpy as np
-from PIL import Image
 
 from opticfilm_linux.batch.model import (
     BatchManifest,
@@ -28,7 +28,7 @@ from opticfilm_linux.batch.preview_transform import (
     preview_transform,
     transform_preview,
 )
-from opticfilm_linux.batch.previews import write_preview
+from opticfilm_linux.batch.previews import read_master, write_preview
 from opticfilm_linux.batch.store import BatchStore
 
 SHOWN_STAGES = (TrayStage.REVIEW, TrayStage.EXPORTED)
@@ -129,11 +129,13 @@ def reorient_preview(
     after = store.preview_path(*key, "after")
     if not _eligible(old, new, key) or not after.is_file():
         return False
-    transform = preview_transform(_orientation(old, key), _orientation(new, key))
+    master = read_master(store.master_path(*key))
+    if master is None:  # a batch rendered before masters existed: re-enhance once
+        return False
+    pixels, rendered = master
+    transform = preview_transform(rendered, _orientation(new, key))
     staged = _staged(after)
     try:
-        with Image.open(after) as image:
-            pixels = np.asarray(image.convert("RGB"))
         write_preview(transform_preview(pixels, transform), staged)
         return _publish(store, new, key, staged)
     finally:

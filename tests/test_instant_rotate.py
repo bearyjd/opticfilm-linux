@@ -15,7 +15,8 @@ from opticfilm_linux.batch.enhance import reenhance_slide
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed
 from opticfilm_linux.batch.export import export_batch
 from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatus
-from opticfilm_linux.batch.previews import write_preview
+from opticfilm_linux.batch.preview_transform import effective_orientation
+from opticfilm_linux.batch.previews import read_master, write_master, write_preview
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.fake import FakeScanner
@@ -144,7 +145,8 @@ def test_four_quick_turns_end_where_they_started(store, runner, renders):
             1, 3, dataclasses.replace(current, rotation=(current.rotation + 90) % 360)
         )
     assert _slide(store, 1, 3).settings.rotation == 0 and renders == []
-    assert float(np.abs(_pixels(store, 1, 3) - start).mean()) < 2 * TOLERANCE
+    # made from the lossless master, the preview is the very same picture again
+    assert np.array_equal(_pixels(store, 1, 3), start)
 
 
 def test_other_changes_keep_the_background_re_enhance(store, runner, renders):
@@ -288,8 +290,62 @@ def test_a_full_size_preview_is_turned_without_a_re_enhance(store, runner, rende
     rng = np.random.default_rng(3)
     big = rng.integers(0, 255, size=(1067, 1600, 3), dtype=np.uint8)
     write_preview(big, store.preview_path(1, 4, "after"))
+    write_master(big, _orientation_of(store, 1, 4), store.master_path(1, 4))
     runner.edit_slide(1, 4, SlideSettings(rotation=270))
     assert renders == [] and not _slide(store, 1, 4).preview_stale
     assert not runner.work_pending()  # no re-enhance job was queued
     with Image.open(store.preview_path(1, 4, "after")) as image:
         assert image.size == (1067, 1600)
+
+
+def _orientation_of(store, number, position):
+    manifest = store.snapshot()
+    tray = next(t for t in manifest.trays if t.number == number)
+    slide = _slide(store, number, position)
+    return effective_orientation(manifest.defaults, tray.mode, slide.settings, position)
+
+
+def test_a_full_render_keeps_a_lossless_master_with_its_orientation(store):
+    reenhance_slide(store, 1, 2)
+    master = read_master(store.master_path(1, 2))
+    assert master is not None
+    pixels, orientation = master
+    assert orientation == _orientation_of(store, 1, 2)
+    assert pixels.dtype == np.uint8 and pixels.shape == _pixels(store, 1, 2).shape
+    assert float(np.abs(_pixels(store, 1, 2) - pixels).mean()) < TOLERANCE  # the JPEG's source
+    assert sorted(p.name for p in store.master_path(1, 2).parent.glob("02-*")) == [
+        "02-after.jpg",
+        "02-before.jpg",
+        "02-master.png",
+    ]
+
+
+def test_a_blank_render_drops_the_master(store):
+    assert store.master_path(1, 1).is_file()
+    _set_slide(store, (1, 1), status=SlideStatus.BLANK, owner_decided=True)
+    reenhance_slide(store, 1, 1)
+    assert not store.master_path(1, 1).exists()  # a blank "after" is the raw slide, unturned
+
+
+def _grainy(height=320, width=480, seed=7):
+    """Smooth gradients under fine film-like grain: the content repeated JPEG saves soften."""
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+    base = np.stack([x / width * 200, y / height * 200, (x + y) / (width + height) * 200], -1)
+    return np.clip(base + 25 + rng.normal(0, 12, base.shape), 0, 255).astype(np.uint8)
+
+
+def test_forty_turns_stay_one_jpeg_save_from_the_render(store, runner, renders):
+    truth = _grainy()
+    orientation = _orientation_of(store, 1, 3)
+    write_master(truth, orientation, store.master_path(1, 3))
+    write_preview(truth, store.preview_path(1, 3, "after"))
+    single_save = float(np.abs(_pixels(store, 1, 3) - truth).mean())
+    for _ in range(40):
+        current = _slide(store, 1, 3).settings
+        runner.edit_slide(
+            1, 3, dataclasses.replace(current, rotation=(current.rotation + 90) % 360)
+        )
+    assert _slide(store, 1, 3).settings.rotation == 0 and renders == []
+    drift = float(np.abs(_pixels(store, 1, 3) - truth).mean())
+    assert drift <= single_save + 0.05, (single_save, drift)
