@@ -57,6 +57,7 @@ TRAY_KEYS = (
     "autoFailed",
     "autoError",
     "autoFlagged",
+    "meta",
 )
 SLIDE_KEYS = (
     "position",

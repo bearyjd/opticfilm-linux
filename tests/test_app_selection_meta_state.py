@@ -1,7 +1,7 @@
 """The selection summary shows common-or-mixed metadata and the level each field comes from."""
 
 from opticfilm_linux.app.selection import Selection
-from opticfilm_linux.app.state import selection_fields
+from opticfilm_linux.app.state import _tray_meta, selection_fields
 from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.batch.model import BatchManifest, SlideRecord, TrayRecord, TrayStage
 
@@ -62,3 +62,14 @@ def test_a_tray_only_selection_shows_that_trays_own_values():
     summary = selection_fields(manifest, Selection(trays=frozenset({2})))["selection_summary"]
     assert dict(summary.meta) == {"description": "Lake", "date": "1980-05"}
     assert dict(summary.meta_levels) == {"description": "batch", "date": "tray"}
+
+
+def test_each_tray_row_carries_its_resolved_meta():
+    manifest = _manifest(description="Lake", date="1978")
+    meta = dict(_tray_meta(manifest, manifest.trays[1]))
+    assert meta == {
+        "description": "Lake",
+        "date": "1980-05",
+        "descriptionLevel": "batch",
+        "dateLevel": "tray",
+    }
