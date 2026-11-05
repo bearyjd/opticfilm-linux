@@ -84,6 +84,7 @@ class JpegMetadata:
     exif: bytes
     xmp: bytes
     raw_sha256: str
+    meta_signature: str = ""
 
 
 def raw_region_sha256(slide: "Slide") -> str:
@@ -108,6 +109,15 @@ def _canonical(value: object) -> str:
     return json.dumps(
         value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
     )
+
+
+def estimate_signature(fields: dict) -> str:
+    """The fingerprint of the description and date fields a JPEG carries; "" when it has none.
+
+    The receipt keeps it, so a later edit at any level shows as a different signature."""
+    if not fields:
+        return ""
+    return hashlib.sha256(_canonical(fields).encode("utf-8")).hexdigest()
 
 
 def _clean_description(text: str) -> str:
@@ -286,7 +296,11 @@ def jpeg_metadata(
         ReviewFlags=_canonical(_review_flags(record)),
         RawSHA256=raw_hash,
     )
-    fields.update(_estimate_fields(manifest, tray, record))
+    estimate = _estimate_fields(manifest, tray, record)
+    fields.update(estimate)
     return JpegMetadata(
-        _exif_metadata(software, evidence, delivered_dpi), _xmp_packet(fields), raw_hash
+        _exif_metadata(software, evidence, delivered_dpi),
+        _xmp_packet(fields),
+        raw_hash,
+        estimate_signature(estimate),
     )

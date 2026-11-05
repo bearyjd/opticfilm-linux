@@ -275,6 +275,7 @@ def _write_export(
         size_bytes=receipts[0][2],
         sha256=receipts[0][1],
         render_signature=_render_signature(defaults, root, spec.fmt, spec.jpeg_size),
+        meta_signature=spec.metadata.meta_signature if spec.metadata else "",
     )
     return path, exported
 
