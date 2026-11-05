@@ -4,6 +4,7 @@ from dataclasses import replace
 import pytest
 
 from opticfilm_linux.batch.manifest import ManifestFormatError, from_json, to_json
+from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
@@ -260,4 +261,69 @@ def test_invalid_auto_error_type_rejected(value):
     data = json.loads(to_json(_manifest()))
     data["trays"][0]["auto_error"] = value
     with pytest.raises(ManifestFormatError, match="auto_error"):
+        from_json(json.dumps(data))
+
+
+def _plain_json() -> dict:
+    return json.loads(to_json(_manifest()))
+
+
+def test_unset_metadata_leaves_no_keys_and_bytes_are_identical():
+    text = to_json(_manifest())
+    assert "description" not in text and '"meta"' not in text
+    assert to_json(from_json(text)) == text
+
+
+def test_metadata_round_trips():
+    manifest = _manifest()
+    tray = replace(
+        manifest.trays[0],
+        meta=MetaOverride(description="Lake", date="1978"),
+        slides=(
+            replace(manifest.trays[0].slides[0], meta=MetaOverride(description="", date="1979-07")),
+        )
+        + manifest.trays[0].slides[1:],
+    )
+    manifest = replace(manifest, description="Trip", trays=(tray,) + manifest.trays[1:])
+    back = from_json(to_json(manifest))
+    assert back == manifest
+    assert back.trays[0].slides[0].meta == MetaOverride(description="", date="1979-07")
+    assert to_json(back) == to_json(manifest)
+
+
+def test_partial_override_omits_unset_member():
+    manifest = _manifest()
+    tray = replace(manifest.trays[0], meta=MetaOverride(date="1978"))
+    data = json.loads(to_json(replace(manifest, trays=(tray,))))
+    assert data["trays"][0]["meta"] == {"date": "1978"}
+
+
+@pytest.mark.parametrize("date", ["1978", "1978-07", "1978-07-14", "summer 78", None])
+def test_legacy_date_shapes_load_and_round_trip_unchanged(date):
+    data = _plain_json()
+    data["date"] = date
+    text = json.dumps(data, indent=2)
+    manifest = from_json(text)
+    assert manifest.date == date
+    assert to_json(manifest) == text
+
+
+@pytest.mark.parametrize(
+    ("where", "key", "value"),
+    [
+        ("top", "description", 5),
+        ("top", "description", None),
+        ("top", "description", "x" * 501),
+        ("tray", "meta", "oops"),
+        ("tray", "meta", {"description": 5}),
+        ("tray", "meta", {"date": 1978}),
+        ("tray", "meta", {"bogus": "x"}),
+        ("slide", "meta", ["x"]),
+    ],
+)
+def test_bad_metadata_types_raise_manifest_format_error(where, key, value):
+    data = _plain_json()
+    target = {"top": data, "tray": data["trays"][0], "slide": data["trays"][0]["slides"][0]}[where]
+    target[key] = value
+    with pytest.raises(ManifestFormatError):
         from_json(json.dumps(data))

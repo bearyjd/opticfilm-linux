@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
+from opticfilm_linux.batch.metadata import MAX_DESCRIPTION, MetaOverride
 from opticfilm_linux.output import Format, JpegSize
 
 if TYPE_CHECKING:
@@ -119,6 +120,7 @@ class SlideRecord:
     export_size: tuple[int, ...] = ()
     export_sha256: str = ""
     exports: tuple[ExportRecord, ...] = ()
+    meta: MetaOverride = MetaOverride()
 
 
 def _check_location(collection: str, box: int, section: str) -> str:
@@ -185,6 +187,7 @@ class TrayRecord:
     auto_flagged: tuple[int, ...] = ()
     location: TrayLocation | None = None
     evidence: ScanEvidence | None = None
+    meta: MetaOverride = MetaOverride()
 
 
 @dataclass(frozen=True)
@@ -263,8 +266,11 @@ class BatchManifest:
     box: int = 1
     section: str = "a"
     section_size: int = 140
+    description: str = ""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.description, str) or len(self.description) > MAX_DESCRIPTION:
+            raise ValueError(f"description must be text of at most {MAX_DESCRIPTION} characters")
         if type(self.first_tray_released) is not bool:
             raise ValueError("first_tray_released must be a boolean")
         object.__setattr__(

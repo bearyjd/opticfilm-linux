@@ -59,6 +59,7 @@ class BatchStore:
         box: int = 1,
         section: str = "a",
         section_size: int = 140,
+        description: str = "",
     ) -> "BatchStore":
         if (directory / MANIFEST_FILE).exists():
             raise BatchError(f"a batch already exists in {directory}")
@@ -71,6 +72,7 @@ class BatchStore:
             box=box,
             section=section,
             section_size=section_size,
+            description=description,
         )
         directory.mkdir(parents=True, exist_ok=True)
         lock_file = _acquire_lock(directory)

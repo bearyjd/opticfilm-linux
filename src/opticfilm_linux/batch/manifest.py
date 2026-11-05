@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, fields
 from typing import Any, get_args
 
+from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.batch.model import (
     AutoState,
     BatchDefaults,
@@ -50,8 +51,18 @@ def to_json(manifest: BatchManifest) -> str:
     for key, default in {"collection": "", "box": 1, "section": "a", "section_size": 140}.items():
         if data[key] == default:
             del data[key]
+    if not data["description"]:
+        del data["description"]
     _omit_tray_defaults(data)
     return json.dumps(data, indent=2)
+
+
+def _omit_meta(record: dict[str, Any]) -> None:
+    meta = {key: value for key, value in record["meta"].items() if value is not None}
+    if meta:
+        record["meta"] = meta
+    else:
+        del record["meta"]
 
 
 def _omit_tray_defaults(data: dict[str, Any]) -> None:
@@ -60,6 +71,7 @@ def _omit_tray_defaults(data: dict[str, Any]) -> None:
             del tray["evidence"]
         if tray["location"] is None:
             del tray["location"]
+        _omit_meta(tray)
         for key, default in (
             ("cleanup_sweeps", ()),
             ("auto", ""),
@@ -70,6 +82,7 @@ def _omit_tray_defaults(data: dict[str, Any]) -> None:
             if tray[key] == default:
                 tray.pop(key)
         for slide in tray["slides"]:
+            _omit_meta(slide)
             if not slide["blank_fingerprint"]:
                 slide.pop("blank_fingerprint")
             if slide["empty_confirmed"] is None:
@@ -139,6 +152,13 @@ def _slide_delivery(data: dict[str, Any]) -> tuple[ExportRecord, ...]:
     return tuple(_export_record(record) for record in exports)
 
 
+def _meta(data: dict[str, Any]) -> MetaOverride:
+    meta = data.get("meta", {})
+    if not isinstance(meta, dict) or set(meta) - {"description", "date"}:
+        raise ManifestFormatError("meta must be an object with only description and date")
+    return MetaOverride(**meta)
+
+
 def _slide(data: dict[str, Any]) -> SlideRecord:
     _validate_booleans(data, SlideRecord)
     _receipt_text(data, "blank_fingerprint", digest=True)
@@ -158,6 +178,7 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         export_size=tuple(data.get("export_size", ())),
         export_sha256=data.get("export_sha256", ""),
         exports=exports,
+        meta=_meta(data),
     )
 
 
@@ -208,6 +229,7 @@ def _tray(data: dict[str, Any]) -> TrayRecord:
         auto_flagged=_integer_list(data, "auto_flagged"),
         location=TrayLocation(**data["location"]) if data.get("location") is not None else None,
         evidence=_evidence(data.get("evidence")),
+        meta=_meta(data),
     )
 
 
@@ -252,6 +274,7 @@ def from_json(text: str) -> BatchManifest:
             box=data.get("box", 1),
             section=data.get("section", "a"),
             section_size=data.get("section_size", 140),
+            description=data.get("description", ""),
         )
     except ManifestFormatError:
         raise

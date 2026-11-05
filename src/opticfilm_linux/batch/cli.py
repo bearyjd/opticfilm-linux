@@ -90,7 +90,10 @@ def _add_new_command(sub: argparse._SubParsersAction) -> None:
     new.add_argument("directory", type=Path)
     new.add_argument("--name", required=True)
     new.add_argument("--album", default="")
-    new.add_argument("--date", default=None)
+    new.add_argument("--description", default="", help="what this batch is about (inherited)")
+    new.add_argument(
+        "--date", default=None, help="estimated date, YYYY or YYYY-MM (inherited by every slide)"
+    )
     new.add_argument("--dpi", type=int, default=3600)
     add_orientation_options(new)
     new.add_argument(
@@ -137,7 +140,9 @@ def _new(args: argparse.Namespace) -> int:
         mirror=args.mirror,
         slots=slot_orientations(args.slot_rotate, args.slot_mirror),
     )
-    BatchStore.create(args.directory, args.name, args.album, args.date, defaults).close()
+    BatchStore.create(
+        args.directory, args.name, args.album, args.date, defaults, description=args.description
+    ).close()
     print(f"created batch {args.name!r} in {args.directory}")
     return 0
 
