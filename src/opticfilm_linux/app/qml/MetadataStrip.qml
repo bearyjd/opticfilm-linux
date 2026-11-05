@@ -26,9 +26,15 @@ Rectangle {
     property string error: ""
     property bool descriptionDirty: false
     property bool pendingBatchFocus: false
+    // shown on request even where a short window would leave it out (see MainPage)
+    property bool requested: false
     signal reviewFocusRequested()
 
-    implicitHeight: content.implicitHeight + 2 * Theme.spacingSmall
+    // short windows: the thinnest band that still holds a full-size control
+    readonly property real verticalInset: shortWindow ? Theme.spacingSmall / 4 : Theme.spacingSmall
+    implicitHeight: content.implicitHeight + 2 * verticalInset
+    // one row: what a short window must find room for before it shows the strip
+    readonly property real rowHeight: descriptionRow.implicitHeight + 2 * verticalInset
     color: Theme.card
     Accessible.role: Accessible.Grouping
     Accessible.name: qsTr("Description and date")
@@ -66,6 +72,7 @@ Rectangle {
 
     // Hands-free scanning: edit the batch default ("Next tray") without stopping.
     function focusBatch() {
+        requested = true;
         pendingBatchFocus = true;
         if (scope === "batch")
             sync();
@@ -74,6 +81,7 @@ Rectangle {
     }
 
     function leave() {
+        requested = false;
         descriptionDirty = false;
         descriptionField.text = meta.description || "";
         dateField.setDate(meta.date || "");
@@ -140,8 +148,8 @@ Rectangle {
         anchors.fill: parent
         anchors.leftMargin: Theme.spacing
         anchors.rightMargin: Theme.spacing
-        anchors.topMargin: Theme.spacingSmall
-        anchors.bottomMargin: Theme.spacingSmall
+        anchors.topMargin: strip.verticalInset
+        anchors.bottomMargin: strip.verticalInset
         // one row when wide; description, date and actions stack as the window narrows
         readonly property real room: strip.width - 2 * Theme.spacing
         readonly property real descriptionNeed: scopeLabel.implicitWidth + descriptionField.Layout.minimumWidth + descriptionChip.implicitWidth + (dateToggle.visible ? dateToggle.implicitWidth + Theme.spacingSmall : 0) + 2 * Theme.spacingSmall
@@ -150,6 +158,7 @@ Rectangle {
         rowSpacing: Theme.spacingSmall
 
         RowLayout {
+            id: descriptionRow
             Layout.fillWidth: true
             spacing: Theme.spacingSmall
             QQC2.Label {
@@ -172,6 +181,7 @@ Rectangle {
                 onTextEdited: strip.descriptionDirty = true
                 onAccepted: {
                     strip.applyDescription();
+                    strip.requested = false;
                     strip.reviewFocusRequested();
                 }
                 onEditingFinished: strip.applyDescription()

@@ -45,3 +45,14 @@ def test_the_strip_and_its_controls_fit(layout, size):
     finally:
         if short:
             evaluate(layout, "metaDateToggle", "clicked()")
+
+
+def test_a_short_window_gives_safety_rows_priority_over_the_strip(layout):
+    layout.apply("worst-stack", (720, 540))
+    assert not evaluate(layout, "metadataStrip", "visible")
+    evaluate(layout, "nextTrayMetaEdit", "clicked()")  # asking for it still shows it
+    assert evaluate(layout, "metadataStrip", "visible")
+    evaluate(layout, "metadataStrip", "leave()")
+    assert not evaluate(layout, "metadataStrip", "visible")
+    layout.apply(size=(720, 540))
+    assert evaluate(layout, "metadataStrip", "visible")
