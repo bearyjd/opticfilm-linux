@@ -33,8 +33,9 @@ Tick each item.
 - [ ] Disk: the batch folder is **outside the repo**, on disk, not in RAM-backed `/tmp`. Allow
       about 3.5 GB of raw data per 7200 dpi tray, and about 9 GB free for a first tray (README,
       RUNBOOK.md, performance.md). More if you keep raw scans for many trays.
-- [ ] Nothing heavy is running. The driver does about 2 min of single-core post-processing per
-      frame during a scan.
+- [ ] Nothing heavy is running. The app runs the driver with `--no-clean` by default, so there
+      is little post-processing per frame. With `OPTICFILM_DRIVER_CLEAN=1` the driver's own IR
+      clean adds about 2 min of single-core work per frame.
 - [ ] The Eject watcher is not holding the scanner. The app stops
       `opticfilm-eject-watch.service` itself and restores it on exit (only if it was running).
       For terminal driver commands you must stop it yourself (section 6).
@@ -95,12 +96,13 @@ been run cold through the finished app. See section 7.
 | 7200 dpi, driver's own IR clean | about 22 min |
 | 3600 dpi | about 6 min |
 
-- The app **currently still runs the driver's dust clean**, so expect about 22 min at 7200 dpi.
-  A pending PR (#95) makes the app pass `--no-clean` by default (restore the clean with
-  `OPTICFILM_DRIVER_CLEAN=1`). After it merges, a 4-slide 7200 dpi tray should take about
-  14 min. That is expected, not yet re-measured.
-- The scan pass is 175 s per frame at 7200 dpi. The rest is post-processing, about 2 min of
-  single-core work per frame.
+- The app passes `--no-clean` to the driver by default (PR #95), so a 4-slide 7200 dpi tray
+  should take about 14 min. Set `OPTICFILM_DRIVER_CLEAN=1` to restore the driver's own IR
+  clean: about 22 min, and on 3600 dpi scans it caused blocky blotches. The 14 min figure
+  after this change is expected from the earlier `--no-clean` runs and has not been
+  re-measured through the app.
+- The scan pass is 175 s per frame at 7200 dpi. That is hardware time. With the driver clean
+  on, post-processing adds about 2 min of single-core work per frame.
 - The 22 min and 2 min figures were measured on one unit, on the owner's 2026-11-04 trays
   (diag.json started/finished against file times).
 - The earlier 827 s and 854 s trays (learnings) were driver runs with `--no-clean`, which is
