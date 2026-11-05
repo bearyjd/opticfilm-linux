@@ -97,8 +97,6 @@ class HolderCommands:
                 return  # a second click while one is pending
             refusal = SCANNER_INTERRUPTED if cut_off else self._holder_refusal()
             self._holder_busy = refusal is None
-            if refusal is None:
-                self._forget_scan_openings()  # the holder is about to move
         if refusal is not None:
             self._set(_banner=Banner(refusal))
             return
