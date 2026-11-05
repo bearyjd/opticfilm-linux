@@ -320,16 +320,16 @@ class BatchRunner:
         """Turn the preview of each slide whose only change since ``old`` is its orientation.
 
         Returns the keys done (each with a ``SlideUpdated``); the others stay stale. A failure
-        leaves the previous preview in place and is reported as an event.
+        leaves the previous preview in place and is only logged: the slide stays stale, so the
+        full re-enhance takes over and reports its own failure if it has one.
         """
         new = self._store.snapshot()
         done = set()
         for key in keys:
             try:
                 turned = reorient_preview(self._store, old, new, key)
-            except Exception as exc:  # the slide stays stale, so the full re-enhance takes over
+            except Exception:
                 log.warning("could not turn the preview of slide %s", key, exc_info=True)
-                self._emit(TrayFailed(key[0], _describe(exc)))
                 continue
             if turned:
                 done.add(key)

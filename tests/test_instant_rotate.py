@@ -1,6 +1,7 @@
 """Turning or flipping a slide turns its existing preview at once instead of re-enhancing it."""
 
 import dataclasses
+import logging
 import shutil
 import threading
 
@@ -231,7 +232,9 @@ def test_batch_orientation_turns_every_preview(store, runner, renders):
     _assert_matches_full_render(store, 2, 4)
 
 
-def test_a_failed_turn_keeps_the_old_preview_and_falls_back(store, runner, renders, monkeypatch):
+def test_a_failed_turn_keeps_the_old_preview_and_falls_back(
+    store, runner, renders, monkeypatch, caplog
+):
     path = store.preview_path(1, 1, "after")
     original = path.read_bytes()
 
@@ -241,8 +244,11 @@ def test_a_failed_turn_keeps_the_old_preview_and_falls_back(store, runner, rende
 
     monkeypatch.setattr(reorient_module, "write_preview", broken)
     renders.gate.clear()  # hold the fallback so the untouched preview can be checked
-    runner.edit_slide(1, 1, SlideSettings(rotation=90))
-    assert any(isinstance(e, TrayFailed) and "disk full" in e.message for e in _events(runner))
+    with caplog.at_level(logging.WARNING, logger=runner_module.log.name):
+        runner.edit_slide(1, 1, SlideSettings(rotation=90))
+    # the tray is fine and its fallback render is running: no failure banner, only a log line
+    assert not any(isinstance(e, TrayFailed) for e in _events(runner))
+    assert any(r.levelno == logging.WARNING and r.exc_info for r in caplog.records)
     assert path.read_bytes() == original
     assert sorted(p.name for p in path.parent.glob("01-after*")) == ["01-after.jpg"]
     renders.gate.set()
