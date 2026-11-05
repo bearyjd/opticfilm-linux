@@ -410,7 +410,7 @@ def test_export_records_match_jpeg_and_hash_survives_reexport(
     monkeypatch.setattr(
         "opticfilm_linux.batch.export.load_sweep", lambda _: SimpleNamespace(dpi=7200)
     )
-    monkeypatch.setattr("opticfilm_linux.batch.export.split_slides", lambda _: [slide])
+    monkeypatch.setattr("opticfilm_linux.batch.export.split_positions", lambda _: {1: slide})
     with BatchStore.create(tmp_path / "batch", manifest.name) as store:
         record = replace(record, settings=replace(record.settings, rotation=90))
         store.update(lambda _: replace(manifest, trays=(replace(tray, slides=(record,)),)))
@@ -459,7 +459,7 @@ def test_export_hash_is_captured_before_render(tmp_path, monkeypatch, fmt):
     monkeypatch.setattr(
         "opticfilm_linux.batch.export.load_sweep", lambda _: SimpleNamespace(dpi=7200)
     )
-    monkeypatch.setattr("opticfilm_linux.batch.export.split_slides", lambda _: [slide])
+    monkeypatch.setattr("opticfilm_linux.batch.export.split_positions", lambda _: {1: slide})
 
     def render(raw, options, dpi):
         raw.rgb[0, 0, 0] += 1

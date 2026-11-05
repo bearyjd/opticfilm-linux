@@ -38,10 +38,10 @@ def store(tmp_path, monkeypatch):
         "opticfilm_linux.batch.export.load_sweep", lambda _: SimpleNamespace(dpi=7200)
     )
     monkeypatch.setattr(
-        "opticfilm_linux.batch.export.split_slides",
-        lambda _: [
-            Slide(p, np.zeros((9, 11, 3), np.uint16), None, (0, 0, 11, 9)) for p in range(4)
-        ],
+        "opticfilm_linux.batch.export.split_positions",
+        lambda _: {
+            p + 1: Slide(p, np.zeros((9, 11, 3), np.uint16), None, (0, 0, 11, 9)) for p in range(4)
+        },
     )
     monkeypatch.setattr(
         "opticfilm_linux.batch.export.enhance_slide", lambda *args: np.zeros((9, 11, 3), np.uint16)

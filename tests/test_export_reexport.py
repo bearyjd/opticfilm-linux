@@ -167,7 +167,7 @@ def test_render_defaults_changed_during_write_still_stale_the_tray(store, change
 def jpeg_store(tmp_path, monkeypatch):
     rgb = np.random.default_rng(12).integers(0, 65536, (105, 107, 3), dtype=np.uint16)
     slide = Slide(0, rgb, None, Box(0, 0, 107, 105))
-    monkeypatch.setattr(export, "split_slides", lambda sweep: [slide])
+    monkeypatch.setattr(export, "split_positions", lambda sweep: {1: slide})
 
     def enhance(slide, options, dpi):
         return np.rot90(slide.rgb[:99, :101], options.rotation // 90)

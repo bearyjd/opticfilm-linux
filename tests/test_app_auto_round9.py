@@ -26,7 +26,7 @@ def test_detector_blank_requires_owner_confirmation_before_raw_cleanup(store, li
     blank = dataclasses.replace(
         tray.slides[0],
         status=SlideStatus.BLANK,
-        blank_fingerprint=raw_region_sha256(exports.split_slides(None)[0]),
+        blank_fingerprint=raw_region_sha256(exports.split_positions(None)[1]),
     )
     store.update_tray(2, slides=(blank, *tray.slides[1:]), auto_flagged=(1,) if live_flags else ())
     auto.arm(2)
@@ -214,7 +214,7 @@ def test_confirmed_empty_first_tray_waits_for_later_jpeg_approval_then_cleans_up
             dataclasses.replace(
                 s,
                 status=SlideStatus.BLANK,
-                blank_fingerprint=raw_region_sha256(exports.split_slides(None)[s.position - 1]),
+                blank_fingerprint=raw_region_sha256(exports.split_positions(None)[s.position]),
             )
             for s in first.slides
         ),
@@ -270,7 +270,7 @@ def test_confirmed_empty_warning_is_cleared_while_raw_stays_held(store):
     blank = dataclasses.replace(
         tray.slides[0],
         status=SlideStatus.BLANK,
-        blank_fingerprint=raw_region_sha256(exports.split_slides(None)[0]),
+        blank_fingerprint=raw_region_sha256(exports.split_positions(None)[1]),
     )
     store.update_tray(1, slides=(blank, *tray.slides[1:]))
     auto.arm(1)

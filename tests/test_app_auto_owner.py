@@ -300,7 +300,7 @@ def test_blank_slots_ignore_live_and_remembered_flags(store, phase, live_flags):
         auto.run(2)
     auto.confirm_free_held(1)
     tray = auto._tray(2)
-    fingerprint = raw_region_sha256(exports.split_slides(None)[0])
+    fingerprint = raw_region_sha256(exports.split_positions(None)[1])
     blank = dataclasses.replace(
         tray.slides[0],
         status=SlideStatus.BLANK,
@@ -327,11 +327,13 @@ def test_refused_first_cleanup_never_releases_later_trays(store, monkeypatch, da
         auto.arm(number)
         auto.run(number)
     if damage == "raw_mismatch":
-        split = exports.split_slides
+        split = exports.split_positions
         monkeypatch.setattr(
             exports,
-            "split_slides",
-            lambda sweep: [dataclasses.replace(s, rgb=np.zeros_like(s.rgb)) for s in split(sweep)],
+            "split_positions",
+            lambda sweep: {
+                p: dataclasses.replace(s, rgb=np.zeros_like(s.rgb)) for p, s in split(sweep).items()
+            },
         )
     else:
         sweep = store.sweep_dir(1, 1)

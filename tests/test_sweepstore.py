@@ -80,3 +80,29 @@ def test_sweep_dpi_reads_meta_without_loading_arrays(tmp_path):
     assert sweep_dpi(tmp_path) == 600
     with pytest.raises(SweepFormatError):
         sweep_dpi(tmp_path / "missing")
+
+
+def test_scanned_positions_survive_sweep_roundtrip(tmp_path):
+    from dataclasses import replace
+
+    save_sweep(replace(_sweep(), positions=(1, 3)), tmp_path)
+    assert load_sweep(tmp_path).positions == (1, 3)
+
+
+def test_a_full_tray_meta_is_unchanged_and_an_old_sweep_loads_as_four_positions(tmp_path):
+    import json
+
+    save_sweep(_sweep(), tmp_path)
+    assert json.loads((tmp_path / "meta.json").read_text()) == {"dpi": 600, "holder": "slide4"}
+    assert load_sweep(tmp_path).positions == (1, 2, 3, 4)
+
+
+@pytest.mark.parametrize("positions", [[], [3, 1], [1, 9], "13", [1.5]])
+def test_damaged_positions_in_meta_raise_sweepformaterror(tmp_path, positions):
+    import json
+
+    save_sweep(_sweep(), tmp_path)
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    (tmp_path / "meta.json").write_text(json.dumps({**meta, "positions": positions}))
+    with pytest.raises(SweepFormatError, match="meta.json"):
+        load_sweep(tmp_path)

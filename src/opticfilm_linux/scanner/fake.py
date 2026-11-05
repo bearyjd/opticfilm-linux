@@ -42,6 +42,11 @@ class FakeScanner:
             raise ScanError(
                 f"fake sweep was recorded at {sweep.dpi} dpi but {settings.dpi} dpi was requested"
             )
+        if settings.positions != sweep.positions:  # it replays a sweep; it cannot rescan one
+            raise ScanError(
+                f"fake sweep holds positions {sweep.positions} but {settings.positions} "
+                "were requested"
+            )
         if not settings.infrared:
             return dataclasses.replace(sweep, ir=None)
         return sweep

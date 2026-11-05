@@ -43,7 +43,7 @@ def delivery(tmp_path, monkeypatch):
         monkeypatch.setattr(export, "load_sweep", lambda _: SimpleNamespace(dpi=600))
         rgb = np.full((32, 40, 3), 32000, dtype=np.uint16)
         monkeypatch.setattr(
-            export, "split_slides", lambda _: [Slide(0, rgb, None, Box(0, 0, 40, 32))]
+            export, "split_positions", lambda _: {1: Slide(0, rgb, None, Box(0, 0, 40, 32))}
         )
         monkeypatch.setattr(
             export, "enhance_slide", lambda *_: np.full((32, 40, 3), 32000, dtype=np.uint16)

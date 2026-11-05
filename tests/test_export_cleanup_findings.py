@@ -89,13 +89,13 @@ def test_cleanup_rechecks_album_location_after_commit(delivery, monkeypatch):
 
 def test_cleanup_requires_receipt_to_match_live_raw(delivery, monkeypatch):
     store, _ = _delivered(delivery)
-    original = export.split_slides
+    original = export.split_positions
 
     def new_raw(sweep):
         slides = original(sweep)
-        return [dataclasses.replace(slides[0], rgb=np.zeros_like(slides[0].rgb))]
+        return {1: dataclasses.replace(slides[1], rgb=np.zeros_like(slides[1].rgb))}
 
-    monkeypatch.setattr(export, "split_slides", new_raw)
+    monkeypatch.setattr(export, "split_positions", new_raw)
     with pytest.raises(export.CleanupRefused, match="current raw scan"):
         export.cleanup_raw(store, 1)
     _assert_raw_kept(store)

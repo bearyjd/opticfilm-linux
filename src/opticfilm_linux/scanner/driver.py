@@ -32,7 +32,7 @@ from typing import IO
 import numpy as np
 import tifffile
 
-from opticfilm_linux.model import HolderKind, RawSweep, ScanSettings
+from opticfilm_linux.model import ALL_POSITIONS, HolderKind, RawSweep, ScanSettings
 from opticfilm_linux.provenance import diagnostics_from_files
 from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import (
@@ -42,10 +42,10 @@ from opticfilm_linux.scanner.base import (
     StatusReading,
 )
 from opticfilm_linux.scanner.interrupted import ScanInterrupted, ScannerRefused
+from opticfilm_linux.scanner.positions import slides_arg
 
 log = logging.getLogger(__name__)
 
-SLIDES = "1-4"  # the four openings of the mounted-slide holder
 CLEAN_ENV = "OPTICFILM_DRIVER_CLEAN"  # "1" restores the driver's own dust clean (no --no-clean)
 DARK_FALLBACK = "default"  # use the vendor offset codes if the dark reading is a stale buffer
 FRAME_QUARTER_TURNS = 1  # counter-clockwise; turns a frame so the slide's long side lies along x
@@ -481,7 +481,8 @@ class DriverScanner:
         work = Path(tempfile.mkdtemp(prefix="opticfilm-scan-", dir=base))
         try:
             output = work / "tray.tiff"
-            command = ["scan", "--slides", SLIDES, "--dpi", str(settings.dpi), "--ir"]
+            positions, dpi = settings.positions, str(settings.dpi)
+            command = ["scan", "--slides", slides_arg(positions), "--dpi", dpi, "--ir"]
             if os.environ.get(CLEAN_ENV, "").strip() != "1":
                 command.append("--no-clean")  # the app's IR dust repair runs on the raw frames
             command += ["--dark-fallback", DARK_FALLBACK, "-o", str(output)]
@@ -504,12 +505,13 @@ class DriverScanner:
                     f"the driver was stopped mid-scan. Driver said: {_tail(result.output)}"
                 )
             _ended_by_itself()
-            failed = _missing_frames(work)
+            failed = _missing_frames(work, positions)
             if failed:
                 self._note_failure()
             self._keep_sidecars(work, failed=failed)
-            sweep = _stitch(work, settings.dpi, result)
-            self.scan_diagnostics = diagnostics_from_files(list(work.glob("*.diag.json")), 4)
+            sweep = _stitch(work, settings.dpi, result, positions)
+            sidecars = list(work.glob("*.diag.json"))
+            self.scan_diagnostics = diagnostics_from_files(sidecars, len(ALL_POSITIONS), positions)
             return sweep
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -890,8 +892,8 @@ def _frame_files(work: Path, number: int) -> tuple[Path, Path]:
     return work / f"tray-f{number}.overscan.tiff", work / f"tray-f{number}-ir.overscan.tiff"
 
 
-def _missing_frames(work: Path) -> bool:
-    return any(not p.is_file() for n in range(1, 5) for p in _frame_files(work, n))
+def _missing_frames(work: Path, positions: tuple[int, ...]) -> bool:
+    return any(not p.is_file() for n in positions for p in _frame_files(work, n))
 
 
 def _read_ir(path: Path) -> np.ndarray:
@@ -935,10 +937,10 @@ def _turned_shape(path: Path) -> tuple[int, int]:
     return (width, height) if FRAME_QUARTER_TURNS % 2 else (height, width)
 
 
-def _stitch(work: Path, dpi: int, result: _Result) -> RawSweep:
-    if _missing_frames(work):
+def _stitch(work: Path, dpi: int, result: _Result, positions: tuple[int, ...]) -> RawSweep:
+    if _missing_frames(work, positions):
         raise ScanError(f"{POWER_CYCLE_HINT} Driver said: {_tail(result.output)}")
-    paths = [_frame_files(work, n) for n in range(1, 5)]
+    paths = [_frame_files(work, n) for n in positions]
     _check_frames(paths)
     shapes = [_turned_shape(rgb_path) for rgb_path, _ in paths]
     rows, width = sum(h for h, _ in shapes), max(w for _, w in shapes)
@@ -968,6 +970,8 @@ def _stitch(work: Path, dpi: int, result: _Result) -> RawSweep:
                 _read_ir(ir_path), FRAME_QUARTER_TURNS
             )
             row += height
-        return RawSweep(rgb=rgb_all, ir=ir_all, dpi=dpi, holder=HolderKind.SLIDE4)
+        return RawSweep(
+            rgb=rgb_all, ir=ir_all, dpi=dpi, holder=HolderKind.SLIDE4, positions=positions
+        )
     finally:
         shutil.rmtree(stack, ignore_errors=True)  # the mappings stay valid after unlinking

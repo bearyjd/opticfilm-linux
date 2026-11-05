@@ -347,3 +347,32 @@ def test_legacy_blank_can_be_fingerprinted_and_confirmed(tmp_path):
         store, 1, (1,), expected_fingerprints={1: slide.blank_fingerprint}, expected_sweep_version=1
     )
     assert _tray(store).slides[0].empty_confirmed is not None
+
+
+def _three_slide_sweep() -> RawSweep:
+    """Openings 1, 3 and 4 scanned; opening 2 was left out on purpose."""
+    sweep = make_sweep(dpi=600, filled=(True, True, True), dust=12)
+    return dataclasses.replace(sweep, positions=(1, 3, 4))
+
+
+def test_a_three_slide_sweep_enhances_into_records_at_its_scanned_positions(tmp_path):
+    sweep = _three_slide_sweep()
+    store = _store(tmp_path, sweep)
+    enhance_tray(store, 1)
+    tray = _tray(store)
+    assert tray.stage is TrayStage.REVIEW
+    assert [s.position for s in tray.slides] == [1, 3, 4]
+    for position in (1, 3, 4):
+        assert store.preview_path(1, position, "after").is_file()
+    assert not store.preview_path(1, 2, "after").exists()
+
+
+def test_reenhancing_a_three_slide_tray_uses_the_opening_of_that_position(tmp_path):
+    store = _store(tmp_path, _three_slide_sweep())
+    enhance_tray(store, 1)
+    before = store.preview_path(1, 3, "after").read_bytes()
+    store.preview_path(1, 3, "after").unlink()
+    reenhance_slide(store, 1, 3)
+    assert store.preview_path(1, 3, "after").read_bytes() == before
+    with pytest.raises(BatchError):
+        reenhance_slide(store, 1, 2)

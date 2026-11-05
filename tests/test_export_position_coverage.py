@@ -10,8 +10,8 @@ from test_export_safety import delivery as delivery
 @pytest.mark.parametrize("positions", [(1,), (1, 1), (1, 3), (0, 2), (-1, 2), (True, 2)])
 def test_cleanup_requires_unique_complete_raw_positions(delivery, monkeypatch, positions):
     store, _ = _delivered(delivery)
-    split = export.split_slides(None)
-    monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
     slide = store.snapshot().trays[0].slides[0]
     store.update_tray(1, slides=tuple(dataclasses.replace(slide, position=p) for p in positions))
     with pytest.raises(export.CleanupRefused, match="positions"):
@@ -21,8 +21,8 @@ def test_cleanup_requires_unique_complete_raw_positions(delivery, monkeypatch, p
 
 def test_blank_positions_count_toward_complete_raw_coverage(delivery, monkeypatch):
     store, _ = _delivered(delivery)
-    split = export.split_slides(None)
-    monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
     slide = store.snapshot().trays[0].slides[0]
     blank = _confirmed_blank(store.snapshot().trays[0], slide, position=2, exports=())
     store.update_tray(1, slides=(slide, blank))
@@ -32,8 +32,8 @@ def test_blank_positions_count_toward_complete_raw_coverage(delivery, monkeypatc
 
 def test_duplicate_blank_cannot_conceal_unrepresented_raw_position(delivery, monkeypatch):
     store, _ = _delivered(delivery)
-    split = export.split_slides(None)
-    monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
     slide = store.snapshot().trays[0].slides[0]
     blank = _confirmed_blank(store.snapshot().trays[0], slide, exports=())
     store.update_tray(1, slides=(slide, blank))
