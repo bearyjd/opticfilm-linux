@@ -4,11 +4,13 @@
 frame per opening, with the slide's long side along the transport (so a frame is a slide turned
 a quarter turn, with dark holder on both sides). Behaviour is chosen with FAKE_DRIVER_MODE:
 ok | coverage_fail (overscan files only, exit 1, as for a slide the strip detector rejects) |
-cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pause).
+cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pause) |
+missing_frame (the last requested frame is not written, exit 0).
 ``--slides`` takes comma lists and inclusive ranges like the real driver, but is deliberately
 STRICTER: the real one keeps duplicates and scans "3,1" in that order, while this one accepts
 only an ascending, unique list within 1-4 (exit 2 otherwise), so an app bug that sends such a
 list fails a test. Only the requested frames are written, each named by its frame NUMBER.
+``eject`` behaves as FAKE_DRIVER_EJECT_MODE says (ok | skipped | fail | hang, see ``_eject``).
 ``load --next-strip`` exits with FAKE_DRIVER_LOAD_EXIT after FAKE_DRIVER_LOAD_DELAY seconds.
 FAKE_DRIVER_SYNTH=1 makes the frames up instead (``synth``: the real frame geometry at the
 requested --dpi, written strip by strip) rather than cutting them from FAKE_DRIVER_SWEEP.
@@ -132,6 +134,8 @@ def _scan_body(args: argparse.Namespace) -> int:
     if os.environ.get("FAKE_DRIVER_SYNTH") == "1":
         return _write_synthetic(out, args.dpi, mode, wanted)
     for number, rgb, ir in _frames(Path(os.environ["FAKE_DRIVER_SWEEP"]), wanted):
+        if mode == "missing_frame" and number == wanted[-1]:
+            continue
         stem = out.with_name(f"{out.stem}-f{number}")
         tifffile.imwrite(f"{stem}.overscan.tiff", rgb)
         tifffile.imwrite(f"{stem}-ir.overscan.tiff", np.stack([ir, ir, ir], axis=2))
@@ -185,12 +189,32 @@ def main() -> int:
         _trace("doctor end")
         return int(os.environ.get("FAKE_DRIVER_DOCTOR_EXIT", "0"))
     if args.command == "eject":
-        _trace("eject")
-        print("ejected")
-        return int(os.environ.get("FAKE_DRIVER_EJECT_EXIT", "0"))
+        return _eject()
     if args.command == "load":
         return _load(args)
     return _scan(args)
+
+
+def _eject() -> int:
+    """FAKE_DRIVER_EJECT_MODE: ok | skipped (the loader sensor said no magazine: nothing sent,
+    a warning, exit 0, no ``ejected`` line) | fail (unconfirmed, exit 1) | hang (until Ctrl-C or
+    FAKE_DRIVER_EJECT_DELAY seconds). FAKE_DRIVER_EJECT_EXIT still sets the exit code of ok."""
+    _trace("eject")
+    mode = os.environ.get("FAKE_DRIVER_EJECT_MODE", "ok")
+    if mode == "skipped":
+        print("WARNING of135i: no magazine detected; eject not sent", file=sys.stderr)
+        return 0
+    if mode == "fail":
+        print("ERROR of135i: EjectIncompleteError: eject not confirmed", flush=True)
+        return 1
+    if mode == "hang":
+        try:
+            time.sleep(float(os.environ.get("FAKE_DRIVER_EJECT_DELAY", "30")))
+        except KeyboardInterrupt:
+            print("ERROR of135i: interrupted; failing closed", flush=True)
+            return 130
+    print("ejected")
+    return int(os.environ.get("FAKE_DRIVER_EJECT_EXIT", "0"))
 
 
 def _load(args: argparse.Namespace) -> int:

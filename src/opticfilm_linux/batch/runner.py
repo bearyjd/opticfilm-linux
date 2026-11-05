@@ -22,7 +22,13 @@ from contextlib import contextmanager
 
 from opticfilm_linux.batch import export, review
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
-from opticfilm_linux.batch.events import BatchEvent, SlideUpdated, TrayFailed, TrayStageChanged
+from opticfilm_linux.batch.events import (
+    BatchEvent,
+    ScanFinished,
+    SlideUpdated,
+    TrayFailed,
+    TrayStageChanged,
+)
 from opticfilm_linux.batch.layout import allocate_location, location_is_active
 from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import (
@@ -323,7 +329,9 @@ class BatchRunner:
 
     # -- worker jobs ---------------------------------------------------------------------
 
-    def _scan_job(self, number: int) -> None:
+    def _scan_job(self, number: int) -> int | None:
+        """The driver's exit code once the sweep is saved and the tray is SCANNED; None if the
+        scan failed (``ScanFinished``)."""
         tray = self._tray(number)
         defaults = self._store.snapshot().defaults
         settings = ScanSettings(
@@ -336,6 +344,7 @@ class BatchRunner:
         final = self._store.sweep_dir(number, tray.sweep_version)
         try:
             sweep = self._scanner.scan_holder(settings)
+            exit_code = getattr(self._scanner, "scan_exit_code", None) or 0  # this scan's own
             check_scanned_positions(sweep, settings)
             save_sweep(sweep, tmp)
             os.replace(tmp, final)
@@ -346,10 +355,11 @@ class BatchRunner:
                 raise  # cut off (Ctrl-C): _report_crash flags the tray as interrupted
             message = str(exc) if isinstance(exc, ScanInterrupted) else _describe(exc)
             self._fail(number, message, (TrayStage.SCANNING,))
-            return
+            return None
         self._store.update_tray(number, stage=TrayStage.SCANNED, evidence=sweep.evidence)
         self._emit(TrayStageChanged(number, TrayStage.SCANNED))
         self._submit(self._enhance_pool, self._enhance_job, number)
+        return exit_code
 
     def _enhance_job(self, number: int) -> None:
         self._emit(TrayStageChanged(number, TrayStage.ENHANCING))
@@ -583,7 +593,7 @@ class BatchRunner:
         def sequenced_job():
             self._operation.sequence = sequence
             try:
-                job(number, *args)
+                return job(number, *args)
             finally:
                 del self._operation.sequence
 
@@ -605,8 +615,14 @@ class BatchRunner:
                 self._report_crash(number, error, scan, sequence)
         finally:
             with self._lock:
-                self._pending.discard(future)
+                scan = future in self._scans
                 self._scans.discard(future)
+                stopping = self._stopping
+            if scan:  # after leaving _scans, before _pending: wait_idle() sees it queued
+                code = _scan_exit(future)
+                self._emit(ScanFinished(number, not stopping and code is not None, code or 0))
+            with self._lock:
+                self._pending.discard(future)
 
     def _report_crash(
         self, number: int, error: BaseException, scan: bool = False, sequence: int = 0
@@ -636,6 +652,14 @@ class BatchRunner:
             _done, not_done = wait(pending, timeout=remaining)
             if not_done:
                 return False
+
+
+def _scan_exit(future: Future) -> int | None:
+    """The exit code a scan job returned; None if it failed, crashed or never ran."""
+    if future.cancelled() or future.exception() is not None:
+        return None
+    result = future.result()
+    return result if type(result) is int else None
 
 
 def _describe(exc: BaseException) -> str:
