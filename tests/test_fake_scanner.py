@@ -112,3 +112,14 @@ def test_scanner_not_ready_is_a_scan_error():
 
 def test_status_values_are_stable_strings():
     assert ScannerStatus.READY == "ready" and ScannerStatus.NOT_CONNECTED == "not_connected"
+
+
+def test_fake_scanner_replays_only_the_positions_its_sweep_holds(tmp_path):
+    import dataclasses
+
+    sweep = dataclasses.replace(make_sweep(dpi=600, filled=(True, True)), positions=(1, 3))
+    save_sweep(sweep, tmp_path)
+    got = FakeScanner(tmp_path).scan_holder(ScanSettings(dpi=600, positions=(1, 3)))
+    assert got.positions == (1, 3)
+    with pytest.raises(ScanError, match="positions"):
+        FakeScanner(tmp_path).scan_holder(ScanSettings(dpi=600))

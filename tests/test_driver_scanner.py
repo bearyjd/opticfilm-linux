@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -6,10 +9,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from opticfilm_linux.model import HolderKind, ScanSettings
-from opticfilm_linux.pipeline.split import split_slides
+from opticfilm_linux.model import ALL_POSITIONS, HolderKind, ScanSettings
+from opticfilm_linux.pipeline.split import split_positions, split_slides
 from opticfilm_linux.scanner.base import ScanError, ScannerStatus
-from opticfilm_linux.scanner.driver import DriverConfig, DriverScanner, parse_doctor
+from opticfilm_linux.scanner.driver import (
+    POWER_CYCLE_HINT,
+    DriverConfig,
+    DriverScanner,
+    parse_doctor,
+)
+from opticfilm_linux.scanner.positions import SLIDES, slides_arg
 from opticfilm_linux.sweepstore import load_sweep
 
 FAKE_DRIVER = Path(__file__).parent / "fake_driver"
@@ -233,3 +242,110 @@ def test_a_frame_with_the_wrong_number_of_channels_is_refused(scanner_for, tmp_p
     )
     with pytest.raises(ScanError, match="channels"):
         scanner.scan_holder(ScanSettings(dpi=600))
+
+
+# -- scanned positions ---------------------------------------------------------------------
+
+MAIN_ARGV = [
+    *["scan", "--slides", "1-4", "--dpi", "3600", "--ir", "--no-clean"],
+    *["--dark-fallback", "default"],
+]
+
+
+def test_argv_with_the_default_positions_is_identical_to_main(scanner_for, tmp_path):
+    log = tmp_path / "argv.json"
+    scanner_for(FAKE_DRIVER_ARGV=str(log)).scan_holder(ScanSettings(dpi=3600))
+    argv = json.loads(log.read_text())
+    assert argv[:-2] == MAIN_ARGV and argv[-2] == "-o" and argv[-1].endswith("/tray.tiff")
+
+
+@pytest.mark.parametrize(
+    "positions, spec",
+    [((1, 2, 3, 4), "1-4"), ((1, 2, 3), "1-3"), ((1, 2), "1-2"), ((1,), "1"), ((1, 3), "1,3")]
+    + [((2, 4), "2,4"), ((1, 2, 4), "1,2,4"), ((2, 3, 4), "2-4"), ((1, 3, 4), "1,3,4")],
+)
+def test_the_slides_argument_is_a_compact_ascending_spec(positions, spec):
+    assert slides_arg(positions) == spec
+    assert slides_arg(ALL_POSITIONS) == SLIDES
+
+
+@pytest.mark.parametrize("positions", [(), (3, 1), (2, 2), (0,), (5,), (1, 2, 3, 4, 5)])
+def test_the_slides_argument_refuses_a_list_the_driver_could_misread(positions):
+    with pytest.raises(ValueError, match="positions"):
+        slides_arg(positions)
+
+
+@pytest.mark.parametrize("positions", [(1, 3), (2, 4), (1, 2, 3, 4), (1, 2, 3)])
+def test_only_the_requested_openings_are_scanned_and_map_to_their_positions(
+    scanner_for, sweep600_dir, tmp_path, positions
+):
+    log = tmp_path / "argv.json"
+    scanner = scanner_for(FAKE_DRIVER_ARGV=str(log))
+    sweep = scanner.scan_holder(ScanSettings(dpi=600, positions=positions))
+    argv = json.loads(log.read_text())
+    assert argv[argv.index("--slides") + 1] == slides_arg(positions)
+    assert sweep.positions == positions
+    original = split_positions(load_sweep(sweep600_dir))
+    got = split_positions(sweep)
+    assert tuple(got) == positions
+    for position in positions:
+        assert np.array_equal(got[position].rgb, original[position].rgb)
+        assert np.array_equal(got[position].ir, original[position].ir)
+
+
+def test_diagnostics_stay_keyed_by_frame_number_and_skipped_frames_are_quiet(scanner_for, caplog):
+    scanner = scanner_for()
+    with caplog.at_level("WARNING"):
+        scanner.scan_holder(ScanSettings(dpi=600, positions=(1, 3)))
+    diagnostics = scanner.scan_diagnostics
+    assert [json.loads(d) for d in diagnostics] == [{"frame": 1}, {}, {"frame": 3}, {}]
+    assert "missing or ambiguous" not in caplog.text
+
+
+def test_a_missing_requested_frame_still_says_to_power_cycle(scanner_for, monkeypatch):
+    scanner = scanner_for()
+    real = scanner._run
+
+    def lost_frame(args, timeout, keep_log):
+        result = real(args, timeout, keep_log)
+        work = Path(args[args.index("-o") + 1]).parent
+        (work / "tray-f3-ir.overscan.tiff").unlink()
+        return result
+
+    monkeypatch.setattr(scanner, "_run", lost_frame)
+    with pytest.raises(ScanError) as caught:
+        scanner.scan_holder(ScanSettings(dpi=600, positions=(1, 3)))
+    assert POWER_CYCLE_HINT in str(caught.value)
+
+
+@pytest.mark.parametrize("spec", ["3,1", "1,1", "0-2", "1-5", "4-2"])
+def test_the_fake_driver_refuses_a_slide_list_the_real_one_would_misread(
+    sweep600_dir, tmp_path, spec
+):
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(FAKE_DRIVER), os.environ.get("PYTHONPATH", "")]),
+        "FAKE_DRIVER_SWEEP": str(sweep600_dir),
+    }
+    out = tmp_path / "tray.tiff"
+    command = [sys.executable, "-m", "of135i", "scan", "--slides", spec, "--dpi", "600"]
+    done = subprocess.run([*command, "-o", str(out)], env=env, capture_output=True, timeout=60)
+    assert done.returncode == 2 and not list(tmp_path.glob("tray-f*"))
+
+
+@pytest.mark.parametrize("spec", ["1-", "-2", "1,", ",1", "1--2", "a"])
+def test_the_fake_driver_refuses_a_malformed_slide_list(sweep600_dir, tmp_path, spec):
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(FAKE_DRIVER), os.environ.get("PYTHONPATH", "")]),
+        "FAKE_DRIVER_SWEEP": str(sweep600_dir),
+    }
+    out = tmp_path / "tray.tiff"
+    command = [sys.executable, "-m", "of135i", "scan", "--slides", spec, "--dpi", "600"]
+    done = subprocess.run([*command, "-o", str(out)], env=env, capture_output=True, timeout=60)
+    assert done.returncode == 2 and not list(tmp_path.glob("tray-f*"))
+
+
+def test_the_positions_error_names_the_holder_openings():
+    with pytest.raises(ValueError, match="openings 1-4"):
+        ScanSettings(positions=(5,))
