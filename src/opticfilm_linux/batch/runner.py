@@ -31,6 +31,7 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
     TrayStage,
 )
+from opticfilm_linux.batch.reorient import reorient_preview
 from opticfilm_linux.batch.store import INTERRUPTED_SCAN, BatchError, BatchStore
 from opticfilm_linux.model import ScanSettings
 from opticfilm_linux.scanner import interrupted
@@ -159,18 +160,24 @@ class BatchRunner:
         self._queue_stale_previews()  # edits whose preview was never redone
 
     def set_batch_orientation(self, rotation: int, mirror: bool) -> tuple[int, ...]:
-        """Turn and flip the whole batch; every affected slide is re-enhanced in the background.
+        """Turn and flip the whole batch; current previews are turned at once, others are
+        re-enhanced in the background.
 
         Returns the trays left as they were because their raw scans were removed.
         """
+        old = self._store.snapshot()
         skipped = review.set_batch_orientation(self._store, rotation, mirror)
+        self._turn_previews(old, [(t.number, s.position) for t in old.trays for s in t.slides])
         self._queue_stale_previews()
         return skipped
 
     def edit_slide(self, number: int, position: int, settings: SlideSettings) -> None:
-        """Apply per-slide settings now; the slide is re-enhanced in the background."""
+        """Apply per-slide settings now; the slide is re-enhanced in the background, unless
+        only its turn or flip changed and its preview could be turned at once."""
+        old = self._store.snapshot()
         review.apply_slide_settings(self._store, number, position, settings)
-        self._submit(self._enhance_pool, self._reenhance_job, number, position)
+        if not self._turn_previews(old, [(number, position)]):
+            self._submit(self._enhance_pool, self._reenhance_job, number, position)
 
     def edit_many(self, keys, changes=None, *, status=None) -> review.BulkEditResult:
         """Apply one atomic bulk edit and queue a yielding preview drain.
@@ -182,10 +189,23 @@ class BatchRunner:
                 raise ValueError("provide settings or status, not both")
             result = review.set_status_many(self._store, keys, status)
         else:
+            old = self._store.snapshot()
             result = review.apply_settings_many(self._store, keys, changes)
+            self._turn_previews(old, result.before)
         self._queue_stale_previews()
         if status is not None:
             for number, position in result.before:
+                self._emit(SlideUpdated(number, position))
+        return result
+
+    def restore_many(self, before) -> review.BulkEditResult:
+        """Undo a bulk edit; turned-back previews are turned at once, the rest re-rendered."""
+        old = self._store.snapshot()
+        result = review.restore_many(self._store, before)
+        turned = self._turn_previews(old, result.before)
+        self._queue_stale_previews()
+        for number, position in result.before:
+            if (number, position) not in turned:
                 self._emit(SlideUpdated(number, position))
         return result
 
@@ -295,6 +315,26 @@ class BatchRunner:
         self._emit(SlideUpdated(number, position))
 
     # -- helpers -------------------------------------------------------------------------
+
+    def _turn_previews(self, old: BatchManifest, keys) -> frozenset:
+        """Turn the preview of each slide whose only change since ``old`` is its orientation.
+
+        Returns the keys done (each with a ``SlideUpdated``); the others stay stale. A failure
+        leaves the previous preview in place and is reported as an event.
+        """
+        new = self._store.snapshot()
+        done = set()
+        for key in keys:
+            try:
+                turned = reorient_preview(self._store, old, new, key)
+            except Exception as exc:  # the slide stays stale, so the full re-enhance takes over
+                log.warning("could not turn the preview of slide %s", key, exc_info=True)
+                self._emit(TrayFailed(key[0], _describe(exc)))
+                continue
+            if turned:
+                done.add(key)
+                self._emit(SlideUpdated(*key))
+        return frozenset(done)
 
     def _queue_stale_previews(self) -> None:
         with self._lock:
