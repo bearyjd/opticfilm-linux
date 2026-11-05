@@ -114,7 +114,7 @@ def _common(values):
     return values[0] if all(value == values[0] for value in values) else None
 
 
-def _meta_fields(manifest, pairs) -> dict:
+def _meta_fields(manifest, pairs, selection: Selection) -> dict:
     """Common-or-mixed resolved metadata of ``(tray, slide)`` pairs, else of the batch."""
     if manifest is None:
         return {}
@@ -136,13 +136,8 @@ def _meta_fields(manifest, pairs) -> dict:
         ),
         "meta_note": _common(notes) or "",
         "batch_meta": (("description", batch.description), ("date", text(batch))),
+        "meta_scope": "slides" if pairs else "tray" if selection.trays else "batch",
     }
-
-
-def _meta_scope(manifest, pairs, selection: Selection) -> str:
-    if manifest is None:
-        return ""
-    return "slides" if pairs else "tray" if selection.trays else "batch"
 
 
 def selection_fields(manifest, selection: Selection) -> dict:
@@ -191,8 +186,7 @@ def selection_fields(manifest, selection: Selection) -> dict:
                 )
             ),
             tuple(sorted({number for number, _ in selection.keys} | selection.trays, reverse=True)),
-            **_meta_fields(manifest, pairs),
-            meta_scope=_meta_scope(manifest, pairs, selection),
+            **_meta_fields(manifest, pairs, selection),
         ),
     }
 
