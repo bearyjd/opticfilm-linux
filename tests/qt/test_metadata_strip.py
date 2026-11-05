@@ -240,3 +240,29 @@ def test_the_next_tray_edit_link_focuses_the_batch_mode(strip):
     _wait(bridge, lambda: not bridge.selection)
     _wait(bridge, lambda: find(root, "metaDescription").property("activeFocus"))
     assert find(root, "metadataStrip").property("scope") == "batch"
+
+
+def test_the_menu_key_on_a_tray_header_opens_the_tray_menu(strip):
+    bridge, root, _store = strip
+    header = _visual(root, "sheetTray_2")
+    header.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(root, Qt.Key.Key_Menu)
+    menu = find(root, "trayMenu")
+    _wait(bridge, lambda: menu.property("opened"))
+    assert find(root, "sheetView").property("menuTray") == 2
+    assert find(root, "editTrayMeta").property("text") == "Edit tray description / date…"
+    menu.setProperty("visible", False)
+
+
+def test_a_refusal_from_the_slot_is_shown_inline(strip, monkeypatch):
+    bridge, root, _store = strip
+
+    def refuse(*_args):
+        raise ValueError("This batch is open read-only")
+
+    monkeypatch.setattr(bridge._controller, "set_selection_meta", refuse)
+    select_all(bridge, root)
+    type_into(root, "metaDescription", "x")
+    error = find(root, "metaError")
+    _wait(bridge, lambda: error.property("text") == "This batch is open read-only")
+    assert error.property("visible")

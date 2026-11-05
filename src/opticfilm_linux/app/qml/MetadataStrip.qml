@@ -107,12 +107,16 @@ Rectangle {
         if (!editable)
             return;
         const batchScope = scopeBox.currentValue;
+        let refusal;
         if (scope === "batch")
-            error = kind === "set" ? bridge.setBatchMeta(field, value, batchScope) : bridge.clearBatchMeta(field, batchScope);
+            refusal = kind === "set" ? bridge.setBatchMeta(field, value, batchScope) : bridge.clearBatchMeta(field, batchScope);
         else if (scope === "tray")
-            error = kind === "set" ? bridge.setTrayMeta(singleTray, field, value) : kind === "clear" ? bridge.clearTrayMeta(singleTray, field) : bridge.resetTrayMeta(singleTray, field);
+            refusal = kind === "set" ? bridge.setTrayMeta(singleTray, field, value) : kind === "clear" ? bridge.clearTrayMeta(singleTray, field) : bridge.resetTrayMeta(singleTray, field);
         else
-            error = kind === "set" ? bridge.setSelectionMeta(field, value) : kind === "clear" ? bridge.clearSelectionMeta(field) : bridge.resetSelectionMeta(field);
+            refusal = kind === "set" ? bridge.setSelectionMeta(field, value) : kind === "clear" ? bridge.clearSelectionMeta(field) : bridge.resetSelectionMeta(field);
+        // Clear and Reset touch both fields: keep the first refusal of the pair
+        if (refusal !== "" || kind === "set")
+            error = refusal;
     }
 
     function applyDescription() {
@@ -249,6 +253,7 @@ Rectangle {
                 Accessible.description: qsTr("Leaves them blank here instead of inheriting")
                 enabled: strip.canClear
                 onClicked: {
+                    strip.error = "";
                     for (const field of ["description", "date"]) {
                         if (!strip.isBlankHere(field))
                             strip.apply(field, "clear");
@@ -262,6 +267,7 @@ Rectangle {
                 visible: strip.scope !== "batch"
                 enabled: strip.canReset
                 onClicked: {
+                    strip.error = "";
                     for (const field of ["description", "date"]) {
                         if (strip.ownLevel(field))
                             strip.apply(field, "reset");
