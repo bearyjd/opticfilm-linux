@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpticFilm Linux
+Comment=Scan and review film slides
+Exec=opticfilm
+Icon=io.github.bearyjd.OpticFilmLinux
+Terminal=false
+Categories=Graphics;Photography;Scanning;
+Keywords=scanner;slide;film;negative;
+StartupNotify=true
