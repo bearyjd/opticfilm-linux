@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from opticfilm_linux.batch import reorient as reorient_module
+from opticfilm_linux.batch import review
 from opticfilm_linux.batch import runner as runner_module
 from opticfilm_linux.batch.enhance import reenhance_slide
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed
@@ -411,3 +412,125 @@ def test_batch_orientation_turns_in_the_background_without_per_slide_writes(
     updated = {(e.number, e.position) for e in _events(runner) if isinstance(e, SlideUpdated)}
     assert updated >= set(keys)
 
+
+def _during_turn(monkeypatch, action):
+    """Run ``action`` after the turned preview is staged but before it is published."""
+    real, writes = reorient_module.write_preview, []
+
+    def hooked(rgb8, path):
+        real(rgb8, path)
+        writes.append(path)
+        action()
+
+    monkeypatch.setattr(reorient_module, "write_preview", hooked)
+    return writes
+
+
+def _inode(store, key):
+    return store.preview_path(*key, "after").stat().st_ino
+
+
+def _set_tray(store, number, **changes):
+    store.update(
+        lambda m: dataclasses.replace(
+            m,
+            trays=tuple(
+                dataclasses.replace(t, **changes) if t.number == number else t for t in m.trays
+            ),
+        )
+    )
+
+
+def test_a_re_enhance_finishing_during_the_turn_wins(store, runner, renders, monkeypatch):
+    finished = {}
+
+    def render_meanwhile():
+        reenhance_slide(store, 1, 2)  # publishes the full render with the new settings
+        finished["inode"] = _inode(store, (1, 2))
+
+    writes = _during_turn(monkeypatch, render_meanwhile)
+    renders.gate.clear()
+    runner.edit_slide(1, 2, SlideSettings(rotation=90))
+    assert writes and _inode(store, (1, 2)) == finished["inode"]  # not replaced by the turn
+    assert not _slide(store, 1, 2).preview_stale
+    renders.gate.set()
+    assert runner.wait_idle(TIMEOUT)
+
+
+def test_a_brightness_edit_during_the_turn_keeps_the_slide_stale(
+    store, runner, renders, monkeypatch
+):
+    original = _inode(store, (1, 2))
+    edited = SlideSettings(rotation=90, brightness_ev=0.5)
+    writes = _during_turn(monkeypatch, lambda: review.apply_slide_settings(store, 1, 2, edited))
+    renders.gate.clear()
+    runner.edit_slide(1, 2, SlideSettings(rotation=90))
+    slide = _slide(store, 1, 2)
+    assert writes and slide.settings == edited and slide.preview_stale
+    assert _inode(store, (1, 2)) == original  # the old preview stays until the full render
+    renders.gate.set()
+    assert runner.wait_idle(TIMEOUT)
+    assert renders == [(1, 2)] and not _slide(store, 1, 2).preview_stale
+
+
+def test_a_rescan_during_the_turn_is_not_overwritten(store, runner, renders, monkeypatch):
+    original = _inode(store, (1, 2))
+    version = _slide_tray(store, 1).sweep_version
+    writes = _during_turn(monkeypatch, lambda: _set_tray(store, 1, sweep_version=version + 1))
+    renders.gate.clear()
+    runner.edit_slide(1, 2, SlideSettings(rotation=90))
+    assert writes and _inode(store, (1, 2)) == original
+    assert _slide(store, 1, 2).preview_stale
+    renders.gate.set()
+    runner.wait_idle(TIMEOUT)
+
+
+def test_a_slide_turning_blank_during_the_turn_is_not_published(
+    store, runner, renders, monkeypatch
+):
+    original = _inode(store, (1, 2))
+    writes = _during_turn(monkeypatch, lambda: _set_slide(store, (1, 2), status=SlideStatus.BLANK))
+    renders.gate.clear()
+    runner.edit_slide(1, 2, SlideSettings(rotation=90))
+    assert writes and _inode(store, (1, 2)) == original
+    assert _slide(store, 1, 2).preview_stale
+    renders.gate.set()
+    runner.wait_idle(TIMEOUT)
+
+
+def _slide_tray(store, number):
+    return next(t for t in store.snapshot().trays if t.number == number)
+
+
+@pytest.mark.parametrize(
+    "tray_change", [{"mode": "negative"}, {"sweep_version": 99}], ids=["mode", "sweep"]
+)
+def test_a_tray_changed_between_the_snapshots_is_not_turned(store, runner, tray_change):
+    old = store.snapshot()
+    _set_tray(store, 1, **tray_change)
+    _set_slide(store, (1, 2), settings=SlideSettings(rotation=90), preview_stale=True)
+    assert runner._turn_previews(old, [(1, 2)]) == frozenset()
+    assert _slide(store, 1, 2).preview_stale
+
+
+def test_a_slide_blank_before_the_edit_is_not_turned(store, runner):
+    _set_slide(store, (1, 2), status=SlideStatus.BLANK)
+    old = store.snapshot()
+    _set_slide(
+        store,
+        (1, 2),
+        status=SlideStatus.NEEDS_LOOK,
+        settings=SlideSettings(rotation=90),
+        preview_stale=True,
+    )
+    assert store.master_path(1, 2).is_file()
+    assert runner._turn_previews(old, [(1, 2)]) == frozenset()
+    assert _slide(store, 1, 2).preview_stale
+
+
+def test_a_current_preview_is_left_alone(store, runner, monkeypatch):
+    writes = _during_turn(monkeypatch, lambda: None)
+    old = store.snapshot()
+    _set_slide(store, (1, 2), settings=SlideSettings(rotation=90))  # current: nothing to turn
+    assert runner._turn_previews(old, [(1, 2)]) == frozenset()
+    assert writes == []  # no image work at all
