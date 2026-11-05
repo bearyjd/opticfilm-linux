@@ -12,6 +12,7 @@ QQC2.ScrollView {
     property bool showBefore: false
     signal rescanRequested()
     signal reexportRequested()
+    signal metaEditRequested()
     clip: true
     contentWidth: availableWidth
     implicitWidth: 0
@@ -235,6 +236,14 @@ QQC2.ScrollView {
                 text: qsTr("Re-export selected")
                 onClicked: panel.reexportRequested()
             }
+        }
+        QQC2.Button {
+            objectName: "editMetaButton"
+            Layout.fillWidth: true
+            text: qsTr("Edit description / date")
+            Accessible.description: qsTr("Opens the description and date strip for the selected slides")
+            enabled: !bridge.readonly && panel.count > 0
+            onClicked: panel.metaEditRequested()
         }
         QQC2.Button {
             objectName: "rescanSelectionTray"

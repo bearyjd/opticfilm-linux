@@ -67,7 +67,7 @@ def test_edit_description_shows_the_strip_for_the_selection_in_a_crowded_window(
     pump(200)
     before = list(layout.bridge.selection)
     assert before
-    evaluate(layout, "editMetaAction", "trigger()")
+    evaluate(layout, "editMetaButton", "clicked()")
     pump(100)
     assert evaluate(layout, "metadataStrip", "visible && scope === 'slides'")
     assert evaluate(layout, "metaDescription", "activeFocus")

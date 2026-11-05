@@ -183,6 +183,17 @@ Kirigami.Page {
         onClosed: page.focusReview()
     }
     property bool nextTrayEditPending: false
+    property bool metaEditPending: false
+    // Inspector: Edit description / date shows the strip for the selection, even in a crowded
+    // short window, without changing the selection
+    function editSelectionMeta() {
+        if (inspectorDrawer.opened) {
+            metaEditPending = true;
+            inspectorDrawer.close();
+        } else {
+            metaStrip.focusSelection();
+        }
+    }
     function editNextTray() {
         if (trayDrawer.opened) {
             nextTrayEditPending = true;  // after the drawer hands focus back to the review
@@ -297,13 +308,6 @@ Kirigami.Page {
                         onTriggered: loadHelpDialog.open()
                     },
                     Kirigami.Action {
-                        objectName: "editMetaAction"
-                        text: qsTr("Edit description / date")
-                        icon.name: "document-edit"
-                        enabled: !bridge.readonly
-                        onTriggered: metaStrip.focusSelection()
-                    },
-                    Kirigami.Action {
                         objectName: "acceptAllAction"
                         text: qsTr("Accept all")
                         icon.name: "dialog-ok-apply"
@@ -374,6 +378,10 @@ Kirigami.Page {
         objectName: "inspectorDrawer"
         edge: Qt.RightEdge
         host: page
+        onClosed: if (page.metaEditPending) {
+            page.metaEditPending = false;
+            metaStrip.focusSelection();
+        }
     }
     TrayPane {
         id: trayPane
@@ -395,6 +403,7 @@ Kirigami.Page {
         anchors.fill: parent
         onReexportRequested: reexportDialog.open()
         onRescanRequested: rescanDialog.open()
+        onMetaEditRequested: page.editSelectionMeta()
     }
 
     ColumnLayout {
