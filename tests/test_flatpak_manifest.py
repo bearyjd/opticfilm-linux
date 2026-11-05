@@ -30,6 +30,7 @@ ALLOWED_FINISH_ARGS = re.compile(
 )
 BASE_APP = "io.qt.PySide.BaseApp"
 APP_ID = "io.github.bearyjd.OpticFilmLinux"
+DRIVER_URL = "https://github.com/bearyjd/opticfilm135i-linux.git"
 RUNTIME_VERSION = "6.11"
 BASE_PROVIDED = {"numpy"}  # shipped by the PySide BaseApp, so not a wheel source here
 WHEEL_NAME = re.compile(r"https://\S+/([A-Za-z0-9_.]+?)-")
@@ -221,9 +222,11 @@ def test_broad_device_without_note_is_reported():
 
 def test_driver_is_pinned_as_external_dependency():
     manifest = json.loads(MANIFEST.read_text())
-    git_urls = [s["url"] for s in sources(manifest) if s["type"] == "git"]
-    assert "https://github.com/cgillinger/opticfilm135i-linux.git" in git_urls
-    assert any("EXTERNAL" in note for note in manifest["x-notes"])
+    drivers = [s for s in sources(manifest) if s["type"] == "git" and s["url"] == DRIVER_URL]
+    assert len(drivers) == 1
+    assert COMMIT.fullmatch(drivers[0]["commit"]) and not PLACEHOLDER.search(drivers[0]["commit"])
+    assert not any("cgillinger" in s.get("url", "") for s in sources(manifest))
+    assert any("EXTERNAL" in note and "fork" in note for note in manifest["x-notes"])
 
 
 def test_python_dependencies_cover_pyproject():
