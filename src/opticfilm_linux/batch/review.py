@@ -15,7 +15,6 @@ from opticfilm_linux.batch.metadata import (
     MetaOverride,
     checked_meta,
     checked_override,
-    resolve,
 )
 from opticfilm_linux.batch.model import (
     NO_DELIVERY,
@@ -556,8 +555,11 @@ def _slide_metas(manifest: BatchManifest, selected, new_meta):
         if key not in selected:
             return slide
         del skipped[key]
+        meta = new_meta(key, slide.meta)
+        if meta == slide.meta:
+            return slide  # unchanged: nothing to write or undo
         before[key] = slide.meta
-        return dataclasses.replace(slide, meta=new_meta(key, slide.meta))
+        return dataclasses.replace(slide, meta=meta)
 
     trays = tuple(
         dataclasses.replace(t, slides=tuple(slide_meta(t.number, s) for s in t.slides))
@@ -581,36 +583,44 @@ def edit_tray_meta(
 ) -> MetaEditResult:
     """Set a tray's own metadata, at any stage, raw data kept or not."""
     values = _checked_change(change)
-    before: dict[int, MetaOverride] = {}
+    result: list[MetaEditResult] = []
 
     def update(manifest: BatchManifest) -> BatchManifest:
         tray, _ = _find(manifest, number)
-        before.clear()
-        before[number] = tray.meta
-        return _with_tray_metas(manifest, {number: dataclasses.replace(tray.meta, **values)})
+        meta = dataclasses.replace(tray.meta, **values)
+        changed = {number: tray.meta} if meta != tray.meta else {}
+        result[:] = [MetaEditResult({}, BeforeMeta(trays=changed))]
+        return _with_tray_metas(manifest, {number: meta}) if changed else manifest
 
     store.update(update)
-    return MetaEditResult({}, BeforeMeta(trays=before))
+    return result[0]
 
 
 def _batch_value(field: str, value: str | None) -> str | None:
     """The batch has no parent: a blank is stored as ``description=""`` and ``date=None``."""
     if field not in FIELDS:
         raise ValueError(f"metadata field must be one of {', '.join(FIELDS)}, not {field!r}")
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{field} must be text")
     when, text = checked_meta(value if field == "date" else None, value or "")
     return when if field == "date" else text
 
 
+def _pin_value(field: str, value: str | None) -> str | None:
+    """The batch value a tray keeps as its own, or None when it breaks today's rules (a legacy
+    day date, an over-long description): that tray then keeps inheriting."""
+    try:
+        return checked_override(field, value or "")
+    except ValueError:
+        return None
+
+
 def _pinned(manifest: BatchManifest, fields: Iterable[str]) -> dict[int, MetaOverride]:
-    """Trays that inherit a changing field keep the value they resolve to now."""
+    """Trays that inherit a changing field keep the batch value it has now."""
+    values = {f: _pin_value(f, getattr(manifest, f)) for f in fields}
     pins = {}
     for tray in manifest.trays:
-        resolved = resolve(manifest, tray)
-        values = {
-            "description": resolved.description,
-            "date": resolved.date.text() if resolved.date else "",
-        }
-        own = {f: values[f] for f in fields if getattr(tray.meta, f) is None}
+        own = {f: v for f, v in values.items() if v is not None and getattr(tray.meta, f) is None}
         if own:
             pins[tray.number] = dataclasses.replace(tray.meta, **own)
     return pins
@@ -620,22 +630,25 @@ def edit_batch_meta(
     store: BatchStore, change: Mapping[str, str | None], *, scope: str = "from_now_on"
 ) -> MetaEditResult:
     """Change the batch default. ``from_now_on`` first pins the current values on existing
-    trays that still inherit them, in the same update, so only later trays get the change."""
+    trays that still inherit them, in the same update, so only later trays get the change.
+    A field set to the value it already has changes nothing and pins nothing."""
     if scope not in META_SCOPES:
         raise ValueError(f"scope must be one of {', '.join(META_SCOPES)}, not {scope!r}")
     values = {field: _batch_value(field, value) for field, value in change.items()}
-    before: dict[str, object] = {}
+    result: list[MetaEditResult] = []
 
     def update(manifest: BatchManifest) -> BatchManifest:
-        pins = _pinned(manifest, values) if scope == "from_now_on" else {}
-        before.update(
-            trays={n: t.meta for t in manifest.trays if (n := t.number) in pins},
-            batch=(manifest.description, manifest.date),
+        new = {f: v for f, v in values.items() if getattr(manifest, f) != v}
+        pins = _pinned(manifest, new) if new and scope == "from_now_on" else {}
+        before = BeforeMeta(
+            trays={t.number: t.meta for t in manifest.trays if t.number in pins},
+            batch=(manifest.description, manifest.date) if new else None,
         )
-        return dataclasses.replace(_with_tray_metas(manifest, pins), **values)
+        result[:] = [MetaEditResult({}, before)]
+        return dataclasses.replace(_with_tray_metas(manifest, pins), **new) if new else manifest
 
     store.update(update)
-    return MetaEditResult({}, BeforeMeta(**before))
+    return result[0]
 
 
 def restore_meta_many(store: BatchStore, before: BeforeMeta) -> MetaEditResult:

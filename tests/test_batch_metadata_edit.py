@@ -132,7 +132,7 @@ def test_batch_edit_from_now_on_pins_inheriting_trays_in_one_update():
     assert _tray_meta(store, 2) == MetaOverride(description="own")
     assert _tray_meta(store, 3) == MetaOverride(description="Old trip")  # scanning: it exists
     result2 = edit_batch_meta(store, {"date": "1980"})  # from now on is the default
-    assert _tray_meta(store, 1).date == "1975-07"  # the resolved value, day dropped
+    assert _tray_meta(store, 1).date is None  # a legacy day date fails the rules: not pinned
     restore_meta_many(store, result2.before)
     restore_meta_many(store, result.before)
     assert store.snapshot().description == "Old trip"
@@ -223,3 +223,34 @@ def test_blank_override_survives_a_reload_from_disk(tmp_path):
     with BatchStore.open(tmp_path / "b") as store:
         assert _slide(store, 1, 1).meta == MetaOverride("", "")
         assert _tray_meta(store, 1) == MetaOverride(description="")
+
+
+def test_no_op_edits_change_nothing_and_leave_nothing_to_undo():
+    store = MemoryStore(_tray(1), description="Trip", date="1970")
+    before = store.snapshot()
+    for result in (
+        edit_batch_meta(store, {"description": "Trip"}),
+        edit_batch_meta(store, {"date": "1970"}, scope="from_now_on"),
+        edit_batch_meta(store, {}),
+        edit_tray_meta(store, 1, {"description": None}),
+        edit_tray_meta(store, 1, {}),
+        edit_meta_many(store, [(1, 1), (1, 2)], {"date": None}),
+    ):
+        assert result.before.empty
+    assert store.snapshot() == before
+
+
+def test_pinning_skips_values_that_break_the_rules_and_keeps_them_inheriting():
+    store = MemoryStore(_tray(1), _tray(2), description="x" * 600, date="1975-07-14")
+    edit_batch_meta(store, {"description": "New", "date": "1980"})
+    assert _tray_meta(store, 1) == _tray_meta(store, 2) == MetaOverride()
+    store = MemoryStore(_tray(1), description="Trip", date="1975-07-14")
+    edit_batch_meta(store, {"description": "New", "date": "1980"})
+    assert _tray_meta(store, 1) == MetaOverride(description="Trip")
+
+
+def test_batch_value_of_the_wrong_type_is_a_value_error():
+    store = MemoryStore(_tray(1))
+    for change in ({"date": 1978}, {"description": 5}, {"rotation": "90"}):
+        with pytest.raises(ValueError, match="must be"):
+            edit_batch_meta(store, change)
