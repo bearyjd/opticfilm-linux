@@ -127,5 +127,10 @@ class CachedStatusScanner:
     def scan_holder(self, settings: ScanSettings) -> RawSweep:
         return self._scanner.scan_holder(settings)
 
+    @property
+    def scan_exit_code(self) -> int | None:
+        """The last scan's driver exit code, read by the runner right after that scan."""
+        return getattr(self._scanner, "scan_exit_code", None)
+
     def eject(self) -> None:
         self._scanner.eject()

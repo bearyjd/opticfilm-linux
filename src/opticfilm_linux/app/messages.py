@@ -102,6 +102,17 @@ def holder_failed_text(action: str) -> str:
     )
 
 
+EJECT_DID_NOT_RUN = (
+    "Eject did not run, check the slot. The scanner did not report that the holder moved. "
+    "If the holder is still in, press Eject."
+)
+
+
+def auto_eject_skipped_text(reason: str) -> str:
+    """An automatic eject that could not start: never silent, and nothing retries it."""
+    return f"Automatic eject skipped: {reason.rstrip('.')}. Press Eject when ready."
+
+
 _SHOWN_VALUE_MAX = 40
 
 
