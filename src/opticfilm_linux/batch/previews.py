@@ -71,9 +71,8 @@ def read_master(path: Path) -> tuple[np.ndarray, tuple[int, bool]] | None:
     """The master's pixels and orientation, or None when it is missing, damaged or untagged."""
     try:
         with Image.open(path) as image:
-            image.load()  # reads every chunk: a truncated file or a bad CRC fails here
             orientation = _parse_orientation(getattr(image, "text", {}).get(MASTER_ORIENTATION))
-            pixels = np.asarray(image.convert("RGB"))
+            pixels = np.asarray(image.convert("RGB"))  # a truncated file or bad CRC fails here
     except (OSError, SyntaxError, ValueError, zlib.error):
         return None
     return None if orientation is None else (pixels, orientation)
