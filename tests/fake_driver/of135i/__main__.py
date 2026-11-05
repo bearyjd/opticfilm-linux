@@ -5,9 +5,10 @@ frame per opening, with the slide's long side along the transport (so a frame is
 a quarter turn, with dark holder on both sides). Behaviour is chosen with FAKE_DRIVER_MODE:
 ok | coverage_fail (overscan files only, exit 1, as for a slide the strip detector rejects) |
 cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pause).
-``--slides`` is parsed as the real driver parses it (comma lists and inclusive ranges, in
-the order given); only an ascending, unique list within 1-4 is accepted (exit 2 otherwise), and
-only those frames are written, each named by its frame NUMBER.
+``--slides`` takes comma lists and inclusive ranges like the real driver, but is deliberately
+STRICTER: the real one keeps duplicates and scans "3,1" in that order, while this one accepts
+only an ascending, unique list within 1-4 (exit 2 otherwise), so an app bug that sends such a
+list fails a test. Only the requested frames are written, each named by its frame NUMBER.
 ``load --next-strip`` exits with FAKE_DRIVER_LOAD_EXIT after FAKE_DRIVER_LOAD_DELAY seconds.
 FAKE_DRIVER_SYNTH=1 makes the frames up instead (``synth``: the real frame geometry at the
 requested --dpi, written strip by strip) rather than cutting them from FAKE_DRIVER_SWEEP.

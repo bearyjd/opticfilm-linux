@@ -228,7 +228,7 @@ def test_argv_with_the_default_positions_is_identical_to_main(scanner_for, tmp_p
 @pytest.mark.parametrize(
     "positions, spec",
     [((1, 2, 3, 4), "1-4"), ((1, 2, 3), "1-3"), ((1, 2), "1-2"), ((1,), "1"), ((1, 3), "1,3")]
-    + [((2, 4), "2,4"), ((1, 2, 4), "1-2,4"), ((2, 3, 4), "2-4"), ((1, 3, 4), "1,3-4")],
+    + [((2, 4), "2,4"), ((1, 2, 4), "1,2,4"), ((2, 3, 4), "2-4"), ((1, 3, 4), "1,3,4")],
 )
 def test_the_slides_argument_is_a_compact_ascending_spec(positions, spec):
     assert slides_arg(positions) == spec
