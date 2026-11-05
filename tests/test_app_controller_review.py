@@ -111,6 +111,7 @@ ACTIONS = {
     "accept_all": lambda c: c.accept_all(),
     "scan": lambda c: c.scan(),
     "rescan": lambda c: c.rescan(1),
+    "update_exported_metadata": lambda c: c.update_exported_metadata(),
 }
 
 

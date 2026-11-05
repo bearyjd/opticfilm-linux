@@ -151,6 +151,7 @@ def test_updating_rewrites_the_xmp_and_renews_the_receipt(delivery):
     assert not _stale(store)
     export.verify_tray_export(store, 1)  # a rewritten JPEG still verifies
     assert update_exported_metadata(store).updated == ()
+    assert export.cleanup_raw(store, 1) > 0  # the renewed receipt passes the cleanup checks
 
 
 def test_a_freshly_exported_file_is_rewritten_byte_identical_when_nothing_changed(delivery):
@@ -214,3 +215,22 @@ def test_a_cancelled_update_stops_before_the_next_file(delivery):
     cancel.set()
     assert update_exported_metadata(store, cancel=cancel).updated == ()
     assert _stale(store)
+
+
+def test_a_section_layout_export_is_updated_in_place(delivery):
+    from opticfilm_linux.batch.model import TrayLocation
+
+    store, directory = delivery
+    location = TrayLocation("family", 1, "a", 1, 4)
+    store.update(
+        lambda m: dataclasses.replace(
+            m, trays=(dataclasses.replace(m.trays[0], location=location),)
+        )
+    )
+    _, path = _delivered(delivery)
+    assert path.parent != directory  # box-N/section/NNN.jpg
+    review.edit_tray_meta(store, 1, {"description": "Box one"})
+    assert update_exported_metadata(store).updated == ((1, 1),)
+    assert b"Box one" in path.read_bytes()
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+    _receipt_matches(store, path)

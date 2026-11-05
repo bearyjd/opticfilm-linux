@@ -46,7 +46,9 @@ def test_a_tray_edit_shows_badges_and_the_update_clears_them(exported, tmp_path)
     wait_until(c, lambda: c.state().metadata_pending == 0)
     wait_until(c, lambda: c.state().banner is not None and "updated in" in c.state().banner.message)
     assert c.state().banner.message.startswith(f"Description and date updated in {count} JPEG")
-    for path in (tmp_path / "out").rglob("*.jpg"):
+    paths = list((tmp_path / "out").rglob("*.jpg"))
+    assert paths
+    for path in paths:
         assert b"<ofscan:Description>Lake trip</ofscan:Description>" in path.read_bytes()
 
 
