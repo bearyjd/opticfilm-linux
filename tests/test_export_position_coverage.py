@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from opticfilm_linux.batch import export
+from opticfilm_linux.batch.model import SlideRecord, SlideStatus
 from test_export_safety import _assert_raw_kept, _confirmed_blank, _delivered
 from test_export_safety import delivery as delivery
 
@@ -63,3 +64,26 @@ def test_export_receipt_cannot_attach_after_scan_or_mode_change(delivery, change
     )
     assert result == "stale_tray"
     assert store.snapshot() == changed
+
+
+def test_a_skipped_opening_needs_no_raw_and_the_tray_still_frees(delivery, monkeypatch):
+    store, _ = _delivered(delivery)
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1]})
+    slide = store.snapshot().trays[0].slides[0]
+    skipped = SlideRecord(2, status=SlideStatus.SKIPPED)
+    store.update_tray(1, slides=(slide, skipped), skipped=(2,))
+    assert export.cleanup_raw(store, 1) > 0
+    assert store.snapshot().trays[0].raw_removed
+
+
+def test_a_skipped_record_cannot_conceal_a_scanned_raw_position(delivery, monkeypatch):
+    store, _ = _delivered(delivery)
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
+    slide = store.snapshot().trays[0].slides[0]
+    skipped = SlideRecord(2, status=SlideStatus.SKIPPED)
+    store.update_tray(1, slides=(slide, skipped), skipped=(2,))
+    with pytest.raises(export.CleanupRefused, match="positions"):
+        export.cleanup_raw(store, 1)
+    _assert_raw_kept(store)

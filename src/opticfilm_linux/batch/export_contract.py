@@ -5,9 +5,10 @@ import hashlib
 import json
 from pathlib import Path
 
-from opticfilm_linux.batch.empty import is_empty_confirmed
+from opticfilm_linux.batch.empty import is_empty_confirmed, is_known_empty
 from opticfilm_linux.batch.layout import slide_number
 from opticfilm_linux.batch.model import (
+    NO_DELIVERY,
     BatchDefaults,
     BatchManifest,
     SlideKey,
@@ -122,7 +123,7 @@ def _release_candidate(manifest: BatchManifest, number: int) -> bool:
         return False
     first = min(manifest.trays, key=lambda tray: tray.number)
     confirmed_empty = bool(first.slides) and all(
-        is_empty_confirmed(first, slide) for slide in first.slides
+        is_known_empty(first, slide) for slide in first.slides
     )
     if not first.raw_removed and not confirmed_empty:
         return number == first.number
@@ -148,7 +149,7 @@ def _approval_ready(tray: TrayRecord) -> bool:
 
 
 def _still_freeable(tray: TrayRecord) -> bool:
-    real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
+    real = [s for s in tray.slides if s.status not in NO_DELIVERY]
     return (
         tray.stage is TrayStage.EXPORTED
         and not tray.raw_removed
@@ -160,7 +161,7 @@ def _still_freeable(tray: TrayRecord) -> bool:
 
 def _unreviewed_flags(tray: TrayRecord) -> bool:
     return any(
-        slide.status is not SlideStatus.BLANK
+        slide.status not in NO_DELIVERY
         and not slide.owner_decided
         and (slide.position in tray.auto_flagged or slide.flags)
         for slide in tray.slides

@@ -148,10 +148,11 @@ def _tray_line(tray: TrayRecord) -> str:
     counts = {status: 0 for status in SlideStatus}
     for slide in tray.slides:
         counts[slide.status] += 1
+    skipped = counts[SlideStatus.SKIPPED]
     return (
         f"tray {tray.number}  {tray.stage}  {counts[SlideStatus.ACCEPTED]} accepted, "
         f"{counts[SlideStatus.NEEDS_LOOK]} needs a look, {counts[SlideStatus.BLANK]} blank"
-    )
+    ) + (f", {skipped} empty (not scanned)" if skipped else "")
 
 
 def _print_status(store: BatchStore, only: set[int] | None = None) -> None:

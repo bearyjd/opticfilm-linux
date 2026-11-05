@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from opticfilm_linux.batch.metadata import MetaOverride
+from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.output import Format, JpegSize
 
 if TYPE_CHECKING:
@@ -34,7 +35,12 @@ class SlideStatus(StrEnum):
     PENDING = "pending"
     NEEDS_LOOK = "needs_look"
     ACCEPTED = "accepted"
-    BLANK = "blank"
+    BLANK = "blank"  # detected as a clear window in the raw scan (has a fingerprint)
+    SKIPPED = "skipped"  # left out of the scan on purpose: no raw data, never exported
+
+
+# Openings that never deliver an export: their slide number stays free.
+NO_DELIVERY = frozenset({SlideStatus.BLANK, SlideStatus.SKIPPED})
 
 
 class Flag(StrEnum):
@@ -188,6 +194,27 @@ class TrayRecord:
     location: TrayLocation | None = None
     evidence: ScanEvidence | None = None
     meta: MetaOverride = MetaOverride()
+    skipped: tuple[int, ...] = ()  # holder openings not scanned on purpose, ascending
+
+    def __post_init__(self) -> None:
+        check_skipped(self.skipped, self.slides)
+
+
+def check_skipped(skipped: tuple[int, ...], slides: tuple[SlideRecord, ...] = ()) -> None:
+    if (
+        type(skipped) is not tuple
+        or any(type(p) is not int or p not in ALL_POSITIONS for p in skipped)
+        or list(skipped) != sorted(set(skipped))
+        or len(skipped) >= len(ALL_POSITIONS)
+    ):
+        raise ValueError(
+            f"skipped openings must be ascending, unique, within 1-4 and not all four, "
+            f"got {skipped!r}"
+        )
+    if stray := [
+        s.position for s in slides if s.status is SlideStatus.SKIPPED and s.position not in skipped
+    ]:
+        raise ValueError(f"slides {stray} are skipped but not among the skipped openings")
 
 
 @dataclass(frozen=True)

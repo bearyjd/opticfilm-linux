@@ -42,7 +42,7 @@ from opticfilm_linux.batch.cleanup_recovery import (
 from opticfilm_linux.batch.cleanup_recovery import (
     recover_interrupted_cleanup as recover_interrupted_cleanup,
 )
-from opticfilm_linux.batch.empty import is_empty_confirmed
+from opticfilm_linux.batch.empty import check_raw_coverage, is_empty_confirmed, scanned_slides
 from opticfilm_linux.batch.enhance import RawRemoved, options_for, require_scanned
 from opticfilm_linux.batch.export_contract import (
     _export_receipt,
@@ -59,6 +59,7 @@ from opticfilm_linux.batch.export_contract import (
 )
 from opticfilm_linux.batch.layout import section_directory
 from opticfilm_linux.batch.model import (
+    NO_DELIVERY,
     BatchDefaults,
     BatchManifest,
     ExportRecord,
@@ -178,7 +179,7 @@ def _finish_tray_if_done(store: BatchStore, number: int) -> None:
     def done(tray: TrayRecord) -> bool:  # judged on the live tray, under the store's lock
         if tray.raw_removed:
             return False
-        real = [s for s in tray.slides if s.status is not SlideStatus.BLANK]
+        real = [s for s in tray.slides if s.status not in NO_DELIVERY]
         everything = all(s.status is SlideStatus.ACCEPTED and s.exported for s in real)
         return tray.stage is TrayStage.REVIEW and bool(tray.slides) and everything
 
@@ -391,7 +392,7 @@ def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
     if tray.stage is not TrayStage.EXPORTED or not tray.slides:
         raise BatchError(f"tray {tray.number} is not fully exported")
     for slide in tray.slides:
-        if slide.status is SlideStatus.BLANK:
+        if slide.status in NO_DELIVERY:
             continue
         try:
             if (
@@ -454,7 +455,7 @@ def _half_cleaned(store: BatchStore, tray: TrayRecord) -> bool:
 def _safe_receipt_paths(store: BatchStore, tray: TrayRecord) -> None:
     root = store.directory.resolve()
     for slide in tray.slides:
-        if slide.status is not SlideStatus.BLANK:
+        if slide.status not in NO_DELIVERY:
             try:
                 path, *_ = _export_receipt(slide)
             except ValueError:
@@ -483,14 +484,8 @@ def _verify_raw(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) 
         raise CleanupRefused("current raw sweep is missing; cleanup refused")
     try:
         slides = split_positions(load_sweep(current))
-        positions = [slide.position for slide in tray.slides]
-        if (
-            any(type(position) is not int for position in positions)
-            or len(positions) != len(slides)
-            or set(positions) != set(slides)
-        ):
-            raise ValueError("manifest positions must cover every raw position exactly once")
-        for slide in tray.slides:
+        check_raw_coverage(tray, slides)
+        for slide in scanned_slides(tray):
             current_digest = raw_region_sha256(slides[slide.position])
             if slide.status is SlideStatus.BLANK:
                 if not is_empty_confirmed(tray, slide) or slide.blank_fingerprint != current_digest:
@@ -575,7 +570,7 @@ def _delete(
 def _check_render_receipts(manifest: BatchManifest, tray: TrayRecord) -> None:
     defaults = manifest.defaults
     for slide in tray.slides:
-        if slide.status is SlideStatus.BLANK:
+        if slide.status in NO_DELIVERY:
             continue
         if not slide.exports or not slide.exports[-1].render_signature:
             raise CleanupPolicyRefused(

@@ -78,6 +78,7 @@ def test_slide_status_words_cover_every_status():
         "Needs a look",
         "Accepted",
         "Empty window",
+        "Empty (not scanned)",
     }
 
 
