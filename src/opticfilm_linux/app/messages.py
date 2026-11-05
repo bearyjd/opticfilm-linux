@@ -178,6 +178,7 @@ _SLIDE_STATUS = {
     SlideStatus.NEEDS_LOOK: "Needs a look",
     SlideStatus.ACCEPTED: "Accepted",
     SlideStatus.BLANK: "Empty window",
+    SlideStatus.SKIPPED: "Empty (not scanned)",
 }
 
 

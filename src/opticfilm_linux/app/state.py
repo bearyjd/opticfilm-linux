@@ -7,8 +7,13 @@ from typing import Literal
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.app.selection import Selection, prune, selectable_keys
 from opticfilm_linux.batch.cleanup_recovery import interrupted_cleanup_guidance
-from opticfilm_linux.batch.empty import empty_frame_fingerprints, is_empty_confirmed
+from opticfilm_linux.batch.empty import (
+    empty_frame_fingerprints,
+    is_empty_confirmed,
+    is_known_empty,
+)
 from opticfilm_linux.batch.model import (
+    NO_DELIVERY,
     BatchManifest,
     SlideKey,
     SlideRecord,
@@ -440,10 +445,7 @@ def _approval_candidates(trays):
     confirmed_empty = (
         original is not None
         and bool(original.slides)
-        and all(
-            s.status is SlideStatus.BLANK and is_empty_confirmed(original, s)
-            for s in original.slides
-        )
+        and all(is_known_empty(original, s) for s in original.slides)
     )
     if original is not None and (original.raw_removed or confirmed_empty):
         first = next(
@@ -473,7 +475,7 @@ def _approval_ready(tray: TrayRecord) -> bool:
         and not any(s.preview_stale for s in tray.slides)
         and any(s.status is SlideStatus.ACCEPTED and s.exported for s in tray.slides)
         and all(
-            s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+            s.status in NO_DELIVERY or (s.status is SlideStatus.ACCEPTED and s.exported)
             for s in tray.slides
         )
     )
@@ -510,7 +512,7 @@ def _auto_fields(
         and not any(s.preview_stale for s in first.slides)
         and any(s.exported and s.status is SlideStatus.ACCEPTED for s in first.slides)
         and all(
-            s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+            s.status in NO_DELIVERY or (s.status is SlideStatus.ACCEPTED and s.exported)
             for s in first.slides
         )
         and not _release_flags(first)

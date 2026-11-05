@@ -22,10 +22,10 @@ import numpy as np
 from PIL import Image
 
 from opticfilm_linux.batch.model import (
+    NO_DELIVERY,
     BatchManifest,
     SlideKey,
     SlideRecord,
-    SlideStatus,
     TrayRecord,
     TrayStage,
 )
@@ -81,7 +81,7 @@ def _eligible(old: BatchManifest, new: BatchManifest, key: SlideKey) -> bool:
         _same_tray(old_tray, new_tray)
         and not was.preview_stale
         and now.preview_stale
-        and SlideStatus.BLANK not in (was.status, now.status)
+        and not {was.status, now.status} & NO_DELIVERY  # no oriented picture to turn
         and _only_turned(was.settings, now.settings)
         and _only_turned(old.defaults, new.defaults)
     )
@@ -112,7 +112,7 @@ def _still_wanted(manifest: BatchManifest, target: BatchManifest, key: SlideKey)
         manifest.defaults == target.defaults
         and slide.settings == wanted[1].settings
         and slide.preview_stale
-        and slide.status is not SlideStatus.BLANK
+        and slide.status not in NO_DELIVERY
     )
 
 

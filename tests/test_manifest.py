@@ -341,3 +341,101 @@ def test_unknown_meta_keys_are_ignored_and_dropped():
     manifest = from_json(json.dumps(data))
     assert manifest.trays[0].meta == MetaOverride(date="1978")
     assert json.loads(to_json(manifest))["trays"][0]["meta"] == {"date": "1978"}
+
+
+# A tray written before skipped openings existed: no "skipped" key anywhere.
+OLD_TRAY_JSON = """{
+  "name": "Old",
+  "album": "",
+  "date": null,
+  "defaults": {
+    "dpi": 7200,
+    "infrared": true,
+    "mode": "positive",
+    "skip_blank": true,
+    "remove_dust": true,
+    "color_strength": 1.0,
+    "grain_strength": 0.3,
+    "sharpen_amount": 0.5,
+    "rotation": 0,
+    "mirror": false
+  },
+  "trays": [
+    {
+      "number": 1,
+      "stage": "review",
+      "mode": "positive",
+      "sweep_version": 1,
+      "slides": [
+        {
+          "position": 1,
+          "status": "accepted",
+          "flags": [],
+          "settings": {
+            "rotation": 0,
+            "brightness_ev": 0.0,
+            "color_strength": null,
+            "grain_strength": null,
+            "sharpen_amount": null,
+            "mirror": false
+          },
+          "owner_decided": false,
+          "exported": false,
+          "preview_stale": false
+        }
+      ],
+      "error": null,
+      "raw_removed": false
+    }
+  ],
+  "version": 1
+}"""
+
+
+def test_a_manifest_without_skipped_loads_and_reserialises_byte_identical():
+    manifest = from_json(OLD_TRAY_JSON)
+    assert manifest.trays[0].skipped == ()
+    assert to_json(manifest) == OLD_TRAY_JSON
+
+
+def test_skipped_openings_round_trip_and_stay_version_1():
+    tray = TrayRecord(
+        number=1,
+        stage=TrayStage.REVIEW,
+        slides=(
+            SlideRecord(position=1, status=SlideStatus.ACCEPTED),
+            SlideRecord(position=4, status=SlideStatus.SKIPPED),
+        ),
+        skipped=(4,),
+    )
+    manifest = BatchManifest(name="T", trays=(tray,))
+    data = json.loads(to_json(manifest))
+    assert data["version"] == 1
+    assert data["trays"][0]["skipped"] == [4]
+    assert data["trays"][0]["slides"][1]["status"] == "skipped"
+    assert from_json(to_json(manifest)) == manifest
+
+
+@pytest.mark.parametrize("value", [[1, 2, 3, 4], [0], [5], [3, 1], [2, 2], [True], "4", [4.0]])
+def test_bad_skipped_openings_are_refused(value):
+    data = json.loads(OLD_TRAY_JSON)
+    data["trays"][0]["skipped"] = value
+    with pytest.raises(ManifestFormatError, match="skipped"):
+        from_json(json.dumps(data))
+
+
+def test_a_skipped_slide_outside_the_skipped_openings_is_refused():
+    data = json.loads(OLD_TRAY_JSON)
+    data["trays"][0]["slides"][0]["status"] = "skipped"
+    with pytest.raises(ManifestFormatError, match="skipped"):
+        from_json(json.dumps(data))
+
+
+@pytest.mark.parametrize("stage", list(TrayStage))
+def test_a_skipped_opening_always_has_a_skipped_slide_record(stage):
+    with pytest.raises(ValueError, match="skipped"):
+        TrayRecord(number=1, stage=stage, skipped=(4,))
+    data = json.loads(OLD_TRAY_JSON)
+    data["trays"][0].update(stage=stage.value, skipped=[4])
+    with pytest.raises(ManifestFormatError, match="skipped"):
+        from_json(json.dumps(data))

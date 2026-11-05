@@ -78,6 +78,7 @@ def _omit_tray_defaults(data: dict[str, Any]) -> None:
             ("auto_error", ""),
             ("auto_failed", ()),
             ("auto_flagged", ()),
+            ("skipped", ()),
         ):
             if tray[key] == default:
                 tray.pop(key)
@@ -231,7 +232,16 @@ def _tray(data: dict[str, Any]) -> TrayRecord:
         location=TrayLocation(**data["location"]) if data.get("location") is not None else None,
         evidence=_evidence(data.get("evidence")),
         meta=_meta(data),
+        skipped=_skipped(data),
     )
+
+
+def _skipped(data: dict[str, Any]) -> tuple[int, ...]:
+    """Holder openings left out of the scan; absent in trays written before skipping existed."""
+    value = data.get("skipped", [])
+    if not isinstance(value, list):
+        raise ManifestFormatError("skipped must be a list of holder openings")
+    return tuple(value)
 
 
 SLOT_KEYS = {"position", "rotation", "mirror"}

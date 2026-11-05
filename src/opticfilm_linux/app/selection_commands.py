@@ -286,6 +286,7 @@ class SelectionCommands:
         reasons = {
             "raw_removed": "their raw scans were removed",
             "blank": "they are blank",
+            "skipped": "their openings were not scanned",
             "not_editable": "their trays are not ready for review",
             "missing": "they no longer exist",
             "not_accepted": "they are not accepted",

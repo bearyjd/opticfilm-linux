@@ -37,13 +37,14 @@ class UndoEntry:
 
 
 def selectable_keys(manifest: BatchManifest) -> tuple[SlideKey, ...]:
-    """Return display order, including blanks and excluding trays still processing."""
+    """Return display order, including blanks; excluding skipped openings and busy trays."""
     busy = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
     return tuple(
         (tray.number, slide.position)
         for tray in sorted(manifest.trays, key=lambda tray: tray.number)
         if tray.stage not in busy
         for slide in sorted(tray.slides, key=lambda slide: slide.position)
+        if slide.status is not SlideStatus.SKIPPED  # nothing was scanned there to review
     )
 
 
@@ -143,6 +144,8 @@ def pop_undo(
 
 def filter_matches(tray, slide, name: str) -> bool:
     """Use identical predicates for contact-sheet filters and their counters."""
+    if slide.status is SlideStatus.SKIPPED:
+        return False  # not selectable, so never counted either
     if name == "flagged":
         return (
             bool(slide.flags)
@@ -160,5 +163,7 @@ def failed_empty_trays(trays) -> frozenset[int]:
     return frozenset(
         tray.number
         for tray in trays
-        if not tray.slides and (tray.stage is TrayStage.FAILED or tray.auto == "failed")
+        # skipped openings are never counted, so a tray of only those is an empty one
+        if all(s.status is SlideStatus.SKIPPED for s in tray.slides)
+        and (tray.stage is TrayStage.FAILED or tray.auto == "failed")
     )

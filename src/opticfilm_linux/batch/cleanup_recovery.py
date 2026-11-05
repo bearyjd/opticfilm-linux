@@ -15,6 +15,7 @@ import dataclasses
 import weakref
 from pathlib import Path
 
+from opticfilm_linux.batch.empty import check_raw_coverage, scanned_slides
 from opticfilm_linux.batch.model import BatchManifest, SlideStatus, TrayRecord, TrayStage
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.provenance import raw_region_sha256
@@ -122,14 +123,8 @@ def _recovery_raw(store: BatchStore, manifest: BatchManifest, tray: TrayRecord, 
         raise ValueError("current raw sweep is missing")
     sweep = export.load_sweep(current)
     regions = export.split_positions(sweep)
-    positions = [slide.position for slide in tray.slides]
-    if (
-        any(type(position) is not int for position in positions)
-        or len(positions) != len(regions)
-        or set(positions) != set(regions)
-    ):
-        raise ValueError("manifest positions must cover every raw position exactly once")
-    for slide in tray.slides:
+    check_raw_coverage(tray, regions)
+    for slide in scanned_slides(tray):
         expected = (
             slide.blank_fingerprint
             if slide.status is SlideStatus.BLANK

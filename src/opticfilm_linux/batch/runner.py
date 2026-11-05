@@ -35,6 +35,12 @@ from opticfilm_linux.batch.model import (
     TrayStage,
 )
 from opticfilm_linux.batch.reorient import publish_turns, reorient_preview, stage_turn
+from opticfilm_linux.batch.skipped import (
+    check_scanned_positions,
+    drop_skipped_previews,
+    mark_skipped,
+    scan_positions,
+)
 from opticfilm_linux.batch.store import INTERRUPTED_SCAN, BatchError, BatchStore
 from opticfilm_linux.model import ScanSettings
 from opticfilm_linux.scanner import interrupted
@@ -50,7 +56,9 @@ TURN_GROUP = 8  # background turns published per manifest write
 log = logging.getLogger(__name__)
 
 
-def _restart_rescan(manifest: BatchManifest, tray: TrayRecord) -> BatchManifest:
+def _restart_rescan(
+    manifest: BatchManifest, tray: TrayRecord, skipped: tuple[int, ...] = ()
+) -> BatchManifest:
     number = tray.number
     current = next(t for t in manifest.trays if t.number == number)
     if current.raw_removed and not current.cleanup_sweeps:
@@ -63,7 +71,10 @@ def _restart_rescan(manifest: BatchManifest, tray: TrayRecord) -> BatchManifest:
         current,
         stage=TrayStage.SCANNING,
         sweep_version=current.sweep_version + 1,
-        slides=tuple(SlideRecord(position=s.position, exports=s.exports) for s in current.slides),
+        slides=mark_skipped(
+            tuple(SlideRecord(position=s.position, exports=s.exports) for s in current.slides),
+            skipped,
+        ),
         error=None,
         raw_removed=False,
         cleanup_sweeps=(),
@@ -73,6 +84,7 @@ def _restart_rescan(manifest: BatchManifest, tray: TrayRecord) -> BatchManifest:
         auto_error="",
         auto_failed=(),
         auto_flagged=(),
+        skipped=skipped,
     )
     return dataclasses.replace(
         manifest,
@@ -108,8 +120,12 @@ class BatchRunner:
 
     # -- requests from the caller (never block) ------------------------------------------
 
-    def scan_tray(self) -> int:
-        """Start scanning a new tray; the scanner must be ready and no scan pending."""
+    def scan_tray(self, skipped: tuple[int, ...] = ()) -> int:
+        """Start scanning a new tray; the scanner must be ready and no scan pending.
+
+        ``skipped`` holder openings are not scanned; their slide numbers stay reserved.
+        """
+        scan_positions(skipped)
         self._require_ready()
         defaults = self._store.snapshot().defaults
 
@@ -119,6 +135,8 @@ class BatchRunner:
                 stage=TrayStage.SCANNING,
                 mode=defaults.mode,
                 location=allocate_location(manifest, 4),
+                skipped=skipped,
+                slides=mark_skipped((), skipped),
             )
             return dataclasses.replace(manifest, trays=manifest.trays + (tray,))
 
@@ -129,8 +147,9 @@ class BatchRunner:
             self._submit(self._scan_pool, self._scan_job, number, scan=True)
         return number
 
-    def rescan_tray(self, number: int) -> int:
-        """Scan a tray again, retaining any remaining old sweeps."""
+    def rescan_tray(self, number: int, skipped: tuple[int, ...] = ()) -> int:
+        """Scan a tray again, retaining any remaining old sweeps; ``skipped`` as for a scan."""
+        scan_positions(skipped)
         manifest = self._store.snapshot()
         tray = next((t for t in manifest.trays if t.number == number), None)
         if tray is None:
@@ -155,7 +174,8 @@ class BatchRunner:
                 raise BatchError("raw scans are being removed; try rescan after cleanup finishes")
             try:
                 export._retry_cleanup_resets(self._store)
-                self._store.update(lambda manifest: _restart_rescan(manifest, tray))
+                self._store.update(lambda manifest: _restart_rescan(manifest, tray, skipped))
+                drop_skipped_previews(self._store, number, skipped)
                 self._emit(TrayStageChanged(number, TrayStage.SCANNING))
                 self._submit(self._scan_pool, self._scan_job, number, scan=True)
             finally:
@@ -297,11 +317,17 @@ class BatchRunner:
     def _scan_job(self, number: int) -> None:
         tray = self._tray(number)
         defaults = self._store.snapshot().defaults
-        settings = ScanSettings(dpi=defaults.dpi, mode=tray.mode, infrared=defaults.infrared)
+        settings = ScanSettings(
+            dpi=defaults.dpi,
+            mode=tray.mode,
+            infrared=defaults.infrared,
+            positions=scan_positions(tray.skipped),
+        )
         tmp = self._store.sweep_tmp_dir(number, tray.sweep_version)
         final = self._store.sweep_dir(number, tray.sweep_version)
         try:
             sweep = self._scanner.scan_holder(settings)
+            check_scanned_positions(sweep, settings)
             save_sweep(sweep, tmp)
             os.replace(tmp, final)
         except BaseException as exc:  # a failed scan must end as a visible FAILED tray
