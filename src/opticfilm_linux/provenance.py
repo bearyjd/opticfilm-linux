@@ -4,8 +4,9 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from xml.etree import ElementTree as ET
@@ -14,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from opticfilm_linux import __version__
+from opticfilm_linux.batch.metadata import resolve
 
 if TYPE_CHECKING:
     from opticfilm_linux.batch.model import BatchManifest, SlideRecord, TrayRecord
@@ -100,17 +102,27 @@ def _canonical(value: object) -> str:
     )
 
 
-def _owner_date(value: str | None) -> tuple[str, str] | None:
-    """Validate owner precision without completing a partial historical date."""
-    if not value or not re.fullmatch(r"\d{4}(?:-\d{2}(?:-\d{2})?)?", value):
-        return None
-    try:
-        date.fromisoformat(
-            value + ("-01-01" if len(value) == 4 else "-01" if len(value) == 7 else "")
+def _clean_description(text: str) -> str:
+    """Owner text for the packet: control characters out, surrounding blanks trimmed."""
+    return "".join(c for c in text if unicodedata.category(c) != "Cc").strip()
+
+
+def _estimate_fields(manifest: "BatchManifest", tray: "TrayRecord", record: "SlideRecord") -> dict:
+    """Our own ofscan fields for the owner's description and estimated date; nothing standard."""
+    meta = resolve(manifest, tray, record)
+    fields: dict[str, str] = {}
+    description = _clean_description(meta.description)
+    if description:
+        fields.update(Description=description, DescriptionSource=meta.description_level)
+    if meta.date is not None:
+        fields.update(
+            PhotoDate=meta.date.text(),
+            PhotoDatePrecision="year" if meta.date.month is None else "month",
+            PhotoDateApproximate="true",
+            PhotoDateSource="owner-estimate",
+            PhotoDateLevel=meta.date_level,
         )
-    except ValueError:
-        return None
-    return value, {4: "year", 7: "month", 10: "day"}[len(value)]
+    return fields
 
 
 def _frame_diagnostic(tray: "TrayRecord", slot: int) -> dict:
@@ -123,7 +135,7 @@ def _frame_diagnostic(tray: "TrayRecord", slot: int) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _exif_metadata(software: str, evidence: ScanEvidence | None, owner_date, delivered_dpi: int):
+def _exif_metadata(software: str, evidence: ScanEvidence | None, delivered_dpi: int):
     exif = Image.Exif()
     exif[271], exif[272], exif[305] = "Plustek", "OpticFilm 135i", software
     exif[274], exif[282], exif[283], exif[296] = 1, delivered_dpi, delivered_dpi, 2
@@ -137,8 +149,6 @@ def _exif_metadata(software: str, evidence: ScanEvidence | None, owner_date, del
                 exif_ifd[36882] = "+00:00"
         except ValueError:
             pass
-    if owner_date and owner_date[1] == "day":
-        exif_ifd[36867] = owner_date[0].replace("-", ":") + " 00:00:00"
     if exif_ifd:
         exif[34665] = exif_ifd
     return exif.tobytes()
@@ -257,7 +267,6 @@ def jpeg_metadata(
     """Encode technical provenance while leaving descriptive fields for the owner."""
     evidence = tray.evidence
     software = evidence.software if evidence else f"opticfilm-linux {__version__}"
-    owner_date = _owner_date(manifest.date)
     raw_hash = raw_region_sha256(slide)
     fields = _technical_fields(tray, options, software, scan_dpi, delivered_dpi)
     fields.update(_location_fields(manifest, tray, record))
@@ -268,12 +277,7 @@ def jpeg_metadata(
         ReviewFlags=_canonical(_review_flags(record)),
         RawSHA256=raw_hash,
     )
-    if owner_date:
-        fields.update(
-            PhotoDate=owner_date[0],
-            PhotoDatePrecision=owner_date[1],
-            PhotoDateSource="owner-entered",
-        )
+    fields.update(_estimate_fields(manifest, tray, record))
     return JpegMetadata(
-        _exif_metadata(software, evidence, owner_date, delivered_dpi), _xmp_packet(fields), raw_hash
+        _exif_metadata(software, evidence, delivered_dpi), _xmp_packet(fields), raw_hash
     )
