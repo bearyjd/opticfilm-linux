@@ -8,6 +8,8 @@ ColumnLayout {
     property bool shortWindow: false
     signal recoverRequested(int number)
     signal reviewFocusRequested()
+    signal nextTrayEditRequested()
+    readonly property var batchMeta: bridge.selectionSummary.batchMeta || ({})
     spacing: Theme.spacingSmall
 
     QQC2.Label {
@@ -15,6 +17,29 @@ ColumnLayout {
         color: Theme.muted
         font.pixelSize: Theme.fontSmall
         Layout.margins: Theme.spacing
+    }
+    // The batch default the next scanned tray inherits; editable between holders.
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: Theme.spacing
+        Layout.rightMargin: Theme.spacingSmall
+        spacing: Theme.spacingSmall
+        QQC2.Label {
+            objectName: "nextTrayMeta"
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            font.pixelSize: Theme.fontSmall
+            color: Theme.text
+            text: qsTr("Next tray: %1 · %2").arg(pane.batchMeta.description || qsTr("no description")).arg(pane.batchMeta.date ? "~" + pane.batchMeta.date : qsTr("no date"))
+        }
+        QQC2.Button {
+            objectName: "nextTrayMetaEdit"
+            flat: true
+            text: qsTr("Edit")
+            Accessible.name: qsTr("Edit the description and date of the next tray")
+            enabled: !bridge.readonly
+            onClicked: pane.nextTrayEditRequested()
+        }
     }
     TrayQueue {
         Layout.fillWidth: true

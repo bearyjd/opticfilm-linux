@@ -6,7 +6,10 @@ ListView {
     id: sheet
     objectName: "sheetView"
     signal reviewFocusRequested()
+    signal trayMetaRequested(int number)
     property string lastFocus: ""
+    // the tray whose header context menu is open
+    property int menuTray: 0
     readonly property real availableCellWidth: Math.max(0, width - 2 * Theme.spacing)
     readonly property int columns: availableCellWidth >= 4 * Theme.minCell + 3 * Theme.spacingSmall ? 4 : 2
     readonly property real cellWidth: Math.min(Theme.maxCell, Math.max(0, (availableCellWidth - (columns - 1) * Theme.spacingSmall) / columns))
@@ -37,6 +40,21 @@ ListView {
         const row = bridge.sheet.indexOfTray(bridge.selectionFocus[0]);
         if (row >= 0)
             positionViewAtIndex(row, ListView.Contain);
+    }
+
+    QQC2.Menu {
+        id: trayMenu
+        objectName: "trayMenu"
+        QQC2.MenuItem {
+            objectName: "editTrayMeta"
+            text: qsTr("Edit tray description / date…")
+            enabled: !bridge.readonly
+            onTriggered: sheet.trayMetaRequested(sheet.menuTray)
+        }
+    }
+    function openTrayMenu(number, item) {
+        menuTray = number;
+        trayMenu.popup(item);
     }
 
     TapHandler {
@@ -81,16 +99,24 @@ ListView {
             Layout.rightMargin: Theme.spacing
             text: qsTr("Tray %1 · %2").arg(row.number).arg(row.stageText) + (row.elapsed ? " · " + row.elapsed : "")
             onClicked: choose(0)
+            Accessible.description: qsTr("Menu key or right-click: edit tray description / date")
             Keys.onPressed: event => {
                 if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                     choose(event.modifiers);
+                    event.accepted = true;
+                } else if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) {
+                    sheet.openTrayMenu(row.number, header);
                     event.accepted = true;
                 }
             }
             MouseArea {
                 anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
                 onClicked: mouse => {
-                    header.choose(mouse.modifiers);
+                    if (mouse.button === Qt.RightButton)
+                        sheet.openTrayMenu(row.number, header);
+                    else
+                        header.choose(mouse.modifiers);
                 }
             }
         }

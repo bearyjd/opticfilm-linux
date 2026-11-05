@@ -8,8 +8,10 @@ RowLayout {
     id: field
     property string namePrefix: ""
     property string help: qsTr("A guess is fine. Saved as approximate.")
+    property string yearPlaceholder: qsTr("Year")
     readonly property alias yearText: yearField.text
     readonly property alias yearFocused: yearField.activeFocus
+    readonly property bool editing: yearField.activeFocus || monthBox.activeFocus
     // "1978", "1978-07" or "" (no date)
     readonly property string dateText: yearField.text === "" ? "" : yearField.text + (monthBox.currentIndex > 0 ? "-" + String(monthBox.currentIndex).padStart(2, "0") : "")
     readonly property string dateProblem: bridge.validateDate(dateText)
@@ -27,7 +29,7 @@ RowLayout {
     QQC2.TextField {
         id: yearField
         objectName: field.namePrefix + "Year"
-        placeholderText: qsTr("Year")
+        placeholderText: field.yearPlaceholder
         Accessible.name: qsTr("Year")
         Accessible.description: field.help
         inputMethodHints: Qt.ImhDigitsOnly
