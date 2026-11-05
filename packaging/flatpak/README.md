@@ -22,10 +22,26 @@ No build has been run.
   BaseApp's numpy 2.3.5 satisfies tifffile `numpy>=2.1` and opencv `numpy>=2` (no upper bound);
   imagecodecs is not needed (uncompressed TIFFs only). The import inside the sandbox is still
   unverified.
-- The sandbox cannot run `distrobox` (the app's default load command), so the load step must be
-  run through `OPTICFILM_LOAD_COMMAND` or from a host terminal. Untested.
-- `flatpak-builder --show-manifest` only parses the file; it is not a build check.
-- Still missing before this is a complete package: a `.desktop` file, AppStream metainfo and an
-  icon, the app commit pin, and a check
-  of what the driver needs at runtime (it is copied as is, nothing is built).
-- Scanning from inside the Flatpak is unverified.
+- Sandbox awareness (code, unit-tested with injected runners only; nothing has run inside a Flatpak):
+  the app detects a sandbox (`FLATPAK_ID` or `/.flatpak-info`). Inside it, the Eject-button watcher
+  is stopped and restored with `flatpak-spawn --host systemctl --user ...` instead of plain
+  `systemctl`, and the shown first-load command is the host-terminal form (no distrobox, driver
+  folder left as a placeholder because `/app/...` does not exist on the host).
+  `OPTICFILM_LOAD_COMMAND` still overrides it. Outside Flatpak nothing changes.
+- `--talk-name=org.freedesktop.Flatpak` is the permission that makes `flatpak-spawn --host` work.
+  Security implication: it lets the app run any command on the host, which effectively removes the
+  sandbox; the app only uses it for `systemctl` on its own watcher unit, but the permission is not
+  limited to that. Flathub would likely reject it. Without it the watcher must be stopped by hand.
+- `of135i watch` processes on the host stay invisible to the app inside the sandbox (own process
+  namespace), so the check for a hand-started watcher cannot see them there.
+- Packaging files: `io.github.bearyjd.OpticFilmLinux.desktop`, `.metainfo.xml` (GPL-3.0-or-later,
+  matching `LICENSE`; release 0.1.0) and `.svg` (a simple placeholder icon) are installed by the
+  manifest to the standard `share/` paths. The test `tests/test_flatpak_packaging_files.py` lints
+  them and runs `desktop-file-validate` and `appstreamcli validate --no-net` when installed.
+  No build has been run, so the install commands themselves are unexercised.
+- No REVISION file: the manifest does not reference one. The app commit pin is still
+  `PLACEHOLDER_COMMIT_APP` and is set by hand in the last PR (it must contain these packaging files).
+- Still missing before this is a complete package: the app commit pin, a first real
+  `flatpak-builder` run, and a check of what the driver needs at runtime (it is copied as is,
+  nothing is built).
+- Scanning from inside the Flatpak is unverified, as is the whole sandbox path above.
