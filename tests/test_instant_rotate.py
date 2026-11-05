@@ -15,7 +15,11 @@ from opticfilm_linux.batch.enhance import reenhance_slide
 from opticfilm_linux.batch.events import SlideUpdated, TrayFailed
 from opticfilm_linux.batch.export import export_batch
 from opticfilm_linux.batch.model import BatchDefaults, SlideSettings, SlideStatus
-from opticfilm_linux.batch.preview_transform import effective_orientation
+from opticfilm_linux.batch.preview_transform import (
+    effective_orientation,
+    preview_transform,
+    transform_preview,
+)
 from opticfilm_linux.batch.previews import read_master, write_master, write_preview
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchStore
@@ -349,3 +353,61 @@ def test_forty_turns_stay_one_jpeg_save_from_the_render(store, runner, renders):
     assert _slide(store, 1, 3).settings.rotation == 0 and renders == []
     drift = float(np.abs(_pixels(store, 1, 3) - truth).mean())
     assert drift <= single_save + 0.05, (single_save, drift)
+
+
+def _widen(store, trays=8):
+    """Clone the two scanned trays until the batch holds ``trays`` trays (32 slides)."""
+    manifest = store.snapshot()
+    clones = []
+    for number in range(len(manifest.trays) + 1, trays + 1):
+        source = manifest.trays[(number - 1) % len(manifest.trays)]
+        shutil.copytree(store.tray_dir(source.number), store.tray_dir(number))
+        clones.append(dataclasses.replace(source, number=number))
+    store.update(lambda m: dataclasses.replace(m, trays=m.trays + tuple(clones)))
+    return _keys(store)
+
+
+def _shows_its_master_turned(store, key):
+    pixels, rendered = read_master(store.master_path(*key))
+    wanted = transform_preview(pixels, preview_transform(rendered, _orientation_of(store, *key)))
+    shown = _pixels(store, *key)
+    return shown.shape == wanted.shape and float(np.abs(shown - wanted).mean()) < TOLERANCE
+
+
+def test_batch_orientation_turns_in_the_background_without_per_slide_writes(
+    store, runner, renders, monkeypatch
+):
+    keys = _widen(store)
+    assert len(keys) >= 30
+    caller, updates = threading.get_ident(), {"caller": 0, "worker": 0}
+    real_update = store.update
+
+    def counting(change):
+        updates["caller" if threading.get_ident() == caller else "worker"] += 1
+        return real_update(change)
+
+    monkeypatch.setattr(store, "update", counting)
+    gate, real_stage = threading.Event(), reorient_module.stage_turn
+
+    def held(*args):
+        assert gate.wait(TIMEOUT)
+        return real_stage(*args)
+
+    monkeypatch.setattr(runner_module, "stage_turn", held)
+    try:
+        assert runner.set_batch_orientation(90, True) == ()
+        assert updates["caller"] == 1  # the setting itself, applied at once and atomically
+        defaults = store.snapshot().defaults
+        assert (defaults.rotation, defaults.mirror) == (90, True)
+        runner._enhance_pool.submit(lambda: None).result()  # a stale drain queued so far ran
+        assert renders == []  # slides waiting to be turned never get a 19 s re-enhance
+    finally:
+        gate.set()  # a failed check must not leave the turn job waiting
+    assert runner.wait_idle(TIMEOUT)
+    assert renders == []
+    assert updates["worker"] <= len(keys) // 4  # turned previews are published in groups
+    assert not any(s.preview_stale for t in store.snapshot().trays for s in t.slides)
+    assert all(_shows_its_master_turned(store, key) for key in keys)
+    updated = {(e.number, e.position) for e in _events(runner) if isinstance(e, SlideUpdated)}
+    assert updated >= set(keys)
+

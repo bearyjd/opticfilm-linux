@@ -12,6 +12,8 @@ re-enhance.
 
 import dataclasses
 import os
+import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 from opticfilm_linux.batch.model import (
@@ -73,8 +75,9 @@ def _orientation(manifest: BatchManifest, key: SlideKey) -> Orientation:
 
 
 def _staged(path: Path) -> Path:
-    # not ".pending.jpg": a re-enhance of the same slide may be writing that one right now
-    return path.with_name(path.stem + ".turned.jpg")
+    # not ".pending.jpg": a re-enhance of the same slide may be writing that one right now; one
+    # name per thread, so a quick turn and a batch turn of the same slide never share a file
+    return path.with_name(f"{path.stem}.turned-{threading.get_ident()}.jpg")
 
 
 def _still_wanted(manifest: BatchManifest, target: BatchManifest, key: SlideKey) -> bool:
@@ -90,32 +93,65 @@ def _still_wanted(manifest: BatchManifest, target: BatchManifest, key: SlideKey)
     )
 
 
-def _publish(store: BatchStore, target: BatchManifest, key: SlideKey, staged: Path) -> bool:
-    """Rename the turned preview into place and mark it current, only if nothing moved on."""
-    published = False
+def publish_turns(
+    store: BatchStore, target: BatchManifest, staged: Mapping[SlideKey, Path]
+) -> frozenset[SlideKey]:
+    """Rename turned previews into place and mark them current in ONE manifest write.
+
+    Only slides where nothing moved on since ``target`` are published; returns those keys. The
+    staged files of the others are left for the caller to remove.
+    """
+    published: set[SlideKey] = set()
 
     def change(manifest: BatchManifest) -> BatchManifest:
-        nonlocal published
-        if not _still_wanted(manifest, target, key):
-            return manifest  # a newer edit or a finished re-enhance owns the preview now
-        os.replace(staged, store.preview_path(*key, "after"))
-        published = True
+        published.clear()
+        for key, path in staged.items():
+            if _still_wanted(manifest, target, key):  # else a newer edit or render owns it
+                os.replace(path, store.preview_path(*key, "after"))
+                published.add(key)
+        if not published:
+            return manifest
         trays = tuple(
             dataclasses.replace(
                 t,
                 slides=tuple(
-                    dataclasses.replace(s, preview_stale=False) if s.position == key[1] else s
+                    dataclasses.replace(s, preview_stale=False)
+                    if (t.number, s.position) in published
+                    else s
                     for s in t.slides
                 ),
             )
-            if t.number == key[0]
-            else t
             for t in manifest.trays
         )
         return dataclasses.replace(manifest, trays=trays)
 
     store.update(change)
-    return published
+    return frozenset(published)
+
+
+def stage_turn(
+    store: BatchStore, old: BatchManifest, new: BatchManifest, key: SlideKey
+) -> Path | None:
+    """Write the "after" preview of ``key`` as it looks in ``new`` beside the current one.
+
+    Returns the staged file, or None when the slide cannot be turned (see the module text). On
+    a failure nothing half-written remains and the exception goes to the caller.
+    """
+    after = store.preview_path(*key, "after")
+    if not _eligible(old, new, key) or not after.is_file():
+        return None
+    master = read_master(store.master_path(*key))
+    if master is None:  # a batch rendered before masters existed: re-enhance once
+        return None
+    pixels, rendered = master
+    transform = preview_transform(rendered, _orientation(new, key))
+    staged = _staged(after)
+    try:
+        write_preview(transform_preview(pixels, transform), staged)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    return staged
 
 
 def reorient_preview(
@@ -126,17 +162,10 @@ def reorient_preview(
     Returns whether the turned preview was published. On any failure the previous preview is
     left as it was and nothing half-written remains; the exception goes to the caller.
     """
-    after = store.preview_path(*key, "after")
-    if not _eligible(old, new, key) or not after.is_file():
+    staged = stage_turn(store, old, new, key)
+    if staged is None:
         return False
-    master = read_master(store.master_path(*key))
-    if master is None:  # a batch rendered before masters existed: re-enhance once
-        return False
-    pixels, rendered = master
-    transform = preview_transform(rendered, _orientation(new, key))
-    staged = _staged(after)
     try:
-        write_preview(transform_preview(pixels, transform), staged)
-        return _publish(store, new, key, staged)
+        return key in publish_turns(store, new, {key: staged})
     finally:
         staged.unlink(missing_ok=True)

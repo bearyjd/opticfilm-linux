@@ -15,8 +15,10 @@ import queue
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 
 from opticfilm_linux.batch import export, review
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
@@ -25,13 +27,14 @@ from opticfilm_linux.batch.layout import allocate_location, location_is_active
 from opticfilm_linux.batch.model import (
     BatchManifest,
     Mode,
+    SlideKey,
     SlideRecord,
     SlideSettings,
     SlideStatus,
     TrayRecord,
     TrayStage,
 )
-from opticfilm_linux.batch.reorient import reorient_preview
+from opticfilm_linux.batch.reorient import publish_turns, reorient_preview, stage_turn
 from opticfilm_linux.batch.store import INTERRUPTED_SCAN, BatchError, BatchStore
 from opticfilm_linux.model import ScanSettings
 from opticfilm_linux.scanner import interrupted
@@ -42,6 +45,7 @@ from opticfilm_linux.worker import lower_worker_priority
 
 RESCANNABLE = (TrayStage.REVIEW, TrayStage.FAILED)
 IN_FLIGHT = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
+TURN_GROUP = 8  # background turns published per manifest write
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +91,10 @@ class BatchRunner:
         self._enhance_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="enhance", initializer=lower_worker_priority
         )
+        self._turn_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="turn", initializer=lower_worker_priority
+        )
+        self._turning: Counter = Counter()  # slides waiting for a turn: no re-enhance meanwhile
         self._pending: set[Future] = set()
         self._scans: set[Future] = set()
         self._lock = threading.Lock()
@@ -160,14 +168,20 @@ class BatchRunner:
         self._queue_stale_previews()  # edits whose preview was never redone
 
     def set_batch_orientation(self, rotation: int, mirror: bool) -> tuple[int, ...]:
-        """Turn and flip the whole batch; current previews are turned at once, others are
-        re-enhanced in the background.
+        """Turn and flip the whole batch at once; previews follow in the background: current
+        ones are turned (a ``SlideUpdated`` each), the others re-enhanced.
 
         Returns the trays left as they were because their raw scans were removed.
         """
         old = self._store.snapshot()
-        skipped = review.set_batch_orientation(self._store, rotation, mirror)
-        self._turn_previews(old, [(t.number, s.position) for t in old.trays for s in t.slides])
+        keys = tuple((t.number, s.position) for t in old.trays for s in t.slides)
+        self._hold_turns(keys)  # before the edit marks them stale, so no drain can take them
+        try:
+            skipped = review.set_batch_orientation(self._store, rotation, mirror)
+            self._submit(self._turn_pool, self._turn_job, 0, old, keys)
+        except BaseException:
+            self._release_turns(keys)
+            raise
         self._queue_stale_previews()
         return skipped
 
@@ -175,8 +189,10 @@ class BatchRunner:
         """Apply per-slide settings now; the slide is re-enhanced in the background, unless
         only its turn or flip changed and its preview could be turned at once."""
         old = self._store.snapshot()
-        review.apply_slide_settings(self._store, number, position, settings)
-        if not self._turn_previews(old, [(number, position)]):
+        with self._turns_held([(number, position)]):
+            review.apply_slide_settings(self._store, number, position, settings)
+            turned = self._turn_previews(old, [(number, position)])
+        if not turned:
             self._submit(self._enhance_pool, self._reenhance_job, number, position)
 
     def edit_many(self, keys, changes=None, *, status=None) -> review.BulkEditResult:
@@ -258,12 +274,14 @@ class BatchRunner:
         with self._lock:
             self._stopping = True
         self._scan_pool.shutdown(wait=True, cancel_futures=True)
+        self._turn_pool.shutdown(wait=True, cancel_futures=True)
         self._enhance_pool.shutdown(wait=True, cancel_futures=True)
 
     def close(self) -> None:
         """Finish running work, then stop both workers. Queued enhancement still runs."""
         self._scan_pool.shutdown(wait=True)
         self.wait_idle()
+        self._turn_pool.shutdown(wait=True)
         self._enhance_pool.shutdown(wait=True)
 
     # -- worker jobs ---------------------------------------------------------------------
@@ -306,6 +324,37 @@ class BatchRunner:
         if tray.stage is TrayStage.FAILED:
             self._emit(TrayFailed(number, tray.error or "enhancement failed"))
 
+    def _turn_job(self, _number: int, old: BatchManifest, keys: tuple[SlideKey, ...]) -> None:
+        """Turn the batch's previews in groups; whatever is left stale goes to the drain."""
+        try:
+            for start in range(0, len(keys), TURN_GROUP):
+                group = keys[start : start + TURN_GROUP]
+                for key in sorted(self._turn_group(old, group)):
+                    self._emit(SlideUpdated(*key))
+        finally:
+            self._release_turns(keys)
+            self._queue_stale_previews()
+
+    def _turn_group(self, old: BatchManifest, keys: Iterable[SlideKey]) -> frozenset:
+        new = self._store.snapshot()  # newest settings: a later turn is folded in, not undone
+        staged = {}
+        try:
+            for key in keys:
+                try:
+                    path = stage_turn(self._store, old, new, key)
+                except Exception:
+                    log.warning("could not turn the preview of slide %s", key, exc_info=True)
+                    continue
+                if path is not None:
+                    staged[key] = path
+            return publish_turns(self._store, new, staged) if staged else frozenset()
+        except Exception:
+            log.warning("could not publish turned previews %s", sorted(staged), exc_info=True)
+            return frozenset()
+        finally:
+            for path in staged.values():
+                path.unlink(missing_ok=True)
+
     def _reenhance_job(self, number: int, position: int) -> None:
         try:
             reenhance_slide(self._store, number, position)
@@ -335,6 +384,24 @@ class BatchRunner:
                 done.add(key)
                 self._emit(SlideUpdated(*key))
         return frozenset(done)
+
+    def _hold_turns(self, keys: Iterable[SlideKey]) -> None:
+        with self._lock:
+            self._turning.update(keys)
+
+    def _release_turns(self, keys: Iterable[SlideKey]) -> None:
+        with self._lock:
+            self._turning.subtract(keys)
+            self._turning = +self._turning  # drop the keys no longer waiting
+
+    @contextmanager
+    def _turns_held(self, keys: Iterable[SlideKey]):
+        keys = tuple(keys)
+        self._hold_turns(keys)
+        try:
+            yield
+        finally:
+            self._release_turns(keys)
 
     def _queue_stale_previews(self) -> None:
         with self._lock:
@@ -395,6 +462,8 @@ class BatchRunner:
             self._queue_stale_previews()
 
     def _next_stale(self, attempted: frozenset) -> tuple[int, int] | None:
+        with self._lock:
+            turning = frozenset(self._turning)
         for tray in self._store.snapshot().trays:
             if tray.stage not in (TrayStage.REVIEW, TrayStage.EXPORTED) or tray.raw_removed:
                 continue
@@ -403,7 +472,7 @@ class BatchRunner:
                 if slide.preview_stale or (
                     slide.status is SlideStatus.BLANK and not slide.blank_fingerprint
                 ):
-                    if key not in attempted:
+                    if key not in attempted and key not in turning:
                         return key
         return None
 
