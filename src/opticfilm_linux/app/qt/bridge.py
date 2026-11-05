@@ -72,6 +72,7 @@ SLIDE_KEYS = (
     "sharpen",
     "ownerDecided",
     "exported",
+    "metadataPending",
     "updating",
     "afterUrl",
     "beforeUrl",
@@ -309,6 +310,7 @@ class Bridge(StartBridge):
         int, changed, lambda s, _: s.export.not_accepted if s.export else 0
     )
     exportRawFreed = _p(int, changed, lambda s, _: s.export.raw_freed if s.export else 0)  # noqa: N815
+    metadataPending = _p(int, changed, lambda s, _: s.metadata_pending)  # noqa: N815
     exportMessage = _p(str, changed, lambda s, _: s.export.message if s.export else "")  # noqa: N815
     freeSpaceReady = _p(  # noqa: N815
         bool,
@@ -380,6 +382,11 @@ class Bridge(StartBridge):
         self._controller.close_batch()
 
     # -- scanning and review -------------------------------------------------------------
+
+    @Slot()
+    def updateExportedMetadata(self) -> None:  # noqa: N802
+        self._flush_now()  # a description still being typed is stored first
+        self._controller.update_exported_metadata()
 
     @Slot()
     def scan(self) -> None:

@@ -8,6 +8,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+from opticfilm_linux.batch.meta_sync import MetaUpdateResult
 from opticfilm_linux.batch.model import Flag, SlideStatus, TrayStage
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.driver import POWER_CYCLE_HINT
@@ -205,3 +206,15 @@ def bytes_text(size: int) -> str:
             return f"{int(value)} bytes" if unit == "bytes" else f"{value:.1f} {unit}"
         value /= 1000
     return f"{value:.1f} GB"  # unreachable; keeps the type checker content
+
+
+def meta_update_text(result: MetaUpdateResult) -> tuple[str, str]:
+    """The banner after updating the description and date in exported JPEGs."""
+    done = len(result.updated)
+    message = f"Description and date updated in {done} JPEG{'' if done == 1 else 's'}."
+    if not result.failed:
+        return message, ""
+    failed = len(result.failed)
+    reasons = "; ".join(f"tray {t}, slide {p}: {why}" for (t, p), why in result.failed[:5])
+    more = f"; and {failed - 5} more" if failed > 5 else ""
+    return f"{message} {failed} not changed.", reasons + more

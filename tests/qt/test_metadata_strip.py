@@ -359,3 +359,30 @@ def test_a_mixed_description_typed_then_deleted_changes_nothing(strip):
     QTest.qWait(150)
     assert meta_of(store, 1, 1) == MetaOverride(description="own")
     assert all(s.meta == MetaOverride() for s in slides(store)[1:])
+
+
+def test_an_out_of_date_export_shows_the_badge_and_the_update_button(strip):
+    from opticfilm_linux.batch.model import ExportRecord
+
+    bridge, root, store = strip
+    button = find(root, "metaUpdateJpegs")
+    assert not button.property("visible")
+    record = ExportRecord("box/001.jpg", 40, 32, 600, 600, "T001S1")
+    exported = SlideRecord(1, SlideStatus.ACCEPTED, exported=True, exports=(record,))
+
+    def change(m):
+        tray = dataclasses.replace(m.trays[0], slides=(exported, *m.trays[0].slides[1:]))
+        return dataclasses.replace(m, description="Lake trip", trays=(tray, *m.trays[1:]))
+
+    store.update(change)
+    bridge._controller._rebuild()
+    _wait(bridge, lambda: bridge.metadataPending == 1)
+    badge = _visual(root, "slideThumb_1_1").findChild(QObject, "metadataPendingBadge")
+    _wait(bridge, lambda: badge.property("visible"))
+    other = _visual(root, "slideThumb_1_2").findChild(QObject, "metadataPendingBadge")
+    assert not other.property("visible")
+    _wait(bridge, lambda: button.property("visible"))
+    assert button.property("text") == "Update 1 JPEG"
+    click(root, "metaUpdateJpegs")
+    _wait(bridge, lambda: "not changed" in bridge.bannerMessage)  # no file: reported, not fatal
+    assert bridge.metadataPending == 1

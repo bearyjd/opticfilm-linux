@@ -9,10 +9,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from opticfilm_linux.app.holder import WAIT_BATCH
+from opticfilm_linux.app.messages import meta_update_text
 from opticfilm_linux.app.raw import cleanup_pending
 from opticfilm_linux.app.state import Banner
 from opticfilm_linux.batch.export import clear_exported
 from opticfilm_linux.batch.layout import advance_section
+from opticfilm_linux.batch.meta_sync import MetaUpdateProgress, update_exported_metadata
 from opticfilm_linux.batch.model import Mode, SlideSettings, SlideStatus
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchStore
@@ -320,6 +322,25 @@ class ReviewCommands:
             self._set(_export=None)
 
         self._after_pending_commands(job, "Could not prepare re-export")
+
+    def update_exported_metadata(self) -> None:
+        """On the owner's request only (never automatically): put the current description and
+        date into every exported JPEG that does not carry them yet, without re-encoding."""
+
+        def progress(update: MetaUpdateProgress) -> None:
+            self._set(_banner=Banner(f"Updating JPEGs: {update.done} of {update.total}"))
+            self._rebuild()
+
+        def job(_runner: BatchRunner) -> None:
+            self._set(_banner=Banner("Updating the description and date in exported JPEGs"))
+            self._rebuild()
+            result = update_exported_metadata(
+                self._open_store(), on_progress=progress, cancel=self._closing
+            )
+            self._set(_banner=Banner(*meta_update_text(result)))
+            self._rebuild()
+
+        self._after_pending_commands(job, "Could not update the exported JPEGs")
 
     def cancel_export(self) -> None:
         self._cancel_export.set()

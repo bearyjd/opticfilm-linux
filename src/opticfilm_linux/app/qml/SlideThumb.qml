@@ -64,6 +64,19 @@ Rectangle {
                 font.pixelSize: Theme.fontSmall
             }
             QQC2.Label {
+                objectName: "metadataPendingBadge"
+                text: "✎"
+                visible: thumb.slide.metadataPending === true
+                color: Theme.muted
+                font.pixelSize: Theme.fontSmall
+                Accessible.name: qsTr("Metadata not yet in JPEG")
+                QQC2.ToolTip.text: Accessible.name
+                QQC2.ToolTip.visible: badgeHover.hovered
+                HoverHandler {
+                    id: badgeHover
+                }
+            }
+            QQC2.Label {
                 text: "⚑"
                 visible: thumb.slide.flags.length > 0
                 color: Theme.accent

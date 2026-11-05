@@ -12,6 +12,7 @@ from opticfilm_linux.batch.empty import (
     is_empty_confirmed,
     is_known_empty,
 )
+from opticfilm_linux.batch.meta_sync import out_of_date_keys
 from opticfilm_linux.batch.metadata import resolve
 from opticfilm_linux.batch.model import (
     NO_DELIVERY,
@@ -41,6 +42,7 @@ class SlideCard:
     updating: bool
     preview_token: int  # cached version of the "after" preview; 0 when there is none
     before_preview_token: int = 0
+    metadata_pending: bool = False  # exported, but the JPEG's description or date is not current
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,7 @@ class AppState:
     selection_summary: SelectionSummary = SelectionSummary()
     undo_label: str = ""
     scan_openings: tuple[int, ...] = ALL_POSITIONS  # what the next scan covers (SKIP_EMPTY only)
+    metadata_pending: int = 0  # exported JPEGs whose description or date is not current
 
 
 EMPTY_STATE = AppState(
@@ -307,6 +310,7 @@ def _slide_card(
     slide: SlideRecord,
     tokens: Mapping[tuple[int, int], int],
     updating: frozenset[tuple[int, int]],
+    pending: frozenset[tuple[int, int]] = frozenset(),
 ) -> SlideCard:
     key = (tray.number, slide.position)
     return SlideCard(
@@ -319,6 +323,7 @@ def _slide_card(
         updating=key in updating,
         preview_token=tokens.get(key, 0),
         before_preview_token=tokens.get((*key, "before"), 0),
+        metadata_pending=key in pending,
     )
 
 
@@ -327,15 +332,19 @@ def _batch_fields(
     selected: int | None,
     preview_tokens: Mapping[tuple[int, int], int],
     updating: frozenset[tuple[int, int]],
+    pending: frozenset[tuple[int, int]] = frozenset(),
 ) -> dict:
     trays = manifest.trays if manifest is not None else ()
     current = next((t for t in trays if t.number == selected), None)
     return {
         "batch_name": manifest.name if manifest is not None else None,
         "selected": current.number if current is not None else None,
-        "slides": tuple(_slide_card(current, s, preview_tokens, updating) for s in current.slides)
+        "slides": tuple(
+            _slide_card(current, s, preview_tokens, updating, pending) for s in current.slides
+        )
         if current is not None
         else (),
+        "metadata_pending": len(pending),
         "default_rotation": manifest.defaults.rotation if manifest is not None else 0,
         "default_mirror": manifest.defaults.mirror if manifest is not None else False,
         "export_dir": manifest.defaults.export_dir if manifest is not None else "",
@@ -424,17 +433,19 @@ def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverab
     )
 
 
-def _sheet_trays(manifest, rows, tokens, updating):
+def _sheet_trays(manifest, rows, tokens, updating, pending):
     cards = {
-        tray.number: tuple(_slide_card(tray, slide, tokens, updating) for slide in tray.slides)
+        tray.number: tuple(
+            _slide_card(tray, slide, tokens, updating, pending) for slide in tray.slides
+        )
         for tray in (manifest.trays if manifest else ())
     }
     return tuple(replace(row, slides=cards[row.number]) for row in rows)
 
 
-def _selected_batch_fields(manifest, selected, preview_tokens, updating, selection):
+def _selected_batch_fields(manifest, selected, preview_tokens, updating, selection, pending):
     return {
-        **_batch_fields(manifest, selected, preview_tokens, updating),
+        **_batch_fields(manifest, selected, preview_tokens, updating, pending),
         **selection_fields(manifest, selection or Selection()),
     }
 
@@ -466,16 +477,17 @@ def build_state(
     selection: Selection | None = None,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
+    pending = frozenset(out_of_date_keys(manifest)) if manifest is not None else frozenset()
     rows = _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable)
     scanner_state = manifest, scanner, scan_pending, readonly
     holder_state = holder_control, holder_busy, next_strip, jobs_running, holder_latch
     return AppState(
-        **_selected_batch_fields(manifest, selected, preview_tokens, updating, selection),
+        **_selected_batch_fields(manifest, selected, preview_tokens, updating, selection, pending),
         **_auto_fields(manifest, readonly, preview_tokens, raw_pending),
         **_scanner_fields(*scanner_state, *holder_state),
         batch_session=batch_session,
         readonly=readonly,
-        trays=_sheet_trays(manifest, rows, preview_tokens, updating),
+        trays=_sheet_trays(manifest, rows, preview_tokens, updating, pending),
         banner=banner,
         export=export,
         free_space=free_space,

@@ -348,6 +348,17 @@ Rectangle {
                 }
             }
         }
+        PillButton {
+            // Never automatic, also not in hands-free mode: only this button rewrites JPEGs.
+            objectName: "metaUpdateJpegs"
+            Layout.columnSpan: content.columns
+            visible: bridge.metadataPending > 0
+            enabled: !bridge.readonly
+            text: bridge.metadataPending === 1 ? qsTr("Update 1 JPEG") : qsTr("Update %1 JPEGs").arg(bridge.metadataPending)
+            Accessible.name: qsTr("Put the current description and date into %1 exported JPEGs").arg(bridge.metadataPending)
+            Accessible.description: qsTr("Only the description and date change; the image is not encoded again")
+            onClicked: bridge.updateExportedMetadata()
+        }
         QQC2.Label {
             objectName: "metaError"
             Layout.fillWidth: true
