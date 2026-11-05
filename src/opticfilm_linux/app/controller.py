@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path as Path
 from typing import Literal
 
 from opticfilm_linux.app.auto import AutoPipeline as AutoPipeline
