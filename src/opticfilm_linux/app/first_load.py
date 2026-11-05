@@ -92,6 +92,7 @@ class FirstLoadCommands:
 
     def _first_load_job(self, session, load, token, done, cancel) -> None:
         with self._lock:
+            self._forget_scan_openings()  # a holder is being loaded
             sequence = self._next_latch_sequence()
 
         def prompt():

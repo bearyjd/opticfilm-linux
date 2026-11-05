@@ -23,6 +23,7 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
     TrayStage,
 )
+from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
@@ -244,6 +245,7 @@ class AppState:
     focus: SlideKey | None = None
     selection_summary: SelectionSummary = SelectionSummary()
     undo_label: str = ""
+    scan_openings: tuple[int, ...] = ALL_POSITIONS  # what the next scan covers (SKIP_EMPTY only)
 
 
 EMPTY_STATE = AppState(

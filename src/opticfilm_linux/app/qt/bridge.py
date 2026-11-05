@@ -225,6 +225,13 @@ class Bridge(StartBridge):
     nextStripEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.next_strip_enabled, constant=True
     )
+    skipEmptyEnabled = Property(  # noqa: N815
+        bool, lambda self: self._controller.skip_empty_enabled, constant=True
+    )
+    skipGapsEnabled = Property(  # noqa: N815
+        bool, lambda self: self._controller.skip_gaps_enabled, constant=True
+    )
+    scanOpenings = _p("QVariantList", changed, lambda s, _: list(s.scan_openings))  # noqa: N815
 
     hasBatch = _p(bool, changed, lambda s, _: s.batch_name is not None)  # noqa: N815
     batchName = _p(str, changed, lambda s, _: s.batch_name or "")  # noqa: N815
@@ -378,6 +385,14 @@ class Bridge(StartBridge):
     def scan(self) -> None:
         self._flush_now()
         self._controller.scan()
+
+    @Slot("QVariantList")
+    def setScanOpenings(self, openings: list) -> None:  # noqa: N802
+        # A JavaScript number arrives as a float: only a whole one becomes an int. Anything else
+        # (1.9, True, "1", None) is passed on and refused by the controller, after its switch check.
+        self._controller.set_scan_openings(
+            tuple(int(p) if type(p) is float and p.is_integer() else p for p in openings)
+        )
 
     @Slot(int)
     def rescan(self, number: int) -> None:

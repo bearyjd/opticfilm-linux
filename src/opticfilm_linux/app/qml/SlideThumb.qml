@@ -38,7 +38,8 @@ Rectangle {
             QQC2.Label {
                 anchors.centerIn: parent
                 visible: !thumb.slide.afterUrl && !thumb.slide.beforeUrl
-                text: thumb.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
+                objectName: "thumbPlaceholder"
+                text: thumb.slide.status === "skipped" ? qsTr("Empty (not scanned)") : thumb.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
                 color: Theme.muted
                 font.pixelSize: Theme.fontSmall
             }
