@@ -316,7 +316,8 @@ def test_a_current_render_is_published(store, monkeypatch):
 def test_a_cleanup_that_failed_after_committing_can_be_finished_later(store, monkeypatch):
     _exported(store, 1)
     folder = store.sweep_dir(1, _tray(store, 1).sweep_version)
-    size = export_module._folder_size(folder)
+    masters = store.tray_dir(1).glob("previews/*-master*.png")
+    size = export_module._folder_size(folder) + sum(p.stat().st_size for p in masters)
     real = shutil.rmtree
 
     def broken(path, *args, **kwargs):
