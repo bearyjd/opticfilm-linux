@@ -46,6 +46,7 @@ from opticfilm_linux.scanner.interrupted import ScanInterrupted, ScannerRefused
 log = logging.getLogger(__name__)
 
 SLIDES = "1-4"  # the four openings of the mounted-slide holder
+CLEAN_ENV = "OPTICFILM_DRIVER_CLEAN"  # "1" restores the driver's own dust clean (no --no-clean)
 DARK_FALLBACK = "default"  # use the vendor offset codes if the dark reading is a stale buffer
 FRAME_QUARTER_TURNS = 1  # counter-clockwise; turns a frame so the slide's long side lies along x
 DRIVER_ENV = "OPTICFILM_DRIVER_DIR"
@@ -481,6 +482,8 @@ class DriverScanner:
         try:
             output = work / "tray.tiff"
             command = ["scan", "--slides", SLIDES, "--dpi", str(settings.dpi), "--ir"]
+            if os.environ.get(CLEAN_ENV, "").strip() != "1":
+                command.append("--no-clean")  # the app's IR dust repair runs on the raw frames
             command += ["--dark-fallback", DARK_FALLBACK, "-o", str(output)]
             self._require_file_lock()
             interrupted.require_clear()  # refused before anything starts: nothing failed
