@@ -8,7 +8,6 @@ from pathlib import Path
 from opticfilm_linux.app import selection
 from opticfilm_linux.app.state import Banner, selection_fields
 from opticfilm_linux.batch import review
-from opticfilm_linux.batch.events import SlideUpdated
 from opticfilm_linux.batch.export import clear_exported
 from opticfilm_linux.batch.model import SlideSettings, SlideStatus, TrayStage
 
@@ -217,10 +216,7 @@ class SelectionCommands:
                 entry = self._undo[-1] if self._undo else None
             if entry is None:
                 return
-            result = review.restore_many(runner._store, entry.before)
-            runner._queue_stale_previews()
-            for number, position in result.before:
-                runner._emit(SlideUpdated(number, position))
+            result = runner.restore_many(entry.before)
             with self._lock:
                 self._undo, _ = selection.pop_undo(self._undo)
                 self._auto_due.update(number for number, _ in result.before)
