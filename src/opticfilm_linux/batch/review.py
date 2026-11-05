@@ -10,6 +10,13 @@ from types import MappingProxyType
 
 from opticfilm_linux.batch.empty import is_empty_confirmed
 from opticfilm_linux.batch.enhance import RawRemoved
+from opticfilm_linux.batch.metadata import (
+    FIELDS,
+    MetaOverride,
+    checked_meta,
+    checked_override,
+    resolve,
+)
 from opticfilm_linux.batch.model import (
     NO_DELIVERY,
     BatchManifest,
@@ -483,6 +490,172 @@ def restore_many(
     """
     saved = dict(before)
     return _edit_many(store, saved, lambda key, slide: saved[key])
+
+
+META_SCOPES = ("from_now_on", "inheriting")  # a batch change: trays scanned from now on, or all
+
+
+@dataclasses.dataclass(frozen=True)
+class BeforeMeta:
+    """What a metadata edit replaced: slide and tray overrides, and the batch values."""
+
+    slides: Mapping[SlideKey, MetaOverride] = MappingProxyType({})
+    trays: Mapping[int, MetaOverride] = MappingProxyType({})
+    batch: tuple[str, str | None] | None = None  # (description, date) before a batch edit
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "slides", MappingProxyType(dict(self.slides)))
+        object.__setattr__(self, "trays", MappingProxyType(dict(self.trays)))
+
+    @property
+    def empty(self) -> bool:
+        return not self.slides and not self.trays and self.batch is None
+
+
+@dataclasses.dataclass(frozen=True)
+class MetaEditResult:
+    skipped: Mapping[SlideKey, str]  # only keys that no longer exist
+    before: BeforeMeta
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "skipped", MappingProxyType(dict(self.skipped)))
+
+
+def _checked_change(change: Mapping[str, str | None]) -> dict[str, str | None]:
+    return {field: checked_override(field, value) for field, value in change.items()}
+
+
+def edit_meta_many(
+    store: BatchStore, keys: Iterable[SlideKey], change: Mapping[str, str | None]
+) -> MetaEditResult:
+    """Set slide metadata in one update. Metadata needs no raw data and no render, so only
+    missing keys are skipped, and nothing but ``meta`` changes."""
+    values = _checked_change(change)
+    selected = frozenset(keys)
+    result: list[MetaEditResult] = []
+
+    def update(manifest: BatchManifest) -> BatchManifest:
+        result.clear()
+        new, skipped, before = _slide_metas(
+            manifest, selected, lambda key, meta: dataclasses.replace(meta, **values)
+        )
+        result.append(MetaEditResult(skipped, BeforeMeta(slides=before)))
+        return new
+
+    store.update(update)
+    return result[0]
+
+
+def _slide_metas(manifest: BatchManifest, selected, new_meta):
+    """Pure: give each selected slide ``new_meta(key, meta)``; return what was replaced."""
+    skipped = dict.fromkeys(selected, "missing")
+    before: dict[SlideKey, MetaOverride] = {}
+
+    def slide_meta(number: int, slide: SlideRecord) -> SlideRecord:
+        key = (number, slide.position)
+        if key not in selected:
+            return slide
+        del skipped[key]
+        before[key] = slide.meta
+        return dataclasses.replace(slide, meta=new_meta(key, slide.meta))
+
+    trays = tuple(
+        dataclasses.replace(t, slides=tuple(slide_meta(t.number, s) for s in t.slides))
+        if any((t.number, s.position) in selected for s in t.slides)
+        else t
+        for t in manifest.trays
+    )
+    return dataclasses.replace(manifest, trays=trays), skipped, before
+
+
+def _with_tray_metas(manifest: BatchManifest, metas: Mapping[int, MetaOverride]):
+    trays = tuple(
+        dataclasses.replace(t, meta=metas[t.number]) if t.number in metas else t
+        for t in manifest.trays
+    )
+    return dataclasses.replace(manifest, trays=trays)
+
+
+def edit_tray_meta(
+    store: BatchStore, number: int, change: Mapping[str, str | None]
+) -> MetaEditResult:
+    """Set a tray's own metadata, at any stage, raw data kept or not."""
+    values = _checked_change(change)
+    before: dict[int, MetaOverride] = {}
+
+    def update(manifest: BatchManifest) -> BatchManifest:
+        tray, _ = _find(manifest, number)
+        before.clear()
+        before[number] = tray.meta
+        return _with_tray_metas(manifest, {number: dataclasses.replace(tray.meta, **values)})
+
+    store.update(update)
+    return MetaEditResult({}, BeforeMeta(trays=before))
+
+
+def _batch_value(field: str, value: str | None) -> str | None:
+    """The batch has no parent: a blank is stored as ``description=""`` and ``date=None``."""
+    if field not in FIELDS:
+        raise ValueError(f"metadata field must be one of {', '.join(FIELDS)}, not {field!r}")
+    when, text = checked_meta(value if field == "date" else None, value or "")
+    return when if field == "date" else text
+
+
+def _pinned(manifest: BatchManifest, fields: Iterable[str]) -> dict[int, MetaOverride]:
+    """Trays that inherit a changing field keep the value they resolve to now."""
+    pins = {}
+    for tray in manifest.trays:
+        resolved = resolve(manifest, tray)
+        values = {
+            "description": resolved.description,
+            "date": resolved.date.text() if resolved.date else "",
+        }
+        own = {f: values[f] for f in fields if getattr(tray.meta, f) is None}
+        if own:
+            pins[tray.number] = dataclasses.replace(tray.meta, **own)
+    return pins
+
+
+def edit_batch_meta(
+    store: BatchStore, change: Mapping[str, str | None], *, scope: str = "from_now_on"
+) -> MetaEditResult:
+    """Change the batch default. ``from_now_on`` first pins the current values on existing
+    trays that still inherit them, in the same update, so only later trays get the change."""
+    if scope not in META_SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(META_SCOPES)}, not {scope!r}")
+    values = {field: _batch_value(field, value) for field, value in change.items()}
+    before: dict[str, object] = {}
+
+    def update(manifest: BatchManifest) -> BatchManifest:
+        pins = _pinned(manifest, values) if scope == "from_now_on" else {}
+        before.update(
+            trays={n: t.meta for t in manifest.trays if (n := t.number) in pins},
+            batch=(manifest.description, manifest.date),
+        )
+        return dataclasses.replace(_with_tray_metas(manifest, pins), **values)
+
+    store.update(update)
+    return MetaEditResult({}, BeforeMeta(**before))
+
+
+def restore_meta_many(store: BatchStore, before: BeforeMeta) -> MetaEditResult:
+    """Undo a metadata edit exactly, in one update; a vanished tray or slide is skipped."""
+    saved = dict(before.slides)
+    skipped: dict[SlideKey, str] = {}
+
+    def restore(manifest: BatchManifest) -> BatchManifest:
+        known = {t.number for t in manifest.trays}
+        manifest = _with_tray_metas(manifest, {n: m for n, m in before.trays.items() if n in known})
+        if before.batch is not None:
+            description, date = before.batch
+            manifest = dataclasses.replace(manifest, description=description, date=date)
+        manifest, missing, _ = _slide_metas(manifest, set(saved), lambda key, meta: saved[key])
+        skipped.clear()
+        skipped.update(missing)
+        return manifest
+
+    store.update(restore)
+    return MetaEditResult(skipped, before)
 
 
 def toggle_accepted_many(store: BatchStore, keys: Iterable[SlideKey]) -> BulkEditResult:
