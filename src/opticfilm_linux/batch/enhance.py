@@ -21,7 +21,7 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
     TrayStage,
 )
-from opticfilm_linux.batch.previews import make_preview, write_preview
+from opticfilm_linux.batch.previews import make_preview, write_master, write_preview
 from opticfilm_linux.batch.slots import compose, slot_orientation
 from opticfilm_linux.batch.store import BatchError, BatchStore, is_interrupted
 from opticfilm_linux.model import RawSweep, Slide
@@ -150,23 +150,27 @@ def _process_slide(
         snapshot.status is SlideStatus.BLANK
         and (snapshot.owner_decided or snapshot.preview_stale or not snapshot.blank_fingerprint)
     ) or (defaults.skip_blank and not _protect_content(snapshot) and is_blank(slide))
-    enhanced = (
-        slide.rgb
-        if blank
-        else enhance_slide(
-            slide, options_for(defaults, tray.mode, snapshot.settings, snapshot.position), sweep.dpi
-        )
-    )
+    options = options_for(defaults, tray.mode, snapshot.settings, snapshot.position)
+    enhanced = slide.rgb if blank else enhance_slide(slide, options, sweep.dpi)
     before = store.preview_path(number, position, "before")
     after = store.preview_path(number, position, "after")
+    master = store.master_path(number, position)
+    pending_master = master.with_name(master.stem + ".pending.png")
 
     def publish() -> None:
         os.replace(_pending(before), before)
         os.replace(_pending(after), after)
+        if blank:  # a blank "after" is the raw slide, never oriented: nothing to turn from
+            master.unlink(missing_ok=True)
+        else:
+            os.replace(pending_master, master)
 
     try:
         write_preview(make_preview(slide.rgb, gamma=BEFORE_GAMMA), _pending(before))
-        write_preview(make_preview(enhanced, gamma=BEFORE_GAMMA if blank else 1.0), _pending(after))
+        shown = make_preview(enhanced, gamma=BEFORE_GAMMA if blank else 1.0)
+        write_preview(shown, _pending(after))
+        if not blank:
+            write_master(shown, (options.rotation, options.mirror), pending_master)
         flags = () if blank else compute_flags(enhanced, slide.ir, sweep.dpi, visible=slide.rgb)
         _merge_slide(
             store,
@@ -182,6 +186,7 @@ def _process_slide(
     finally:  # a result that was dropped leaves nothing behind
         _pending(before).unlink(missing_ok=True)
         _pending(after).unlink(missing_ok=True)
+        pending_master.unlink(missing_ok=True)
 
 
 def _existing(tray: TrayRecord, position: int) -> SlideRecord | None:
