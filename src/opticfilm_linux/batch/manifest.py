@@ -137,7 +137,8 @@ def _export_record(data: Any) -> ExportRecord:
         value = data.get(key, 0)
         if type(value) is not int or value < minimum:
             raise ManifestFormatError(f"{key} must be an integer >= {minimum}")
-    return ExportRecord(**data)
+    known = {f.name for f in fields(ExportRecord)}
+    return ExportRecord(**{k: v for k, v in data.items() if k in known})
 
 
 def _slide_delivery(data: dict[str, Any]) -> tuple[ExportRecord, ...]:
