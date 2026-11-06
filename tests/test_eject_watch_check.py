@@ -174,21 +174,14 @@ def _default_signal_dispositions():
         signal.signal(sig, handler)
 
 
-@pytest.fixture
-def rig(tmp_path: Path):
-    scripts = tmp_path / "scripts"
-    bindir = tmp_path / "bin"
-    proc = tmp_path / "proc"
-    sysfs = tmp_path / "sys"
-    state = tmp_path / "state"
-    for d in (scripts, bindir, proc, sysfs, state, tmp_path / "driver"):
-        d.mkdir()
+def _install_rig_files(tmp_path: Path, scripts: Path, bindir: Path, proc: Path, sysfs: Path):
+    """The app source subset, the fake process and device, the script and the stubs."""
     shutil.copytree(
         APP_SRC, tmp_path / "src" / "opticfilm_linux", ignore=shutil.ignore_patterns("*")
     )
     (tmp_path / "src" / "opticfilm_linux" / "app").mkdir()
     shutil.copy(APP_SRC / "__init__.py", tmp_path / "src" / "opticfilm_linux")
-    for name in ("__init__.py", "eject_watch.py"):
+    for name in ("__init__.py", "eject_watch.py", "sandbox.py"):
         shutil.copy(APP_SRC / "app" / name, tmp_path / "src" / "opticfilm_linux" / "app")
     (proc / "1").mkdir()
     (proc / "1" / "cmdline").write_bytes(b"/sbin/init\0")
@@ -197,10 +190,11 @@ def rig(tmp_path: Path):
     _exe(scripts / "install-eject-watch.sh", INSTALLER_STUB)
     _exe(bindir / "systemctl", SYSTEMCTL_STUB)
     _exe(bindir / "journalctl", JOURNALCTL_STUB)
-    log = tmp_path / "calls.log"
-    log.write_text("")
-    cgroot = tmp_path / "cgroup"
-    cgroot.mkdir()
+
+
+def _rig_env(
+    tmp_path: Path, bindir: Path, proc: Path, sysfs: Path, cgroot: Path, log: Path, state: Path
+) -> dict[str, str]:
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -218,6 +212,24 @@ def rig(tmp_path: Path):
     }
     for k in ("OPTICFILM_DRIVER_DIR", "INIT_ENABLED"):
         env.pop(k, None)
+    return env
+
+
+@pytest.fixture
+def rig(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    bindir = tmp_path / "bin"
+    proc = tmp_path / "proc"
+    sysfs = tmp_path / "sys"
+    state = tmp_path / "state"
+    for d in (scripts, bindir, proc, sysfs, state, tmp_path / "driver"):
+        d.mkdir()
+    _install_rig_files(tmp_path, scripts, bindir, proc, sysfs)
+    log = tmp_path / "calls.log"
+    log.write_text("")
+    cgroot = tmp_path / "cgroup"
+    cgroot.mkdir()
+    env = _rig_env(tmp_path, bindir, proc, sysfs, cgroot, log, state)
 
     def run(*args: str, **extra: str):
         r = subprocess.run(

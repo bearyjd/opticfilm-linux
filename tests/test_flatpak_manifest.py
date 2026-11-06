@@ -25,6 +25,7 @@ REQUIRED_KEYS = (
 )
 ALLOWED_FINISH_ARGS = re.compile(
     r"--(share=ipc|socket=(wayland|fallback-x11)|device=(all|usb)"
+    r"|talk-name=org\.freedesktop\.Flatpak"
     r"|filesystem=xdg-(pictures|documents|download)(:(ro|rw|create))?"
     r"|env=OPTICFILM_[A-Z_]+=[\w/.-]+)"
 )
@@ -319,7 +320,7 @@ def test_wrong_base_is_reported():
         "--filesystem=host:ro",
         "--filesystem=/usr",
         "--socket=system-bus",
-        "--talk-name=org.freedesktop.Flatpak",
+        "--talk-name=org.freedesktop.secrets",
         "--share=network",
     ],
 )

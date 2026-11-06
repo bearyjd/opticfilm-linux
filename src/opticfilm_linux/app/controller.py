@@ -36,6 +36,7 @@ from opticfilm_linux.app.lifecycle_commands import (
 from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.preview_tokens import PreviewTokens
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
+from opticfilm_linux.app.sandbox import host_terminal_hint
 from opticfilm_linux.app.scan_openings import ScanOpeningsCommands
 from opticfilm_linux.app.selection import Selection, prune, selectable_keys
 from opticfilm_linux.app.selection_commands import SelectionCommands
@@ -422,7 +423,8 @@ class Controller(
         if not self._scanner_idle():
             text = (
                 "The Eject button watcher was left stopped: the scanner was still busy. "
-                f"Start it with `systemctl --user start {UNIT}` when it is idle."
+                f"Start it with `systemctl --user start {UNIT}`{host_terminal_hint()} "
+                "when it is idle."
             )
             log.warning(text)
             if not self._closing.is_set():

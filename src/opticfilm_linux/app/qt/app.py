@@ -17,6 +17,7 @@ from opticfilm_linux.app.qt.window_geometry import (
     override_geometry,
     resolve_override,
 )
+from opticfilm_linux.app.sandbox import in_flatpak
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -42,6 +43,11 @@ STYLE = "Basic"
 LOGGER = logging.getLogger(__name__)
 WINDOW_SIZE_ENV = "OPTICFILM_WINDOW_SIZE"
 LOAD_COMMAND_ENV = "OPTICFILM_LOAD_COMMAND"  # replaces the shown first-load terminal command
+FLATPAK_RUNNER_NOTE = (
+    "This app runs in a Flatpak sandbox, which cannot run distrobox. Run this command in a "
+    "host terminal, with the driver folder from your own checkout of opticfilm135i-linux "
+    f"(or set {LOAD_COMMAND_ENV} to the command you use)."
+)
 MISSING_QT_MESSAGE = (
     "opticfilm: the desktop app needs the distribution's PySide6 and Kirigami (the PyPI PySide6 "
     "wheel bundles its own Qt and cannot load Kirigami).\n"
@@ -73,6 +79,8 @@ def load_command_text() -> str:
     custom = os.environ.get(LOAD_COMMAND_ENV, "").strip()
     if custom:
         return custom
+    if in_flatpak():  # the sandbox has no distrobox, and its driver folder is not on the host
+        return load_command(None, runner="host")
     directory = os.environ.get(DRIVER_ENV)
     return load_command(Path(directory) if directory else None)
 
@@ -81,6 +89,8 @@ def load_runner_note() -> str:
     """The help dialog's line on which runner the shown command assumes."""
     if os.environ.get(LOAD_COMMAND_ENV, "").strip():
         return f"This is the command set in {LOAD_COMMAND_ENV}."
+    if in_flatpak():
+        return FLATPAK_RUNNER_NOTE
     return runner_note()
 
 
