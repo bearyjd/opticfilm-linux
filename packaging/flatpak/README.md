@@ -4,10 +4,10 @@
 buildable yet** because the app commit (`PLACEHOLDER_COMMIT_APP`) is only pinned in the last
 PR. The Python wheels are pinned (below). The test `tests/test_flatpak_manifest.py` lints
 the manifest offline and runs `flatpak-builder --show-manifest` on it when that tool is installed.
-No build has been run.
+No build has been run (not built). `flatpak-builder` is installed here; only the offline `--show-manifest` check in the test was run, no real build or download.
 
 - The scanner driver is an external dependency: the owner's fork `bearyjd/opticfilm135i-linux`,
-  pinned at commit `eaa6f88` (full sha in the manifest). That commit has the calibration stop gate
+  pinned at commit `cae1c50` (fork master tip, driver v0.2.10; full sha in the manifest; bumped 2026-11-06 from `eaa6f88`). Between the two pins only the version strings changed in `pyproject.toml` and `of135i/__init__.py`; third-party runtime imports are unchanged (numpy, tifffile, usb), only stdlib `tempfile` and `traceback` were added, so no wheel change was needed. That commit has the calibration stop gate
   default `enforce`; upstream `cgillinger` master (`6270867`) has the gate off by default and exits
   4 on slide scans here, so it is not used. Nothing from Plustek or the vendor driver is vendored
   here.

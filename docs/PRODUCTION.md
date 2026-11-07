@@ -110,7 +110,12 @@ been run cold through the finished app. See section 7.
 
 ### 2.3 After the scan
 
-- The holder **stays latched** after a scan. Auto-eject is not implemented.
+- The holder **stays latched** after a scan. Automatic eject exists but is **off by default**: set
+  `OPTICFILM_AUTO_EJECT=1` (also `true`, `yes`, `on`) before starting the app and it runs its own
+  eject once a good scan has fully ended. It skips with a banner ("Automatic eject skipped") and
+  does not retry if the scan failed, the driver exited with an error, the batch is closing or the
+  scanner state is unknown. It has **not** been run on the scanner, supervised or not
+  (`docs/ROADMAP.md`: stays off until hardware rungs H5, H7 and H8 have passed twice).
 - Eject with the app's **Eject holder** button, or the scanner's front-panel Eject button.
   The panel button works while the app window is idle, not during a scan or holder move.
 - Look at the holder. Confirm it is released before you pull it.
@@ -140,7 +145,8 @@ Enhancement runs in the background while the next tray scans (README).
 1. Open the finished tray. Slides with no flag are accepted automatically. Flagged ones
    (very dark, very bright, clipped, dusty) wait for you.
 2. Check each flagged slide. Use rotate and mirror if needed.
-   - Rotating one slide in review used to take about 19 s. A fix is in progress.
+   - Rotating one slide in review used to take about 19 s. The fix merged as PR #99: rotate and mirror
+     now turn the existing preview instead of re-enhancing the slide.
    - Preview lag does not change the output. **Export recomputes from the raw data.**
 3. Press **Accept all** when satisfied.
 4. **Export.** JPEG is the output format for the heirloom workflow. Files go to
@@ -181,14 +187,14 @@ verification." Turn **Keep raw scans after export** on if you want to keep every
 |---|---|---|---|
 | Power light blinking | Scanner is starting up after power-on | Wait. A steady light means ready. | Send load or scan commands while it blinks. |
 | Power light blinks for a very long time | **Unverified** | Switch OFF until the lights go out, then ON. Check the USB cable. | Keep pressing buttons. |
-| Holder locked after a scan | By design: the holder stays latched until you eject (auto-eject not implemented) | Press **Eject holder** in the app, or the front-panel Eject button. Look at the holder. | Pull the holder out by force. |
+| Holder locked after a scan | By design: the holder stays latched until you eject (automatic eject is off by default, `OPTICFILM_AUTO_EJECT`, section 2.3) | Press **Eject holder** in the app, or the front-panel Eject button. Look at the holder. | Pull the holder out by force. |
 | Load fails or stalls | Holder not at the stop, or a bad load. The driver then refuses all commands until a power cycle. | If the motor grinds or stalls: OFF at once (see Motor grinds). Otherwise close the app, run `of135i doctor` (section 6) while the scanner still responds, then power-cycle (section 2.1), reseat the holder, load once. | Retry load in a loop. Force the holder. |
 | "Scanner is not loaded" after a power cycle | The scanner is cold | Do the cold start (2.1) and the in-app load step. | Press Scan before loading. |
 | Scan interrupted (window closed, killed, Ctrl-C) | Scanner state unknown. The app records a marker and refuses scan, eject and load. | Power-cycle (2.1), load the holder, press **Confirm scanner reset…** (the primary button reads **Restart scanner…** in this state), rescan the tray. The tray is not enhanced or exported. | Delete the marker file by hand. Confirm before you have power-cycled and loaded. |
 | Eject watcher conflict: the app refuses to open the scanner and tells you to stop the unit | The watcher unit, or a leftover `of135i watch`, is still alive. Only one program may use the scanner. | `systemctl --user stop opticfilm-eject-watch.service`, then open the batch again. | Kill `of135i watch` with `kill -9`. Use `pkill -f`. |
 | The driver says "another program is using the scanner; wait for it to finish or close it, then try again" | Another `ofscan` or app run holds the scanner lock | Wait for it to finish or close it, then retry. | Start a second program on the scanner. |
 | Slow step after the scan finishes | The driver's post-processing is about 2 min single-core per frame (one unit). The dust clean adds time (about 22 min vs 14 min per tray). | Wait. Stop other heavy jobs. | Close the app or power off during this step. |
-| Slide rotates slowly in review | Preview was recomputed in about 19 s per slide (fix in progress) | Wait for the preview. Set orientation per batch where you can. Output is not affected: export recomputes from raw. | Rotate the same slide repeatedly while it works. |
+| Slide rotates slowly in review | Preview was recomputed in about 19 s per slide (fixed in PR #99: rotate turns the existing preview) | Wait for the preview. Set orientation per batch where you can. Output is not affected: export recomputes from raw. | Rotate the same slide repeatedly while it works. |
 | Motor grinds or stalls | Mechanical problem or a bad state | Power **OFF** at once. Send nothing else. Inspect the holder before you power on. `doctor` only helps before power-off, if the scanner still responds and it is safe (section 6). | Send more commands. Force the holder. Power on before inspecting the holder. |
 | Calibration error "dark_b is residual" | The scanner is left in an unsafe state (reg 0x01 = 0x02). This is what the stop gate prevents. | Power-cycle, load, rescan. Keep the stop gate on. | Turn the gate off. Keep scanning without a power cycle. |
 | App will not start | Missing PySide6 or Kirigami, wrong driver dir, or a second window holds the batch | Check the command in section 1 (`PYTHONPATH`, `OPTICFILM_DRIVER_DIR`). Install `python3-pyside6 kf6-kirigami qt6-qtdeclarative`. A second window on the same batch opens read-only. | Install the PySide6 wheel from PyPI (it cannot load system Kirigami). |
@@ -262,8 +268,11 @@ runner is **unverified**; the form above matches the load command the app prints
   finished in-app flow still needs a run after a real power cycle (STATE.md: needs the owner).
 - **First hands-free tray with auto export.** Auto export is off by default. A supervised tray
   with auto export on and keep raw on has not been run.
-- **Flatpak.** The manifest is a draft and not buildable. Scanning from inside the sandbox is
-  untested (`packaging/flatpak/README.md`).
+- **Flatpak.** The manifest is a draft and not buildable. The sandbox integration merged as
+  PR #113: sandbox detection, a host-terminal load command, watcher stop/restore via
+  `flatpak-spawn --host`, and a refusal to open the scanner when the host cannot be asked. Nothing
+  has run inside a real sandbox. The `--talk-name=org.freedesktop.Flatpak` permission is
+  documented in `packaging/flatpak/README.md`.
 - **Finish box / Next section** on real hardware, and the heirloom output layout on a real box.
 - **Blinking power light that never stops** (section 5): cause unknown.
 - **Light colour.** "Steady blue" is an owner observation, not in the repo.
@@ -272,4 +281,5 @@ runner is **unverified**; the form above matches the load command the app prints
   (3600 dpi). Treat them as estimates.
 - **Reliability.** Passing series so far are one unit, one operator. They are not a
   reliability figure.
-- **Auto-eject** after a scan is not implemented, so every tray needs an eject action.
+- **Auto-eject** is implemented but off by default and never run on hardware, so every tray still
+  needs an eject action unless you opt in.
