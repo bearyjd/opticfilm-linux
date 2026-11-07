@@ -24,6 +24,7 @@ from opticfilm_linux.app.load_and_scan import (
 from opticfilm_linux.app.messages import holder_failed_text
 from opticfilm_linux.scanner.base import ScanError, ScannerStatus, StatusReading
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 LATCHED = "Holder: latched"
 RELEASED = "Holder: released"
@@ -43,11 +44,16 @@ class LoadScanner(FakeScanner):
         self.calls = []
         self.scans = 0
         self.pressed = False
+        self.on_ready = None  # called once, by the first status read that answers READY
 
     def status(self):
         return self.current_status
 
     def status_reading(self):
+        hook = self.on_ready
+        if hook is not None and self.current_status is ScannerStatus.READY:
+            self.on_ready = None
+            hook()
         return StatusReading(self.current_status, self.pressed)
 
     def load_next_strip(self):
@@ -469,3 +475,77 @@ def test_a_manual_scan_during_the_wait_is_refused_and_only_one_scan_runs(build, 
     settle(controller)
     assert scanner.scans == 1
     assert scanner.load_calls == 1
+
+
+def test_a_not_ready_answer_asked_before_the_release_does_not_count(build, tmp_path):
+    controller, scanner = build()
+    open_new(controller, tmp_path / "batch")
+    controller.load_next_holder()
+    wait_until(controller, lambda: controller.state().holder_latch_text == LATCHED, SHORT)
+    wait_until(controller, lambda: not controller.state().holder_busy, SHORT)
+    scanner.current_status = ScannerStatus.NOT_READY
+    wait_until(controller, lambda: controller.state().scanner is ScannerStatus.NOT_READY, SHORT)
+    poller = controller._session.poller
+    wait_until(controller, lambda: poller.wait_idle(0.0), SHORT)
+    poller.poll = lambda: None  # frozen: its last NOT_READY was asked before the release
+    controller.eject_holder()
+    wait_until(controller, lambda: controller.state().holder_latch_text == RELEASED, SHORT)
+    scanner.load_calls = 0
+    assert not controller.state().can_load_and_scan
+    assert_refused(controller, scanner, SCANNER_NOT_WAITING)
+
+
+def test_a_latch_lost_before_the_hand_over_stops_without_a_scan(build, tmp_path):
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+    scanner.on_ready = lambda: controller._remember_holder_latch(HolderLatch.UNKNOWN)
+
+    controller.load_and_scan()
+
+    wait_phase(controller, "failed")
+    wait_until(controller, lambda: banner_text(controller) == STOPPED_ANOMALY, SHORT)
+    settle(controller)
+    assert scanner.scans == 0
+    assert scanner.load_calls == 1
+
+
+def test_a_batch_change_pending_at_the_hand_over_stops_without_a_scan(build, tmp_path):
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+
+    def batch_change():
+        with controller._lock:
+            controller._lifecycle_pending += 1
+
+    scanner.on_ready = batch_change
+    controller.load_and_scan()
+
+    wait_phase(controller, "failed")
+    wait_until(controller, lambda: banner_text(controller) == STOPPED_CLOSING, SHORT)
+    settle(controller)
+    with controller._lock:
+        controller._lifecycle_pending -= 1
+    assert scanner.scans == 0
+    assert scanner.load_calls == 1
+
+
+def test_closing_the_window_during_the_wait_counts_as_a_running_scan(build, tmp_path):
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+    scanner.after_load = ScannerStatus.NOT_READY
+    controller.load_and_scan()
+    wait_phase(controller, "waiting_ready")
+    assert controller.shutdown_decision() == "scan_running"
+
+
+def test_a_close_request_before_the_job_starts_sends_no_load(build, tmp_path):
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+    gate = threading.Event()
+    controller._holder_pool.submit(lambda: gate.wait(SHORT))  # the holder worker is busy
+    controller.load_and_scan()
+    controller._load_scan_cancel.set()  # the close request, without cancelling the future
+    gate.set()
+    wait_phase(controller, "failed")
+    wait_until(controller, lambda: banner_text(controller) == STOPPED_CLOSING, SHORT)
+    assert scanner.load_calls == 0

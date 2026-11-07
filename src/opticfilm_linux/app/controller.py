@@ -232,6 +232,8 @@ class Controller(
         with self._lock:
             if self._holder_busy and self._load_phase in ("jogging", "await_reinsert", "loading"):
                 return "first_load_running"
+            if self._load_scan_phase in ("loading", "waiting_ready"):
+                return "scan_running"  # Load & scan is the start of a scan
             session = self._session
         if session is not None and session.runner is not None and session.runner.scan_pending():
             return "scan_running"

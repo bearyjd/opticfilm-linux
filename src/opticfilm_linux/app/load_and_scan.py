@@ -1,7 +1,9 @@
 """Load & scan: one click loads the next holder, waits for a fresh READY, then scans it.
 
 The click is the owner's statement that the holder is seated and latched, so it is logged as
-that confirmation and taken once per RELEASED state. It starts only from a known state (an eject
+that confirmation. A load that ends LATCHED or UNKNOWN uses up the RELEASED state; one refused
+before the driver moved anything (another program, a plain refusal) leaves it RELEASED, so a
+second explicit click is accepted. It starts only from a known state (an eject
 this app saw finish and a poll after it that says NOT_READY) and only from that explicit click:
 auto-eject, a timer or the front-panel button never start it. One holder-pool job keeps the
 holder reservation from the load until the hand-over to the scan, which happens in one critical
@@ -58,7 +60,8 @@ STOPPED_ANOMALY = (
     "scanned. Check the holder by hand, then use the manual buttons."
 )
 STOPPED_CLOSING = (
-    "Load & scan stopped because the batch is being closed: the holder was loaded, not scanned."
+    "Load & scan stopped by the close request: the holder was loaded, not scanned. "
+    "Press Close again."
 )
 CONFIRMATION_LOG = "Load & scan: the owner confirmed the holder is seated and latched"
 
@@ -160,6 +163,9 @@ class LoadAndScanCommands:
 
     def _load_scan_job(self, _runner: BatchRunner) -> None:
         session = self._session
+        if self._load_scan_stopping(session):
+            self._load_scan_failed(STOPPED_CLOSING, "a close request came before the load")
+            return
         if not self._load_holder(session):
             return
         with self._lock:
@@ -207,6 +213,8 @@ class LoadAndScanCommands:
             if sequence > mark and status in STOP_STATUSES:
                 return STOPPED_ANOMALY, f"status {status.value} after the load"
             if self._load_clock() - started >= self._load_ready_timeout_s:
+                elapsed = self._load_clock() - started
+                log.warning("Load & scan: no fresh READY %.1f s after the load", elapsed)
                 return READY_TIMEOUT, f"no fresh READY within {self._load_ready_timeout_s:g} s"
             poller.poll()
             self._load_scan_cancel.wait(READY_POLL_S)
