@@ -270,6 +270,24 @@ def test_enter_in_a_text_field_does_nothing(window, monkeypatch):
     assert log == []
 
 
+@pytest.mark.parametrize("name", ["ejectButton", "primaryActionButton", "loadAndScanButton"])
+def test_enter_on_a_focused_button_does_not_start_load_and_scan(window, monkeypatch, name):
+    """Tab to Eject, then Enter: the key is about that button, never a motor chain."""
+    bridge, root, _scanner, _prefs = window()
+    bridge.setLoadAndScan(True)
+    log = _record(bridge, monkeypatch)
+    monkeypatch.setattr(bridge._controller, "eject_holder", lambda: log.append("eject"))
+    _force(bridge, can_load_and_scan=True, can_eject=True)
+    button = root.findChild(QQuickItem, name)
+    assert button is not None
+    button.forceActiveFocus()
+    QTest.qWait(30)
+    assert button.hasActiveFocus()
+    _enter(root)
+    _enter(root, Qt.Key.Key_Enter, modifiers=Qt.KeyboardModifier.KeypadModifier)
+    assert "load_and_scan" not in log
+
+
 def test_enter_that_answers_a_dialog_does_not_start_load_and_scan(window, monkeypatch):
     bridge, root, _scanner, _prefs = window()
     bridge.setLoadAndScan(True)

@@ -86,6 +86,10 @@ Kirigami.Page {
         else if (event.key === Qt.Key_L) { if (bridge.canLoadNext) bridge.loadNextHolder(); }
         else if (event.key === Qt.Key_X) { if (bridge.trays.rowCount() > 0) exportDialog.open(); }
         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            // Enter on a focused button (Eject reached by Tab) is about that button
+            const active = page.Window.window ? page.Window.window.activeFocusItem : null;
+            if (active && active.autoExclusive !== undefined && typeof active.toggle === "function")
+                return true;  // an AbstractButton (autoExclusive and toggle() are its own)
             if (bridge.loadAndScanEnabled && bridge.canLoadAndScan) bridge.loadAndScan();
         }
         else if (bridge.collection !== "" && bridge.canFinishBox) finishBoxDialog.open();
