@@ -4,6 +4,7 @@ from dataclasses import replace
 import pytest
 
 from opticfilm_linux.batch.manifest import ManifestFormatError, from_json, to_json
+from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.batch.model import (
     BatchDefaults,
     BatchManifest,
@@ -260,4 +261,181 @@ def test_invalid_auto_error_type_rejected(value):
     data = json.loads(to_json(_manifest()))
     data["trays"][0]["auto_error"] = value
     with pytest.raises(ManifestFormatError, match="auto_error"):
+        from_json(json.dumps(data))
+
+
+def _plain_json() -> dict:
+    return json.loads(to_json(_manifest()))
+
+
+def test_unset_metadata_leaves_no_keys_and_bytes_are_identical():
+    text = to_json(_manifest())
+    assert "description" not in text and '"meta"' not in text
+    assert to_json(from_json(text)) == text
+
+
+def test_metadata_round_trips():
+    manifest = _manifest()
+    tray = replace(
+        manifest.trays[0],
+        meta=MetaOverride(description="Lake", date="1978"),
+        slides=(
+            replace(manifest.trays[0].slides[0], meta=MetaOverride(description="", date="1979-07")),
+        )
+        + manifest.trays[0].slides[1:],
+    )
+    manifest = replace(manifest, description="Trip", trays=(tray,) + manifest.trays[1:])
+    back = from_json(to_json(manifest))
+    assert back == manifest
+    assert back.trays[0].slides[0].meta == MetaOverride(description="", date="1979-07")
+    assert to_json(back) == to_json(manifest)
+
+
+def test_partial_override_omits_unset_member():
+    manifest = _manifest()
+    tray = replace(manifest.trays[0], meta=MetaOverride(date="1978"))
+    data = json.loads(to_json(replace(manifest, trays=(tray,))))
+    assert data["trays"][0]["meta"] == {"date": "1978"}
+
+
+@pytest.mark.parametrize("date", ["1978", "1978-07", "1978-07-14", "summer 78", None])
+def test_legacy_date_shapes_load_and_round_trip_unchanged(date):
+    data = _plain_json()
+    data["date"] = date
+    text = json.dumps(data, indent=2)
+    manifest = from_json(text)
+    assert manifest.date == date
+    assert to_json(manifest) == text
+
+
+@pytest.mark.parametrize(
+    ("where", "key", "value"),
+    [
+        ("tray", "meta", "oops"),
+        ("slide", "meta", ["x"]),
+    ],
+)
+def test_bad_metadata_types_raise_manifest_format_error(where, key, value):
+    data = _plain_json()
+    target = {"top": data, "tray": data["trays"][0], "slide": data["trays"][0]["slides"][0]}[where]
+    target[key] = value
+    with pytest.raises(ManifestFormatError):
+        from_json(json.dumps(data))
+
+
+def test_load_is_lenient_about_description_and_date_values():
+    data = _plain_json()
+    data["description"] = "x" * 600
+    data["date"] = 1978
+    data["trays"][0]["meta"] = {"description": 5, "date": ["x"]}
+    data["trays"][0]["slides"][0]["meta"] = {"description": "y" * 501}
+    manifest = from_json(json.dumps(data))
+    assert manifest.description == "x" * 600
+    assert manifest.trays[0].slides[0].meta.description == "y" * 501
+    assert manifest.date == 1978
+
+
+def test_unknown_meta_keys_are_ignored_and_dropped():
+    data = _plain_json()
+    data["trays"][0]["meta"] = {"date": "1978", "future": 1}
+    manifest = from_json(json.dumps(data))
+    assert manifest.trays[0].meta == MetaOverride(date="1978")
+    assert json.loads(to_json(manifest))["trays"][0]["meta"] == {"date": "1978"}
+
+
+# A tray written before skipped openings existed: no "skipped" key anywhere.
+OLD_TRAY_JSON = """{
+  "name": "Old",
+  "album": "",
+  "date": null,
+  "defaults": {
+    "dpi": 7200,
+    "infrared": true,
+    "mode": "positive",
+    "skip_blank": true,
+    "remove_dust": true,
+    "color_strength": 1.0,
+    "grain_strength": 0.3,
+    "sharpen_amount": 0.5,
+    "rotation": 0,
+    "mirror": false
+  },
+  "trays": [
+    {
+      "number": 1,
+      "stage": "review",
+      "mode": "positive",
+      "sweep_version": 1,
+      "slides": [
+        {
+          "position": 1,
+          "status": "accepted",
+          "flags": [],
+          "settings": {
+            "rotation": 0,
+            "brightness_ev": 0.0,
+            "color_strength": null,
+            "grain_strength": null,
+            "sharpen_amount": null,
+            "mirror": false
+          },
+          "owner_decided": false,
+          "exported": false,
+          "preview_stale": false
+        }
+      ],
+      "error": null,
+      "raw_removed": false
+    }
+  ],
+  "version": 1
+}"""
+
+
+def test_a_manifest_without_skipped_loads_and_reserialises_byte_identical():
+    manifest = from_json(OLD_TRAY_JSON)
+    assert manifest.trays[0].skipped == ()
+    assert to_json(manifest) == OLD_TRAY_JSON
+
+
+def test_skipped_openings_round_trip_and_stay_version_1():
+    tray = TrayRecord(
+        number=1,
+        stage=TrayStage.REVIEW,
+        slides=(
+            SlideRecord(position=1, status=SlideStatus.ACCEPTED),
+            SlideRecord(position=4, status=SlideStatus.SKIPPED),
+        ),
+        skipped=(4,),
+    )
+    manifest = BatchManifest(name="T", trays=(tray,))
+    data = json.loads(to_json(manifest))
+    assert data["version"] == 1
+    assert data["trays"][0]["skipped"] == [4]
+    assert data["trays"][0]["slides"][1]["status"] == "skipped"
+    assert from_json(to_json(manifest)) == manifest
+
+
+@pytest.mark.parametrize("value", [[1, 2, 3, 4], [0], [5], [3, 1], [2, 2], [True], "4", [4.0]])
+def test_bad_skipped_openings_are_refused(value):
+    data = json.loads(OLD_TRAY_JSON)
+    data["trays"][0]["skipped"] = value
+    with pytest.raises(ManifestFormatError, match="skipped"):
+        from_json(json.dumps(data))
+
+
+def test_a_skipped_slide_outside_the_skipped_openings_is_refused():
+    data = json.loads(OLD_TRAY_JSON)
+    data["trays"][0]["slides"][0]["status"] = "skipped"
+    with pytest.raises(ManifestFormatError, match="skipped"):
+        from_json(json.dumps(data))
+
+
+@pytest.mark.parametrize("stage", list(TrayStage))
+def test_a_skipped_opening_always_has_a_skipped_slide_record(stage):
+    with pytest.raises(ValueError, match="skipped"):
+        TrayRecord(number=1, stage=stage, skipped=(4,))
+    data = json.loads(OLD_TRAY_JSON)
+    data["trays"][0].update(stage=stage.value, skipped=[4])
+    with pytest.raises(ManifestFormatError, match="skipped"):
         from_json(json.dumps(data))

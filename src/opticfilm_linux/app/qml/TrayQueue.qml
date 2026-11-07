@@ -7,6 +7,7 @@ ListView {
     id: queue
     objectName: "trayQueue"
     signal trayChosen()
+    signal recoverRequested(int number)
 
     clip: true
     model: bridge.trays
@@ -15,7 +16,7 @@ ListView {
     QQC2.Label {
         anchors.centerIn: parent
         visible: queue.count === 0
-        width: parent.width - Kirigami.Units.gridUnit * 2
+        width: parent.width - Theme.gu * 2
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
         opacity: 0.7
@@ -51,13 +52,6 @@ ListView {
             anchors.fill: parent
             z: 1
             onClicked: mouse => { bridge.selectTray(row.number, mouse.modifiers); queue.trayChosen(); }
-        }
-
-        ConfirmDialog {
-            id: recoverDialog
-            title: qsTr("Recover raw scans of tray %1?").arg(row.number)
-            subtitle: qsTr("Recovery verifies the current raw scans, restores this tray to review and resets its export marks. Incomplete older sweeps are kept and do not need verification for recovery. Review the frames, export them again, and approve raw removal again. Missing or damaged current raw scans require restoring the original folders or rescanning.")
-            onConfirmed: bridge.recoverInterruptedCleanup(row.number)
         }
 
         contentItem: ColumnLayout {
@@ -99,7 +93,7 @@ ListView {
                 objectName: "recoverRaw" + row.number
                 visible: row.canRecoverRaw && !bridge.readonly
                 text: qsTr("Verify remaining scans…")
-                onClicked: recoverDialog.open()
+                onClicked: queue.recoverRequested(row.number)
             }
             QQC2.Label {
                 visible: row.stage === "review" && row.needsLook > 0

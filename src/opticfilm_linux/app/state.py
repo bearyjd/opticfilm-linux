@@ -7,8 +7,15 @@ from typing import Literal
 from opticfilm_linux.app.messages import flag_text, holder_latch_text, scanner_text, stage_text
 from opticfilm_linux.app.selection import Selection, prune, selectable_keys
 from opticfilm_linux.batch.cleanup_recovery import interrupted_cleanup_guidance
-from opticfilm_linux.batch.empty import empty_frame_fingerprints, is_empty_confirmed
+from opticfilm_linux.batch.empty import (
+    empty_frame_fingerprints,
+    is_empty_confirmed,
+    is_known_empty,
+)
+from opticfilm_linux.batch.meta_sync import out_of_date_keys
+from opticfilm_linux.batch.metadata import resolve
 from opticfilm_linux.batch.model import (
+    NO_DELIVERY,
     BatchManifest,
     SlideKey,
     SlideRecord,
@@ -17,6 +24,7 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
     TrayStage,
 )
+from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
@@ -34,6 +42,7 @@ class SlideCard:
     updating: bool
     preview_token: int  # cached version of the "after" preview; 0 when there is none
     before_preview_token: int = 0
+    metadata_pending: bool = False  # exported, but the JPEG's description or date is not current
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,8 @@ class TrayRow:
     auto_error: str = ""
     can_recover_raw: bool = False
     slides: tuple[SlideCard, ...] = ()
+    # the tray's resolved description and date: description, date, descriptionLevel, dateLevel
+    meta: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -95,13 +106,52 @@ class SelectionSummary:
     settings: tuple[tuple[str, object], ...] = ()  # None means mixed or automatic
     mixed: tuple[str, ...] = ()
     trays: tuple[int, ...] = ()
+    # Resolved description and date ("1978-07"; "" none) of the selection, or of the batch when
+    # nothing is selected; None means mixed. Levels: "batch", "tray", "slide", "" or None.
+    meta: tuple[tuple[str, str | None], ...] = ()
+    meta_levels: tuple[tuple[str, str | None], ...] = ()
+    meta_note: str = ""  # a common note on an unusable stored value, else ""
+    batch_meta: tuple[tuple[str, str], ...] = ()  # the batch default, for "Next tray"
+    meta_scope: str = ""  # what a strip edit changes: "slides", "tray" (selected) or "batch"
+
+
+def _common(values):
+    return values[0] if all(value == values[0] for value in values) else None
+
+
+def _meta_fields(manifest, pairs, selection: Selection) -> dict:
+    """Common-or-mixed resolved metadata of ``(tray, slide)`` pairs, else of the batch."""
+    if manifest is None:
+        return {}
+    batch = resolve(manifest, TrayRecord(0, TrayStage.REVIEW))
+    # with only trays selected (no selectable slides), the strip edits and shows those trays
+    trays = [resolve(manifest, tray) for tray in manifest.trays if tray.number in selection.trays]
+    found = [resolve(manifest, tray, slide) for tray, slide in pairs] or trays or [batch]
+
+    def text(meta):
+        return meta.date.text() if meta.date else ""
+
+    notes = [" ".join(filter(None, (m.legacy_note, m.description_note))) for m in found]
+    return {
+        "meta": (
+            ("description", _common([m.description for m in found])),
+            ("date", _common([text(m) for m in found])),
+        ),
+        "meta_levels": (
+            ("description", _common([m.description_level for m in found])),
+            ("date", _common([m.date_level for m in found])),
+        ),
+        "meta_note": _common(notes) or "",
+        "batch_meta": (("description", batch.description), ("date", text(batch))),
+        "meta_scope": "slides" if pairs else "tray" if selection.trays else "batch",
+    }
 
 
 def selection_fields(manifest, selection: Selection) -> dict:
     selection = prune(selection, selectable_keys(manifest) if manifest else ())
-    slides = (
+    pairs = (
         tuple(
-            slide
+            (tray, slide)
             for tray in manifest.trays
             for slide in tray.slides
             if (tray.number, slide.position) in selection.keys
@@ -109,6 +159,7 @@ def selection_fields(manifest, selection: Selection) -> dict:
         if manifest
         else ()
     )
+    slides = tuple(slide for _, slide in pairs)
     common = (
         tuple(
             (
@@ -142,6 +193,7 @@ def selection_fields(manifest, selection: Selection) -> dict:
                 )
             ),
             tuple(sorted({number for number, _ in selection.keys} | selection.trays, reverse=True)),
+            **_meta_fields(manifest, pairs, selection),
         ),
     }
 
@@ -195,6 +247,10 @@ class AppState:
     focus: SlideKey | None = None
     selection_summary: SelectionSummary = SelectionSummary()
     undo_label: str = ""
+    scan_openings: tuple[int, ...] = ALL_POSITIONS  # what the next scan covers (SKIP_EMPTY only)
+    metadata_pending: int = 0  # exported JPEGs whose description or date is not current
+    can_load_and_scan: bool = False  # the setting is on and Load & scan may start now
+    load_scan_phase: Literal["idle", "loading", "waiting_ready", "scanning", "failed"] = "idle"
 
 
 EMPTY_STATE = AppState(
@@ -256,6 +312,7 @@ def _slide_card(
     slide: SlideRecord,
     tokens: Mapping[tuple[int, int], int],
     updating: frozenset[tuple[int, int]],
+    pending: frozenset[tuple[int, int]] = frozenset(),
 ) -> SlideCard:
     key = (tray.number, slide.position)
     return SlideCard(
@@ -268,6 +325,7 @@ def _slide_card(
         updating=key in updating,
         preview_token=tokens.get(key, 0),
         before_preview_token=tokens.get((*key, "before"), 0),
+        metadata_pending=key in pending,
     )
 
 
@@ -276,15 +334,19 @@ def _batch_fields(
     selected: int | None,
     preview_tokens: Mapping[tuple[int, int], int],
     updating: frozenset[tuple[int, int]],
+    pending: frozenset[tuple[int, int]] = frozenset(),
 ) -> dict:
     trays = manifest.trays if manifest is not None else ()
     current = next((t for t in trays if t.number == selected), None)
     return {
         "batch_name": manifest.name if manifest is not None else None,
         "selected": current.number if current is not None else None,
-        "slides": tuple(_slide_card(current, s, preview_tokens, updating) for s in current.slides)
+        "slides": tuple(
+            _slide_card(current, s, preview_tokens, updating, pending) for s in current.slides
+        )
         if current is not None
         else (),
+        "metadata_pending": len(pending),
         "default_rotation": manifest.defaults.rotation if manifest is not None else 0,
         "default_mirror": manifest.defaults.mirror if manifest is not None else False,
         "export_dir": manifest.defaults.export_dir if manifest is not None else "",
@@ -353,24 +415,39 @@ def _can_finish_box(
     )
 
 
+def _tray_meta(manifest, tray) -> tuple[tuple[str, str], ...]:
+    meta = resolve(manifest, tray)
+    return (
+        ("description", meta.description),
+        ("date", meta.date.text() if meta.date else ""),
+        ("descriptionLevel", meta.description_level),
+        ("dateLevel", meta.date_level),
+    )
+
+
 def _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable):
     return tuple(
-        _tray_row(t, progress, scan_started, now, raw_pending, raw_recoverable)
+        replace(
+            _tray_row(t, progress, scan_started, now, raw_pending, raw_recoverable),
+            meta=_tray_meta(manifest, t),
+        )
         for t in (manifest.trays if manifest else ())
     )
 
 
-def _sheet_trays(manifest, rows, tokens, updating):
+def _sheet_trays(manifest, rows, tokens, updating, pending):
     cards = {
-        tray.number: tuple(_slide_card(tray, slide, tokens, updating) for slide in tray.slides)
+        tray.number: tuple(
+            _slide_card(tray, slide, tokens, updating, pending) for slide in tray.slides
+        )
         for tray in (manifest.trays if manifest else ())
     }
     return tuple(replace(row, slides=cards[row.number]) for row in rows)
 
 
-def _selected_batch_fields(manifest, selected, preview_tokens, updating, selection):
+def _selected_batch_fields(manifest, selected, preview_tokens, updating, selection, pending):
     return {
-        **_batch_fields(manifest, selected, preview_tokens, updating),
+        **_batch_fields(manifest, selected, preview_tokens, updating, pending),
         **selection_fields(manifest, selection or Selection()),
     }
 
@@ -402,16 +479,17 @@ def build_state(
     selection: Selection | None = None,
 ) -> AppState:
     busy = holder_busy or scan_pending or readonly or jobs_running
+    pending = frozenset(out_of_date_keys(manifest)) if manifest is not None else frozenset()
     rows = _tray_rows(manifest, progress, scan_started, now, raw_pending, raw_recoverable)
     scanner_state = manifest, scanner, scan_pending, readonly
     holder_state = holder_control, holder_busy, next_strip, jobs_running, holder_latch
     return AppState(
-        **_selected_batch_fields(manifest, selected, preview_tokens, updating, selection),
+        **_selected_batch_fields(manifest, selected, preview_tokens, updating, selection, pending),
         **_auto_fields(manifest, readonly, preview_tokens, raw_pending),
         **_scanner_fields(*scanner_state, *holder_state),
         batch_session=batch_session,
         readonly=readonly,
-        trays=_sheet_trays(manifest, rows, preview_tokens, updating),
+        trays=_sheet_trays(manifest, rows, preview_tokens, updating, pending),
         banner=banner,
         export=export,
         free_space=free_space,
@@ -440,10 +518,7 @@ def _approval_candidates(trays):
     confirmed_empty = (
         original is not None
         and bool(original.slides)
-        and all(
-            s.status is SlideStatus.BLANK and is_empty_confirmed(original, s)
-            for s in original.slides
-        )
+        and all(is_known_empty(original, s) for s in original.slides)
     )
     if original is not None and (original.raw_removed or confirmed_empty):
         first = next(
@@ -473,7 +548,7 @@ def _approval_ready(tray: TrayRecord) -> bool:
         and not any(s.preview_stale for s in tray.slides)
         and any(s.status is SlideStatus.ACCEPTED and s.exported for s in tray.slides)
         and all(
-            s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+            s.status in NO_DELIVERY or (s.status is SlideStatus.ACCEPTED and s.exported)
             for s in tray.slides
         )
     )
@@ -510,7 +585,7 @@ def _auto_fields(
         and not any(s.preview_stale for s in first.slides)
         and any(s.exported and s.status is SlideStatus.ACCEPTED for s in first.slides)
         and all(
-            s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+            s.status in NO_DELIVERY or (s.status is SlideStatus.ACCEPTED and s.exported)
             for s in first.slides
         )
         and not _release_flags(first)

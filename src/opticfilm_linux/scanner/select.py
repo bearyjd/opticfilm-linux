@@ -1,5 +1,6 @@
 """Pick the real scanner backend."""
 
+import logging
 import os
 
 from opticfilm_linux.scanner.base import ScanError
@@ -14,7 +15,65 @@ NEXT_STRIP_ENV = "OPTICFILM_NEXT_STRIP"  # explicit off values disable ``load --
 EJECT_BUTTON_ENV = "OPTICFILM_EJECT_BUTTON"  # "0" switches the front-panel Eject button off
 
 
+# Skipping openings changes what the motor scans and is untested on hardware: off by default.
+SKIP_EMPTY_ENV = "OPTICFILM_SKIP_EMPTY"  # on: offer "Slides in this holder" (scans 1..N)
+SKIP_GAPS_ENV = "OPTICFILM_SKIP_GAPS"  # on, with SKIP_EMPTY: any set of openings, e.g. 1,3,4
+# The app's own eject after a good tray (plan rungs H5/H7/H8, untested on hardware): off.
+AUTO_EJECT_ENV = "OPTICFILM_AUTO_EJECT"
+LOAD_AND_SCAN_ENV = "OPTICFILM_LOAD_AND_SCAN"  # on/off decides over the saved setting
+
+
 EJECT_BUTTON_OFF = ("0", "false", "no", "off")
+SWITCH_ON = ("1", "true", "yes", "on")
+
+_log = logging.getLogger(__name__)
+
+
+def env_switch(name: str) -> bool | None:
+    """True or False when the variable says so; None when unset, blank or unreadable (logged).
+
+    Callers that have a saved preference let an explicit value win over it; None defers to it."""
+    raw = os.environ.get(name)
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    if value in SWITCH_ON:
+        return True
+    if value in EJECT_BUTTON_OFF:
+        return False
+    _log.warning("ignoring %s=%r: expected on/off, 1/0, true/false or yes/no", name, raw)
+    return None
+
+
+def env_switch_fail_off(name: str) -> bool | None:
+    """Like ``env_switch``, but a set value that cannot be read is False (logged), not None.
+
+    For switches that move the motor: an unreadable value must lock them off, never defer to a
+    saved ON."""
+    value = env_switch(name)
+    if value is None and (os.environ.get(name) or "").strip():
+        _log.warning("treating %s as off (locked) until it says on/off", name)
+        return False
+    return value
+
+
+def _switched_on(name: str) -> bool:
+    """Off unless explicitly on: an unreadable value must not enable an untested path."""
+    return os.environ.get(name, "").strip().lower() in SWITCH_ON
+
+
+def skip_empty_enabled() -> bool:
+    return _switched_on(SKIP_EMPTY_ENV)
+
+
+def skip_gaps_enabled() -> bool:
+    """Only meaningful with ``skip_empty_enabled``; the controller combines the two."""
+    return _switched_on(SKIP_GAPS_ENV)
+
+
+def auto_eject_enabled() -> bool:
+    """Read once, when the controller is made; never passes ``--eject`` to the driver."""
+    return _switched_on(AUTO_EJECT_ENV)
 
 
 def next_strip_enabled() -> bool:

@@ -3,6 +3,7 @@
 Run with: QT_QPA_PLATFORM=offscreen pytest -m qt
 """
 
+import inspect
 import os
 import time
 
@@ -40,7 +41,32 @@ def qapp():
     return QApplication.instance() or QApplication(["smoke"])
 
 
-def _wait(bridge, condition, timeout=TIMEOUT):
+def _describe_condition(condition, label):
+    """Name the condition that hung: the caller's label, else the lambda's own source line."""
+    if label:
+        return label
+    try:
+        return inspect.getsource(condition).strip()
+    except (OSError, TypeError):
+        return repr(condition)
+
+
+def _observed(bridge):
+    """The last state the wait saw, so a timeout says what the window was doing (best effort)."""
+    state = getattr(bridge, "_state", None)
+    banner = getattr(state, "banner", None)
+    session = getattr(getattr(bridge, "_controller", None), "_session", None)
+    scanner = getattr(session, "scanner", None)
+    return (
+        f"scannerStatus={getattr(state, 'scanner', None)!r} loadPhase={bridge.loadPhase!r} "
+        f"hasBatch={bridge.hasBatch} selectedTray={bridge.selectedTray} "
+        f"trays={bridge.trays.rowCount()} slides={bridge.slides.rowCount()} "
+        f"focus={list(bridge.selectionFocus)} banner={getattr(banner, 'text', None)!r} "
+        f"scanner.calls={getattr(scanner, 'calls', None)!r}"
+    )
+
+
+def _wait(bridge, condition, timeout=TIMEOUT, label=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         QCoreApplication.processEvents()
@@ -48,7 +74,9 @@ def _wait(bridge, condition, timeout=TIMEOUT):
         if condition():
             return
         time.sleep(0.01)
-    raise AssertionError("timed out waiting for the window")
+    raise AssertionError(
+        f"timed out waiting for {_describe_condition(condition, label)}; {_observed(bridge)}"
+    )
 
 
 def _drain_deferred_deletes():
@@ -63,7 +91,7 @@ def loaded(qapp, sweep600_dir, monkeypatch):
     controller = Controller(scanner_factory(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     assert engine.rootObjects(), warnings
     yield bridge, engine, warnings
     bridge.shutdown()
@@ -168,6 +196,13 @@ def _scanned(bridge, tmp_path, name):
     bridge.scan()
     _wait(bridge, lambda: bridge.trays.rowCount() == 1 and not bridge.scanPending)
     _wait(bridge, lambda: bridge.selectedTray == 1 and bridge.slides.rowCount() == 4)
+    # The slides show while the tray is still enhancing, but a selection click is dropped until
+    # the tray leaves the busy stages (selection.selectable_keys), so wait for that.
+    _wait(
+        bridge,
+        lambda: all(s["selectable"] for s in bridge.sheet.get(0)["slides"]),
+        label="the scanned tray to become selectable",
+    )
     return tmp_path / name
 
 
@@ -272,10 +307,23 @@ def test_the_batch_orientation_dialog_shows_the_current_orientation_and_applies(
 
 def _prop(root, name, prop):
     """Looked up each time: the page holding the toolbar may be rebuilt meanwhile."""
-    item = root.findChild(QQuickItem, name)
-    return (
-        None if item is None else (item.isVisible() if prop == "visible" else item.property(prop))
-    )
+    item = root.findChild(QObject, name)
+    if item is None:
+        return None
+    if prop == "visible" and isinstance(item, QQuickItem):
+        return item.isVisible()
+    return item.property(prop)
+
+
+def _trigger_action(engine, root, name):
+    from PySide6.QtQml import QQmlExpression
+
+    action = root.findChild(QObject, name)
+    assert action is not None and not isinstance(action, QQuickItem), name
+    assert action.property("visible") and action.property("enabled"), name
+    expression = QQmlExpression(engine.rootContext(), action, "trigger()")
+    expression.evaluate()
+    assert not expression.hasError(), expression.error().toString()
 
 
 def test_holder_buttons_follow_the_flags_on_a_ready_scanner(loaded, tmp_path):
@@ -287,6 +335,11 @@ def test_holder_buttons_follow_the_flags_on_a_ready_scanner(loaded, tmp_path):
     assert bridge.canEject and not bridge.canLoadNext and bridge.nextStripEnabled
     assert _prop(root, "loadNextButton", "enabled") is False
     assert _prop(root, "loadHelpButton", "visible") and not _prop(root, "loadHelpLink", "visible")
+    _trigger_action(engine, root, "loadHelpButton")
+    dialog = root.findChild(QObject, "loadHelpDialog")
+    _wait(bridge, lambda: dialog.property("opened"))
+    QMetaObject.invokeMethod(dialog, "close")
+    _wait(bridge, lambda: not dialog.property("opened"))
     _click(root, "ejectButton")
     _wait(bridge, lambda: bridge.canEject)
     assert not bridge.hasBanner and warnings == []
@@ -318,7 +371,7 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         load_runner_note="runs in the box",
     )
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Loose", "", "", 600)
         _wait(bridge, lambda: bridge.hasBatch and bridge.canLoadNext)
@@ -328,7 +381,7 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         _wait(bridge, lambda: _prop(root, "loadHelpLink", "visible"))
         _wait(bridge, lambda: "not loaded" in (_prop(root, "scannerStatusText", "text") or ""))
         assert _prop(root, "scannerStatusText", "truncated") is False
-        for name in ("loadHelpLink", "ejectButton", "loadNextButton", "loadHelpButton"):
+        for name in ("loadHelpLink", "ejectButton", "loadNextButton"):
             item = root.findChild(QQuickItem, name)
             assert item.width() >= item.implicitWidth() - 0.5, name
         _click(root, "loadNextButton")
@@ -336,7 +389,7 @@ def test_a_not_loaded_scanner_offers_the_help_link_and_load_next(qapp, sweep600_
         _wait(bridge, lambda: _prop(root, "ejectButton", "enabled") is True)
         _click(root, "ejectButton")
         _wait(bridge, lambda: calls == ["load", "eject"])
-        _click(root, "loadHelpLink")
+        _trigger_action(engine, root, "loadHelpButton")
         dialog = root.findChild(QObject, "loadHelpDialog")
         _wait(bridge, lambda: dialog.property("opened"))
         field = root.findChild(QObject, "loadCommandField")
@@ -367,7 +420,7 @@ def test_the_help_dialog_hides_the_power_steps_while_a_scan_runs(qapp, sweep600_
     controller = Controller(lambda _dpi: scanner)
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Busy", "", "", 600)
         _wait(bridge, lambda: bridge.hasBatch and bridge.canScan)
@@ -407,7 +460,7 @@ def test_an_interrupted_scanner_offers_only_confirm_and_the_dialog_clears_it(
     controller = Controller(lambda _dpi: Guarded(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Cut", "", "", 600)
         _wait(bridge, lambda: bridge.hasBatch and bridge.canConfirmScanner)
@@ -564,7 +617,7 @@ def test_start_page_defaults_to_7200(qapp, sweep600_dir, demo_dpi, expected):
     controller = Controller(scanner_factory(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=demo_dpi)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         assert engine.rootObjects(), warnings
         root = engine.rootObjects()[0]

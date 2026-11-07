@@ -8,22 +8,18 @@ replaced, never changed.
 
 import dataclasses
 import logging
-import os
-import stat
-import tempfile
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path as Path
 from typing import Literal
 
-from opticfilm_linux.app.auto import MISSING_DESTINATION
 from opticfilm_linux.app.auto import AutoPipeline as AutoPipeline
 from opticfilm_linux.app.commands import ReviewCommands
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
 from opticfilm_linux.app.first_load import FirstLoadCommands
-from opticfilm_linux.app.holder import HolderCommands
+from opticfilm_linux.app.holder import WAIT_HOLDER, HolderCommands
 from opticfilm_linux.app.jobs import (
     free_space_candidates as free_space_candidates,
 )
@@ -33,9 +29,16 @@ from opticfilm_linux.app.jobs import (
 from opticfilm_linux.app.jobs import (
     run_free_space as run_free_space,
 )
+from opticfilm_linux.app.lifecycle_commands import LifecycleCommands
+from opticfilm_linux.app.lifecycle_commands import (
+    _check_export_directory as _check_export_directory,
+)
+from opticfilm_linux.app.load_and_scan import LOAD_READY_TIMEOUT_S, LoadAndScanCommands
 from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.preview_tokens import PreviewTokens
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
+from opticfilm_linux.app.sandbox import host_terminal_hint
+from opticfilm_linux.app.scan_openings import ScanOpeningsCommands
 from opticfilm_linux.app.selection import Selection, prune, selectable_keys
 from opticfilm_linux.app.selection_commands import SelectionCommands
 from opticfilm_linux.app.state import (
@@ -47,19 +50,17 @@ from opticfilm_linux.app.state import (
     build_state,
 )
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
-from opticfilm_linux.batch.events import SlideUpdated, TrayFailed, TrayStageChanged
+from opticfilm_linux.app.workflow_settings import WorkflowSettings
+from opticfilm_linux.batch.events import ScanFinished, SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
-    BatchDefaults,
-    SlotOrientation,
     TrayStage,
 )
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchLocked, BatchStore
-from opticfilm_linux.output import Format, JpegSize
 from opticfilm_linux.scanner.base import BUTTON_STATUSES, HolderControl, Scanner, ScannerStatus
 from opticfilm_linux.scanner.holder_latch import HolderLatch
-from opticfilm_linux.scanner.select import next_strip_enabled
+from opticfilm_linux.scanner.select import auto_eject_enabled, next_strip_enabled
 from opticfilm_linux.worker import lower_worker_priority
 
 SLIDES_PER_TRAY = 4
@@ -85,7 +86,16 @@ class _Session:
     previews: PreviewTokens = dataclasses.field(default_factory=PreviewTokens)
 
 
-class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCommands):
+class Controller(
+    FirstLoadCommands,
+    HolderCommands,
+    LifecycleCommands,
+    LoadAndScanCommands,
+    ReviewCommands,
+    ScanOpeningsCommands,
+    SelectionCommands,
+    WorkflowSettings,
+):
     def __init__(
         self,
         scanner_factory: Callable[[int], Scanner],
@@ -93,13 +103,24 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         next_strip: bool | None = None,
         eject_button: bool = True,
         eject_watch: EjectWatch | None = None,
+        skip_empty: bool | None = None,  # None: read OPTICFILM_SKIP_EMPTY
+        skip_gaps: bool | None = None,  # None: read OPTICFILM_SKIP_GAPS
+        auto_eject: bool | None = None,  # None: read OPTICFILM_AUTO_EJECT
+        env_locked: frozenset[str] = frozenset(),  # switches an environment variable decides
+        load_and_scan: bool = False,  # Load & scan stays off until the hardware check passes
+        load_ready_timeout_s: float = LOAD_READY_TIMEOUT_S,
+        load_clock: Callable[[], float] = time.monotonic,  # the READY wait's own clock
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
         self._eject_watch = eject_watch  # the background watcher to step aside; None: no such unit
         self._next_strip = next_strip_enabled() if next_strip is None else next_strip
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
+        self._auto_eject = auto_eject_enabled() if auto_eject is None else auto_eject
+        self._init_scan_openings(skip_empty, skip_gaps)
+        self._init_workflow_settings(env_locked)
         self._init_holder_workers()
+        self._init_load_and_scan(load_and_scan, load_ready_timeout_s, load_clock)
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
         self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker
         self._clock = clock
@@ -184,7 +205,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         if not poller.take_eject_press() or not self._eject_button:
             return
         with self._lock:
-            refusal = self._holder_refusal()
+            refusal = self._holder_refusal() or (WAIT_HOLDER if self._load_scan_moving() else None)
         if refusal is not None:
             self._set(_banner=Banner(refusal))
             return
@@ -203,63 +224,6 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
     def dismiss_banner(self) -> None:
         self._set(_banner=None)
 
-    # -- batch lifecycle -----------------------------------------------------------------
-
-    def new_batch(
-        self,
-        directory: Path,
-        name: str,
-        album: str,
-        date: str | None,
-        dpi: int,
-        rotation: int = 0,
-        mirror: bool = False,
-        slots: tuple[SlotOrientation, ...] = (),
-        *,
-        export_dir: str = "",
-        export_format: Format = "jpeg",
-        jpeg_size: JpegSize = "full",
-        auto_export: bool = False,
-        keep_raw: bool = False,
-        collection: str = "",
-        box: int = 1,
-        section: str = "a",
-        section_size: int = 140,
-    ) -> None:
-        def job() -> None:
-            if auto_export and not export_dir.strip():
-                raise BatchError(MISSING_DESTINATION)
-            if export_dir:
-                _check_export_directory(directory, Path(export_dir))
-            defaults = BatchDefaults(
-                dpi=dpi,
-                rotation=rotation,
-                mirror=mirror,
-                slots=slots,
-                export_dir=export_dir,
-                export_format=export_format,
-                jpeg_size=jpeg_size,
-                auto_export=auto_export,
-                keep_raw=keep_raw,
-            )
-            layout = dict(
-                collection=collection, box=box, section=section, section_size=section_size
-            )
-            self._replace_batch(
-                lambda: BatchStore.create(directory, name, album, date, defaults, **layout)
-            )
-
-        self._run_lifecycle(job, "Could not create the batch")
-
-    def open_batch(self, directory: Path, readonly: bool = False) -> None:
-        def job() -> None:
-            self._replace_batch(lambda: BatchStore.open(directory, readonly=readonly), readonly)
-
-        self._run_lifecycle(job, "Could not open the batch")
-
-    def close_batch(self) -> None:
-        self._run_lifecycle(self._detach, "Could not close the batch")
-
     # -- scanning ------------------------------------------------------------------------
 
     # -- closing the window --------------------------------------------------------------
@@ -268,6 +232,8 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         with self._lock:
             if self._holder_busy and self._load_phase in ("jogging", "await_reinsert", "loading"):
                 return "first_load_running"
+            if self._load_scan_moving():
+                return "scan_running"  # Load & scan is the start of a scan
             session = self._session
         if session is not None and session.runner is not None and session.runner.scan_pending():
             return "scan_running"
@@ -366,34 +332,6 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         with self._lock:
             self._progress = {k: v for k, v in self._progress.items() if k != number}
 
-    def _run_lifecycle(self, job: Callable[[], None], message: str) -> None:
-        """Reserve batch ownership until the queued change has completely finished."""
-        self._cancel_queued_holder()
-        with self._lock:
-            refused = self._holder_busy
-            if not refused:
-                self._lifecycle_pending += 1
-        if refused:
-            self._set(_banner=Banner("Wait for the eject/load to finish"))
-            return
-        # Draining jobs and opening/closing hardware must run without the state lock.
-        future = self._run(job, message, droppable=True)
-        self._track(future, self._lifecycle_finished)
-
-    def _lifecycle_finished(self) -> None:
-        with self._lock:
-            self._lifecycle_pending -= 1
-
-    def _replace_batch(self, make_store: Callable[[], BatchStore], readonly: bool = False) -> None:
-        """Close the open batch, open the next; the Eject-button watcher stays stopped between."""
-        self._detach(restore_watch=False)  # the next open steps it aside again at once
-        try:
-            store = make_store()
-        except BaseException:
-            self._restore_eject_watch()
-            raise
-        self._attach(store, readonly)
-
     def _attach(self, store: BatchStore, readonly: bool) -> None:
         runner = None
         poller = None
@@ -441,7 +379,9 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             self._latch_applied = self._latch_sequence
             self._session = session
             self._batch_session += 1
+            self._forget_scan_openings()
             self._reset_load_phase()
+            self._reset_load_scan()
             self._holder_latch = HolderLatch.UNKNOWN
             self._latch_address = None
             self._latch_loss = None
@@ -474,37 +414,6 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         with self._jobs_idle:
             self._jobs_idle.wait_for(lambda: not self._job_futures)
 
-    def _detach(self, restore_watch: bool = True) -> None:
-        self._stop_jobs()  # a job writes through the store, so it must finish before it closes
-        current = self._session
-        if current and current.runner and current.runner.scan_pending():
-            self._remember_holder_latch(HolderLatch.UNKNOWN)
-        with self._lock:
-            session, self._session = self._session, None
-            self._reset_load_phase()
-        if session is not None:
-            if session.poller is not None:
-                self._watch_poller = session.poller  # a read-only session keeps the earlier one
-                session.poller.close()
-            if session.runner is not None:
-                session.runner.stop()
-                self._drain_events(session)  # failed scans must persist before dropping the session
-            session.store.close()
-            if self._eject_watch is not None:
-                self._wait_scanner_idle()
-        try:
-            self._latch_pool.submit(lambda: None).result()
-        except Exception:
-            log.exception("could not finish queued holder latch persistence")
-        if restore_watch:
-            self._restore_eject_watch()
-        with self._lock:
-            self._selected = None
-            self._selection = Selection()
-            self._selection_order = ()
-            self._manifest = None
-            self._state = EMPTY_STATE if self._banner is None else self._banner_only()
-
     def _scanner_idle(self) -> bool:
         """No holder move and no status request is out right now (asked fresh every time)."""
         poller = self._watch_poller
@@ -527,7 +436,8 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         if not self._scanner_idle():
             text = (
                 "The Eject button watcher was left stopped: the scanner was still busy. "
-                f"Start it with `systemctl --user start {UNIT}` when it is idle."
+                f"Start it with `systemctl --user start {UNIT}`{host_terminal_hint()} "
+                "when it is idle."
             )
             log.warning(text)
             if not self._closing.is_set():
@@ -553,17 +463,21 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         session = session or self._session
         if session is None or session.runner is None:
             return
-        events = session.runner.events
+        events, finished = session.runner.events, []
         while not events.empty():
             event = events.get_nowait()
+            if isinstance(event, ScanFinished):
+                finished.append(event)
             if isinstance(event, TrayFailed):
                 self._remember_holder_latch(
                     HolderLatch.UNKNOWN, session.scanner, sequence=event.operation_sequence
                 )
             with self._lock:
                 self._apply_event(event)
-        if session is self._session:
+        if session is self._session:  # never for a session being closed
             self._submit_auto_due()
+            for event in finished:
+                self._auto_eject_after(event)
 
     def _apply_event(self, event) -> None:
         if isinstance(event, TrayStageChanged):
@@ -614,6 +528,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
         with self._lock:
             selected = self._selected
         tokens = self._preview_tokens(session, manifest)
+        marker = self._load_scan_marker()  # storage: read outside the lock
         raw_pending = self._raw_pending(session, manifest)
         raw_recoverable = self._recovery_checks.poll(
             session, manifest, raw_pending, self._raw_recoverable
@@ -632,6 +547,9 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
                 raw_pending=raw_pending,
                 raw_recoverable=raw_recoverable,
             )
+            self._state = dataclasses.replace(
+                self._state, **self._load_scan_fields(session, status, sequence, marker)
+            )
 
     def _publish_state(
         self, *, session, manifest, selected, status, tokens, raw_pending, raw_recoverable
@@ -644,6 +562,7 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
                 scanner=status,
                 scan_pending=bool(
                     self._scans_queued
+                    or self._load_scan_moving()  # Load & scan is the start of a scan
                     or (session and session.runner and session.runner.scan_pending())
                 ),
                 readonly=bool(session and session.runner is None),
@@ -670,7 +589,11 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
                 raw_recoverable=raw_recoverable,
             )
         )
-        self._state = dataclasses.replace(self._state, undo_label=self._selection_undo_label())
+        self._state = dataclasses.replace(
+            self._state,
+            undo_label=self._selection_undo_label(),
+            scan_openings=self._scan_openings,
+        )
 
     @staticmethod
     def _poll_status(session):
@@ -735,42 +658,6 @@ class Controller(FirstLoadCommands, HolderCommands, ReviewCommands, SelectionCom
             return {}
         cache = getattr(session, "previews", None) or PreviewTokens()
         return cache.read(session.store, manifest)
-
-
-def _check_export_directory(batch: Path, directory: Path) -> None:
-    try:
-        resolved = directory.resolve()
-        batch = batch.resolve()
-        for component in (directory, *directory.parents):
-            if component.is_symlink() and not component.exists():
-                raise BatchError(f"export folder {directory} contains a broken symbolic link")
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
-    if resolved.is_relative_to(batch):
-        raise BatchError(f"export to a folder outside the batch folder, not {directory}")
-
-    # Validate the closest existing parent without creating the user's destination.
-    parent = resolved
-    while True:
-        try:
-            mode = parent.stat().st_mode
-            break
-        except FileNotFoundError:
-            parent = parent.parent
-        except NotADirectoryError as exc:
-            raise BatchError(f"export folder {directory} is not a directory") from exc
-        except (OSError, ValueError) as exc:
-            raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
-    if not stat.S_ISDIR(mode):
-        raise BatchError(f"export folder {parent} is not a directory")
-    if not mode & 0o222 or not os.access(parent, os.W_OK | os.X_OK):
-        raise BatchError(f"export folder {parent} is not writable")
-    try:
-        with tempfile.TemporaryFile(dir=parent) as probe:
-            probe.write(b"\0")
-            probe.flush()
-    except OSError as exc:
-        raise BatchError(f"export folder {parent} is not writable: {exc}") from exc
 
 
 def _skipped_text(numbers: tuple[int, ...]) -> str:

@@ -715,6 +715,23 @@ def test_a_status_request_still_out_keeps_the_watcher_stopped(sweep600_dir, tmp_
         c.shutdown()
 
 
+def test_the_left_stopped_banner_says_host_terminal_inside_flatpak(
+    sweep600_dir, tmp_path, monkeypatch
+):
+    info = tmp_path / ".flatpak-info"
+    info.write_text("[Application]\n")
+    monkeypatch.setattr("opticfilm_linux.app.sandbox.FLATPAK_INFO", str(info))
+    monkeypatch.setattr("opticfilm_linux.app.controller.WATCH_RESTORE_WAIT_S", 0.3)
+    c, blocked = _blocked_status_controller(sweep600_dir, tmp_path, [])
+    try:
+        c.close_batch()
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "in a host terminal" in c.state().banner.message
+    finally:
+        blocked.release.set()
+        c.shutdown()
+
+
 def test_an_earlier_status_request_is_still_checked_after_a_read_only_session(
     sweep600_dir, tmp_path, monkeypatch
 ):

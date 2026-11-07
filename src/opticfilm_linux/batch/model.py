@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
+from opticfilm_linux.batch.metadata import MetaOverride
+from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.output import Format, JpegSize
 
 if TYPE_CHECKING:
@@ -33,7 +35,12 @@ class SlideStatus(StrEnum):
     PENDING = "pending"
     NEEDS_LOOK = "needs_look"
     ACCEPTED = "accepted"
-    BLANK = "blank"
+    BLANK = "blank"  # detected as a clear window in the raw scan (has a fingerprint)
+    SKIPPED = "skipped"  # left out of the scan on purpose: no raw data, never exported
+
+
+# Openings that never deliver an export: their slide number stays free.
+NO_DELIVERY = frozenset({SlideStatus.BLANK, SlideStatus.SKIPPED})
 
 
 class Flag(StrEnum):
@@ -87,6 +94,7 @@ class ExportRecord:
     size_bytes: int = 0
     sha256: str = ""
     render_signature: str = ""
+    meta_signature: str = ""  # what the JPEG says about description and date; "" = nothing
 
 
 @dataclass(frozen=True)
@@ -119,6 +127,7 @@ class SlideRecord:
     export_size: tuple[int, ...] = ()
     export_sha256: str = ""
     exports: tuple[ExportRecord, ...] = ()
+    meta: MetaOverride = MetaOverride()
 
 
 def _check_location(collection: str, box: int, section: str) -> str:
@@ -185,6 +194,33 @@ class TrayRecord:
     auto_flagged: tuple[int, ...] = ()
     location: TrayLocation | None = None
     evidence: ScanEvidence | None = None
+    meta: MetaOverride = MetaOverride()
+    skipped: tuple[int, ...] = ()  # holder openings not scanned on purpose, ascending
+
+    def __post_init__(self) -> None:
+        check_skipped(self.skipped)
+        _check_skipped_records(self.skipped, self.slides)
+
+
+def check_skipped(skipped: tuple[int, ...]) -> None:
+    """Refuse a skipped-openings list that is not ascending and unique within 1-4, or all four."""
+    if (
+        type(skipped) is not tuple
+        or any(type(p) is not int or p not in ALL_POSITIONS for p in skipped)
+        or list(skipped) != sorted(set(skipped))
+        or len(skipped) >= len(ALL_POSITIONS)
+    ):
+        raise ValueError(
+            f"skipped openings must be ascending, unique, within 1-4 and not all four, "
+            f"got {skipped!r}"
+        )
+
+
+def _check_skipped_records(skipped: tuple[int, ...], slides: tuple[SlideRecord, ...]) -> None:
+    """A skipped opening has a SKIPPED record from the moment its scan starts, and only it."""
+    recorded = sorted(s.position for s in slides if s.status is SlideStatus.SKIPPED)
+    if recorded != list(skipped):
+        raise ValueError(f"skipped openings {skipped} but skipped slide records at {recorded}")
 
 
 @dataclass(frozen=True)
@@ -263,6 +299,7 @@ class BatchManifest:
     box: int = 1
     section: str = "a"
     section_size: int = 140
+    description: str = ""
 
     def __post_init__(self) -> None:
         if type(self.first_tray_released) is not bool:

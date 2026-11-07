@@ -96,7 +96,9 @@ def _export_counts(manifest: BatchManifest, keys: frozenset[SlideKey] | None) ->
     already_exported = not_accepted = raw_freed = 0
     for tray in manifest.trays:
         for slide in tray.slides:
-            if keys is not None and (tray.number, slide.position) not in keys:
+            if slide.status is SlideStatus.SKIPPED or (
+                keys is not None and (tray.number, slide.position) not in keys
+            ):
                 continue
             if tray.raw_removed:
                 raw_freed += 1

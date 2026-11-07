@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from opticfilm_linux.batch import export
+from opticfilm_linux.batch.model import SlideRecord, SlideStatus
 from test_export_safety import _assert_raw_kept, _confirmed_blank, _delivered
 from test_export_safety import delivery as delivery
 
@@ -10,8 +11,8 @@ from test_export_safety import delivery as delivery
 @pytest.mark.parametrize("positions", [(1,), (1, 1), (1, 3), (0, 2), (-1, 2), (True, 2)])
 def test_cleanup_requires_unique_complete_raw_positions(delivery, monkeypatch, positions):
     store, _ = _delivered(delivery)
-    split = export.split_slides(None)
-    monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
     slide = store.snapshot().trays[0].slides[0]
     store.update_tray(1, slides=tuple(dataclasses.replace(slide, position=p) for p in positions))
     with pytest.raises(export.CleanupRefused, match="positions"):
@@ -21,8 +22,8 @@ def test_cleanup_requires_unique_complete_raw_positions(delivery, monkeypatch, p
 
 def test_blank_positions_count_toward_complete_raw_coverage(delivery, monkeypatch):
     store, _ = _delivered(delivery)
-    split = export.split_slides(None)
-    monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
     slide = store.snapshot().trays[0].slides[0]
     blank = _confirmed_blank(store.snapshot().trays[0], slide, position=2, exports=())
     store.update_tray(1, slides=(slide, blank))
@@ -32,8 +33,8 @@ def test_blank_positions_count_toward_complete_raw_coverage(delivery, monkeypatc
 
 def test_duplicate_blank_cannot_conceal_unrepresented_raw_position(delivery, monkeypatch):
     store, _ = _delivered(delivery)
-    split = export.split_slides(None)
-    monkeypatch.setattr(export, "split_slides", lambda _: (*split, *split))
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
     slide = store.snapshot().trays[0].slides[0]
     blank = _confirmed_blank(store.snapshot().trays[0], slide, exports=())
     store.update_tray(1, slides=(slide, blank))
@@ -63,3 +64,26 @@ def test_export_receipt_cannot_attach_after_scan_or_mode_change(delivery, change
     )
     assert result == "stale_tray"
     assert store.snapshot() == changed
+
+
+def test_a_skipped_opening_needs_no_raw_and_the_tray_still_frees(delivery, monkeypatch):
+    store, _ = _delivered(delivery)
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1]})
+    slide = store.snapshot().trays[0].slides[0]
+    skipped = SlideRecord(2, status=SlideStatus.SKIPPED)
+    store.update_tray(1, slides=(slide, skipped), skipped=(2,))
+    assert export.cleanup_raw(store, 1) > 0
+    assert store.snapshot().trays[0].raw_removed
+
+
+def test_a_skipped_record_cannot_conceal_a_scanned_raw_position(delivery, monkeypatch):
+    store, _ = _delivered(delivery)
+    split = export.split_positions(None)
+    monkeypatch.setattr(export, "split_positions", lambda _: {1: split[1], 2: split[1]})
+    slide = store.snapshot().trays[0].slides[0]
+    skipped = SlideRecord(2, status=SlideStatus.SKIPPED)
+    store.update_tray(1, slides=(slide, skipped), skipped=(2,))
+    with pytest.raises(export.CleanupRefused, match="positions"):
+        export.cleanup_raw(store, 1)
+    _assert_raw_kept(store)

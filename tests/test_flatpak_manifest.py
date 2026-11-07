@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "packaging" / "flatpak" / "io.github.bearyjd.OpticFilm.json"
+MANIFEST = ROOT / "packaging" / "flatpak" / "io.github.bearyjd.OpticFilmLinux.json"
 REQUIRED_KEYS = (
     "app-id",
     "runtime",
@@ -25,10 +25,15 @@ REQUIRED_KEYS = (
 )
 ALLOWED_FINISH_ARGS = re.compile(
     r"--(share=ipc|socket=(wayland|fallback-x11)|device=(all|usb)"
+    r"|talk-name=org\.freedesktop\.Flatpak"
     r"|filesystem=xdg-(pictures|documents|download)(:(ro|rw|create))?"
     r"|env=OPTICFILM_[A-Z_]+=[\w/.-]+)"
 )
 BASE_APP = "io.qt.PySide.BaseApp"
+APP_ID = "io.github.bearyjd.OpticFilmLinux"
+DRIVER_URL = "https://github.com/bearyjd/opticfilm135i-linux.git"
+RUNTIME_VERSION = "6.11"
+BASE_PROVIDED = {"numpy"}  # shipped by the PySide BaseApp, so not a wheel source here
 WHEEL_NAME = re.compile(r"https://\S+/([A-Za-z0-9_.]+?)-")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -72,6 +77,8 @@ def lint_build(manifest: dict) -> list[str]:
     names = {m.group(1).replace("_", "-") for m in matches if m}
     listed = {w for c in pips for w in c.split() if re.fullmatch(r"[a-z][a-z0-9-]+", w)}
     listed -= {"pip3", "install", "verbose"}
+    if listed & BASE_PROVIDED or names & BASE_PROVIDED:
+        problems.append(f"{sorted(BASE_PROVIDED)} comes from the BaseApp; do not install it")
     if names != listed:
         problems.append(f"pip packages {sorted(listed)} differ from wheel sources {sorted(names)}")
     return problems
@@ -216,18 +223,62 @@ def test_broad_device_without_note_is_reported():
 
 def test_driver_is_pinned_as_external_dependency():
     manifest = json.loads(MANIFEST.read_text())
-    git_urls = [s["url"] for s in sources(manifest) if s["type"] == "git"]
-    assert "https://github.com/cgillinger/opticfilm135i-linux.git" in git_urls
-    assert any("EXTERNAL" in note for note in manifest["x-notes"])
+    drivers = [s for s in sources(manifest) if s["type"] == "git" and s["url"] == DRIVER_URL]
+    assert len(drivers) == 1
+    assert COMMIT.fullmatch(drivers[0]["commit"]) and not PLACEHOLDER.search(drivers[0]["commit"])
+    assert not any("cgillinger" in s.get("url", "") for s in sources(manifest))
+    assert any("EXTERNAL" in note and "fork" in note for note in manifest["x-notes"])
 
 
 def test_python_dependencies_cover_pyproject():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     wanted = {re.split(r"[<>=!~ ]", d, maxsplit=1)[0].lower().replace("-", "_") for d in project}
+    wanted -= BASE_PROVIDED
     urls = " ".join(
         s["url"].lower().replace("-", "_") for s in sources(json.loads(MANIFEST.read_text()))
     )
     assert [name for name in wanted if name not in urls] == []
+
+
+WHEEL_FILE = re.compile(
+    r"[A-Za-z0-9_]+-[0-9][A-Za-z0-9.]*-"
+    r"(py3-none-any|cp313-cp313-manylinux[\w.]*_x86_64[\w.]*|cp3\d+-abi3-manylinux[\w.]*_x86_64[\w.]*)\.whl"
+)
+PYPI_URL = re.compile(
+    r"https://files\.pythonhosted\.org/packages/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{60}/[^/]+"
+)
+WHEELS = {"pillow", "tifffile", "opencv_python_headless", "pyusb"}
+
+
+def wheel_sources(manifest: dict):
+    return [s for s in sources(manifest) if s.get("type") == "file"]
+
+
+def test_wheels_are_real_pins_from_pypi():
+    wheels = wheel_sources(json.loads(MANIFEST.read_text()))
+    assert len(wheels) == len(WHEELS)
+    for wheel in wheels:
+        assert PYPI_URL.fullmatch(wheel["url"]), wheel["url"]
+        assert WHEEL_FILE.fullmatch(wheel["url"].rsplit("/", 1)[1]), wheel["url"]
+        assert SHA256.fullmatch(wheel["sha256"]) and not PLACEHOLDER.search(json.dumps(wheel))
+
+
+def test_wheel_set_is_pyproject_deps_plus_pyusb_without_numpy():
+    names = {
+        s["url"].rsplit("/", 1)[1].split("-")[0].lower()
+        for s in wheel_sources(json.loads(MANIFEST.read_text()))
+    }
+    assert names == WHEELS
+
+
+def test_only_the_app_commit_is_still_a_placeholder():
+    text = MANIFEST.read_text()
+    assert sorted(set(PLACEHOLDER.findall(text))) == ["PLACEHOLDER_COMMIT_APP"]
+
+
+def test_pin_provenance_and_numpy_finding_are_recorded():
+    notes = " ".join(json.loads(MANIFEST.read_text())["x-notes"])
+    assert "2026-11" in notes and "PyPI" in notes and "numpy 2.3.5" in notes
 
 
 def test_unpinned_placeholders_are_declared_in_the_notes():
@@ -242,7 +293,7 @@ def test_flatpak_builder_accepts_the_manifest():
     )
     assert done.returncode == 0 and "WARNING" not in done.stderr and "ERROR" not in done.stderr
     shown = json.loads(done.stdout)
-    assert shown["id"] == "io.github.bearyjd.OpticFilm" and shown["command"] == "opticfilm"
+    assert shown["id"] == APP_ID and shown["command"] == "opticfilm"
     assert [m["name"] for m in shown["modules"]] == [
         m["name"] for m in json.loads(MANIFEST.read_text())["modules"]
     ]
@@ -269,7 +320,7 @@ def test_wrong_base_is_reported():
         "--filesystem=host:ro",
         "--filesystem=/usr",
         "--socket=system-bus",
-        "--talk-name=org.freedesktop.Flatpak",
+        "--talk-name=org.freedesktop.secrets",
         "--share=network",
     ],
 )
@@ -352,3 +403,32 @@ def test_launcher_commands_write_runnable_scripts(tmp_path):
         lines = (tmp_path / "bin" / name).read_text().splitlines()
         assert lines[0] == "#!/bin/sh" and len(lines) == 2 and lines[1].endswith('"$@"')
         subprocess.run(["sh", "-n", str(tmp_path / "bin" / name)], check=True)
+
+
+def test_runtime_base_and_app_id_are_retargeted():
+    manifest = json.loads(MANIFEST.read_text())
+    assert manifest["app-id"] == APP_ID and MANIFEST.name == f"{APP_ID}.json"
+    assert manifest["runtime-version"] == manifest["base-version"] == RUNTIME_VERSION
+    assert manifest["runtime"] == "org.kde.Platform" and manifest["sdk"] == "org.kde.Sdk"
+
+
+def test_app_id_matches_the_code():
+    code = (ROOT / "src" / "opticfilm_linux" / "app" / "qt" / "app.py").read_text()
+    assert f'APP_ID = "{APP_ID}"' in code
+
+
+def test_baseapp_cleanup_command_is_present():
+    assert json.loads(MANIFEST.read_text())["cleanup-commands"] == ["/app/cleanup-BaseApp.sh"]
+
+
+def test_numpy_is_not_installed_from_a_wheel():
+    manifest = json.loads(MANIFEST.read_text())
+    assert not any("numpy" in s.get("url", "").lower() for s in sources(manifest))
+    assert not any("numpy" in c for m in manifest["modules"] for c in m.get("build-commands", []))
+
+
+def test_installing_numpy_is_reported():
+    def add(m):
+        m["modules"][0]["build-commands"][0] += " numpy"
+
+    assert any("BaseApp" in p for p in mutated(add))

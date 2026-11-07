@@ -12,7 +12,10 @@ Card {
     borderColor: Theme.error
     borderWidth: 2
     visible: bridge.hasBanner
-    onVisibleChanged: if (!visible)
+    // Reset when the banner itself goes away, not when StatusArea merely hides/shows the entry
+    // (first-load card activating, "N more" collapsing), which would silently close Details.
+    readonly property bool bannerPresent: bridge.hasBanner
+    onBannerPresentChanged: if (!bannerPresent)
         showDetail = false
     Accessible.role: Accessible.AlertMessage
     Accessible.name: bridge.bannerMessage
@@ -26,8 +29,8 @@ Card {
             Kirigami.Icon {
                 source: "dialog-error"
                 color: Theme.error
-                Layout.preferredWidth: Theme.spacingLarge
-                Layout.preferredHeight: Theme.spacingLarge
+                Layout.preferredWidth: Theme.iconMedium
+                Layout.preferredHeight: Theme.iconMedium
                 Accessible.ignored: true
             }
             Kirigami.SelectableLabel {

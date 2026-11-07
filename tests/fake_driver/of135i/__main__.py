@@ -4,7 +4,13 @@
 frame per opening, with the slide's long side along the transport (so a frame is a slide turned
 a quarter turn, with dark holder on both sides). Behaviour is chosen with FAKE_DRIVER_MODE:
 ok | coverage_fail (overscan files only, exit 1, as for a slide the strip detector rejects) |
-cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pause).
+cal_fail (the real driver's calibration refusal, no files) | slow (ok after a pause) |
+missing_frame (the last requested frame is not written, exit 0).
+``--slides`` takes comma lists and inclusive ranges like the real driver, but is deliberately
+STRICTER: the real one keeps duplicates and scans "3,1" in that order, while this one accepts
+only an ascending, unique list within 1-4 (exit 2 otherwise), so an app bug that sends such a
+list fails a test. Only the requested frames are written, each named by its frame NUMBER.
+``eject`` behaves as FAKE_DRIVER_EJECT_MODE says (ok | skipped | fail | hang, see ``_eject``).
 ``load --next-strip`` exits with FAKE_DRIVER_LOAD_EXIT after FAKE_DRIVER_LOAD_DELAY seconds.
 FAKE_DRIVER_SYNTH=1 makes the frames up instead (``synth``: the real frame geometry at the
 requested --dpi, written strip by strip) rather than cutting them from FAKE_DRIVER_SWEEP.
@@ -21,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-from opticfilm_linux.pipeline.split import split_slides
+from opticfilm_linux.pipeline.split import split_positions
 from opticfilm_linux.sweepstore import load_sweep
 
 from . import synth
@@ -44,12 +50,33 @@ DOCTOR = {
 }
 
 
-def _frames(sweep_dir: Path):
-    for slide in split_slides(load_sweep(sweep_dir)):
+HOLDER_FRAMES = 4
+
+
+def _parse_slides(spec: str | None) -> list[int] | None:
+    """The requested frames, or None for a list the real driver could misread."""
+    frames: list[int] = []
+    for part in (spec or f"1-{HOLDER_FRAMES}").split(","):
+        low, dash, high = part.partition("-")
+        high = high if dash else low  # "1-" is refused, as int("") fails in the real driver
+        if not low.isdigit() or not high.isdigit() or int(high) < int(low):
+            return None
+        frames += range(int(low), int(high) + 1)
+    ascending = frames == sorted(set(frames))
+    return frames if ascending and all(1 <= n <= HOLDER_FRAMES for n in frames) else None
+
+
+def _frames(sweep_dir: Path, wanted: list[int]):
+    """(number, rgb, ir) per requested frame; an opening the stored sweep lacks is refused."""
+    slides = split_positions(load_sweep(sweep_dir))
+    if any(number not in slides for number in wanted):
+        raise SystemExit(f"ERROR fake of135i: frames {wanted} not all in {tuple(slides)}")
+    for number in wanted:
+        slide = slides[number]
         rgb = np.pad(slide.rgb, ((PAD, PAD), (0, 0), (0, 0)))
         ir = np.pad(slide.ir, ((PAD, PAD), (0, 0)))
         # the real frame has the transport along its rows: turn the slide a quarter turn
-        yield np.rot90(rgb, k=-1).copy(), np.rot90(ir, k=-1).copy()
+        yield number, np.rot90(rgb, k=-1).copy(), np.rot90(ir, k=-1).copy()
 
 
 def _trace(event: str) -> None:
@@ -77,16 +104,22 @@ def _scan_body(args: argparse.Namespace) -> int:
     argv_log = os.environ.get("FAKE_DRIVER_ARGV")
     if argv_log:
         Path(argv_log).write_text(json.dumps(sys.argv[1:]))
+    wanted = _parse_slides(args.slides)
+    if wanted is None:
+        print(f"ERROR of135i: bad --slides {args.slides!r}", file=sys.stderr)
+        return 2
     if mode == "cal_fail":
         print(CAL_FAIL, file=sys.stderr)
         return 1
     if mode == "hang":  # a driver stuck mid-scan, with a helper child of its own
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        pids = os.environ.get("FAKE_DRIVER_PIDS")
-        if pids:
-            Path(pids).write_text(json.dumps([os.getpid(), child.pid]))
         print("scanning frame 1 ...", flush=True)
         try:
+            pids = os.environ.get("FAKE_DRIVER_PIDS")
+            if pids:  # published last and atomically: a reader may signal as soon as it sees it
+                tmp = Path(pids).with_name(Path(pids).name + ".tmp")
+                tmp.write_text(json.dumps([os.getpid(), child.pid]))
+                tmp.replace(pids)
             time.sleep(120)
         except KeyboardInterrupt:  # as the real driver: Ctrl-C fails closed and exits by itself
             print("ERROR of135i: interrupted; failing closed", flush=True)
@@ -99,8 +132,10 @@ def _scan_body(args: argparse.Namespace) -> int:
         time.sleep(float(os.environ.get("FAKE_DRIVER_DELAY", "1.5")))
     out = Path(args.output)
     if os.environ.get("FAKE_DRIVER_SYNTH") == "1":
-        return _write_synthetic(out, args.dpi, mode)
-    for number, (rgb, ir) in enumerate(_frames(Path(os.environ["FAKE_DRIVER_SWEEP"])), start=1):
+        return _write_synthetic(out, args.dpi, mode, wanted)
+    for number, rgb, ir in _frames(Path(os.environ["FAKE_DRIVER_SWEEP"]), wanted):
+        if mode == "missing_frame" and number == wanted[-1]:
+            continue
         stem = out.with_name(f"{out.stem}-f{number}")
         tifffile.imwrite(f"{stem}.overscan.tiff", rgb)
         tifffile.imwrite(f"{stem}-ir.overscan.tiff", np.stack([ir, ir, ir], axis=2))
@@ -110,8 +145,8 @@ def _scan_body(args: argparse.Namespace) -> int:
     return 1 if mode == "coverage_fail" else 0
 
 
-def _write_synthetic(out: Path, dpi: int, mode: str) -> int:
-    for number in range(1, 5):
+def _write_synthetic(out: Path, dpi: int, mode: str, wanted: list[int]) -> int:
+    for number in wanted:
         stem = out.with_name(f"{out.stem}-f{number}")
         synth.write_frame(Path(f"{stem}.overscan.tiff"), dpi, number, infrared=False)
         synth.write_frame(Path(f"{stem}-ir.overscan.tiff"), dpi, number, infrared=True)
@@ -134,6 +169,7 @@ def main() -> int:
     scan.add_argument("--frames")
     scan.add_argument("--dpi", type=int)
     scan.add_argument("--ir", action="store_true")
+    scan.add_argument("--no-clean", action="store_true")
     scan.add_argument("--no-cal-data", action="store_true")
     scan.add_argument("--dark-fallback")
     scan.add_argument("--slides")
@@ -153,12 +189,32 @@ def main() -> int:
         _trace("doctor end")
         return int(os.environ.get("FAKE_DRIVER_DOCTOR_EXIT", "0"))
     if args.command == "eject":
-        _trace("eject")
-        print("ejected")
-        return int(os.environ.get("FAKE_DRIVER_EJECT_EXIT", "0"))
+        return _eject()
     if args.command == "load":
         return _load(args)
     return _scan(args)
+
+
+def _eject() -> int:
+    """FAKE_DRIVER_EJECT_MODE: ok | skipped (the loader sensor said no magazine: nothing sent,
+    a warning, exit 0, no ``ejected`` line) | fail (unconfirmed, exit 1) | hang (until Ctrl-C or
+    FAKE_DRIVER_EJECT_DELAY seconds). FAKE_DRIVER_EJECT_EXIT still sets the exit code of ok."""
+    _trace("eject")
+    mode = os.environ.get("FAKE_DRIVER_EJECT_MODE", "ok")
+    if mode == "skipped":
+        print("WARNING of135i: no magazine detected; eject not sent", file=sys.stderr)
+        return 0
+    if mode == "fail":
+        print("ERROR of135i: EjectIncompleteError: eject not confirmed", flush=True)
+        return 1
+    if mode == "hang":
+        try:
+            time.sleep(float(os.environ.get("FAKE_DRIVER_EJECT_DELAY", "30")))
+        except KeyboardInterrupt:
+            print("ERROR of135i: interrupted; failing closed", flush=True)
+            return 130
+    print("ejected")
+    return int(os.environ.get("FAKE_DRIVER_EJECT_EXIT", "0"))
 
 
 def _load(args: argparse.Namespace) -> int:

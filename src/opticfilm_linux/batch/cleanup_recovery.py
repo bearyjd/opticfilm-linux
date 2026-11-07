@@ -15,6 +15,8 @@ import dataclasses
 import weakref
 from pathlib import Path
 
+from opticfilm_linux.batch.empty import check_raw_coverage, scanned_slides
+from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import BatchManifest, SlideStatus, TrayRecord, TrayStage
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.provenance import raw_region_sha256
@@ -121,22 +123,16 @@ def _recovery_raw(store: BatchStore, manifest: BatchManifest, tray: TrayRecord, 
     if current not in folders:
         raise ValueError("current raw sweep is missing")
     sweep = export.load_sweep(current)
-    regions = export.split_slides(sweep)
-    positions = [slide.position for slide in tray.slides]
-    if (
-        any(type(position) is not int for position in positions)
-        or len(positions) != len(regions)
-        or set(positions) != set(range(1, len(regions) + 1))
-    ):
-        raise ValueError("manifest positions must cover every raw position exactly once")
-    for slide in tray.slides:
+    regions = export.split_positions(sweep)
+    check_raw_coverage(tray, regions)
+    for slide in scanned_slides(tray):
         expected = (
             slide.blank_fingerprint
             if slide.status is SlideStatus.BLANK
             else (slide.exports[-1].raw_sha256 if slide.exports else "")
         )
         if expected:
-            if raw_region_sha256(regions[slide.position - 1]) != expected:
+            if raw_region_sha256(regions[slide.position]) != expected:
                 raise ValueError("current raw scan differs from its recorded hash")
         elif manifest.defaults.infrared and sweep.ir is None:
             raise ValueError("configured infrared raw scan is missing")
@@ -243,10 +239,10 @@ def _compare_cleanup_evidence(
             batch.defaults,
             batch.first_tray_released,
             batch.released_render,
-            export._tray(batch, number),
+            without_meta(export._tray(batch, number)),  # a description edit needs no retry
             candidate,
             automatic,
-            tuple(t for t in batch.trays if t.number != number and t.raw_removed),
+            tuple(without_meta(t) for t in batch.trays if t.number != number and t.raw_removed),
         )
 
     if policy_key(manifest) != policy_key(evidence):

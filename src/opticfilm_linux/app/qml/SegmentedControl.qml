@@ -8,7 +8,7 @@ QQC2.Control {
     property int currentIndex: 0
     signal activated(int index)
 
-    implicitWidth: model.length * 96
+    implicitWidth: model.length * 5 * Theme.gu
     implicitHeight: Theme.controlHeight
     padding: 0
     font.pixelSize: Theme.fontBody

@@ -16,6 +16,7 @@ from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from shiboken6 import isValid
 from test_qt_smoke import _wait, loaded, qapp  # noqa: F401
+from theme_metrics import theme_metrics
 
 from opticfilm_linux.batch.model import (
     Flag,
@@ -188,6 +189,7 @@ def test_select_all_keeps_inspector_and_queue_on_focused_tray(sheet_window):
 
 def test_rotate_buttons_are_legible_named_and_rotate_selection(sheet_window):
     bridge, root, store, _warnings = sheet_window
+    metrics = theme_metrics(root)
     _tap(root, "slideThumb_2_1")
     _wait(bridge, lambda: bridge.selection == [[2, 1]])
     for name, label, rotation in [
@@ -195,8 +197,8 @@ def test_rotate_buttons_are_legible_named_and_rotate_selection(sheet_window):
         ("rotateSelectionRight", "Rotate right", 0),
     ]:
         button = root.findChild(QQuickItem, name)
-        assert button.property("font").pixelSize() >= 24
-        assert button.height() >= 44
+        assert button.property("font").pixelSize() == metrics["fontRotation"]
+        assert button.height() >= metrics["controlHeight"]
         accessible = QAccessible.queryAccessibleInterface(button)
         assert accessible.text(QAccessible.Text.Name) == label
         assert QMetaObject.invokeMethod(button, "click")
@@ -403,3 +405,19 @@ def test_tray_header_keyboard_control_modifier_keeps_existing_selection(sheet_wi
     QTest.qWait(100)
     bridge.poll()
     assert bridge.selection == [[n, p] for n in (1, 2) for p in range(1, 5)]
+
+
+def test_selection_confirmations_are_owned_by_page(sheet_window):
+    bridge, root, _store, _warnings = sheet_window
+    page = root.findChild(QObject, "mainPage")
+    reexport = root.findChild(QObject, "reexportSelectionDialog")
+    content = page.property("contentItem")
+    assert reexport.parent() == content
+    recover = root.findChild(QObject, "recoverDialog")
+    assert recover.parent() == content
+    queue = root.findChild(QObject, "trayQueue")
+    queue.recoverRequested.emit(2)
+    _wait(bridge, lambda: recover.property("opened"))
+    assert recover.property("title") == "Recover raw scans of tray 2?"
+    bridge.batchReplaced.emit()
+    _wait(bridge, lambda: not recover.property("visible"))

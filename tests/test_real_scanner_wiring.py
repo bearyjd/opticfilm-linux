@@ -87,3 +87,26 @@ def test_the_runner_note_follows_the_custom_load_command(monkeypatch):
     assert "directly on this computer" in load_runner_note()
     monkeypatch.setenv("OPTICFILM_LOAD_COMMAND", "mine")
     assert "OPTICFILM_LOAD_COMMAND" in load_runner_note()
+
+
+def test_the_app_scanner_scans_only_the_chosen_openings(fake_driver_env, monkeypatch, tmp_path):
+    """The real app path (provenance wrapper around the driver) passes the openings through."""
+    import json
+
+    from controller_helpers import open_new, scan_when_ready, wait_all_in_review
+    from opticfilm_linux.app.controller import Controller
+    from opticfilm_linux.batch.store import BatchStore
+
+    log = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_DRIVER_ARGV", str(log))
+    controller = Controller(scanner_factory(None), skip_empty=True)
+    try:
+        open_new(controller, tmp_path / "b")
+        controller.set_scan_openings((1, 2))
+        scan_when_ready(controller)
+        wait_all_in_review(controller, 1)
+    finally:
+        controller.shutdown()
+    argv = json.loads(log.read_text())
+    assert argv[argv.index("--slides") + 1] == "1-2"
+    assert BatchStore.open(tmp_path / "b", readonly=True).snapshot().trays[0].skipped == (3, 4)

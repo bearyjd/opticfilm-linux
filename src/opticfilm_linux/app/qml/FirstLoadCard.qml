@@ -6,11 +6,20 @@ import org.kde.kirigami as Kirigami
 QQC2.Frame {
     id: card
     objectName: "firstLoadCard"
+    property bool compact: false
     signal terminalHelp()
     readonly property bool active: ["jogging", "await_reinsert", "loading"].indexOf(bridge.loadPhase) >= 0
-    visible: bridge.canFirstLoad || active || bridge.loadPhase === "failed" || bridge.loadPhase === "done"
+    readonly property bool available: bridge.canFirstLoad || active || bridge.loadPhase === "failed" || bridge.loadPhase === "done"
+    visible: available
     Layout.fillWidth: true
     Layout.margins: Kirigami.Units.smallSpacing
+
+    Binding {
+        target: cardColumn
+        property: "spacing"
+        value: Theme.spacingSmall
+        when: card.compact
+    }
 
     ConfirmDialog {
         id: cancelDialog
@@ -20,8 +29,18 @@ QQC2.Frame {
         onConfirmed: bridge.firstLoadCancel()
     }
 
-    ColumnLayout {
-        anchors.fill: parent
+    // Regular size keeps the Frame's default padding and the layout's default spacing, exactly as
+    // before contentItem replaced anchors.fill (that also sat inside the padded content item);
+    // compact tightens both.
+    Binding {
+        target: card
+        property: "padding"
+        value: Theme.spacingSmall
+        when: card.compact
+    }
+
+    contentItem: ColumnLayout {
+        id: cardColumn
         QQC2.Label {
             objectName: "firstLoadText"
             Layout.fillWidth: true
@@ -38,7 +57,9 @@ QQC2.Frame {
             visible: bridge.loadExitCode !== ""
             text: qsTr("Driver exit code: %1").arg(bridge.loadExitCode)
         }
-        RowLayout {
+        Flow {
+            Layout.fillWidth: true
+            spacing: card.compact ? Kirigami.Units.smallSpacing : Kirigami.Units.largeSpacing
             QQC2.Button {
                 objectName: "firstLoadButton"
                 text: qsTr("Load")
@@ -46,13 +67,14 @@ QQC2.Frame {
                 enabled: bridge.canFirstLoad
                 onClicked: bridge.firstLoad()
             }
-            QQC2.Button {
+            PillButton {
                 objectName: "firstLoadDoneButton"
                 text: qsTr("Done")
                 visible: bridge.loadPhase === "await_reinsert"
                 onClicked: bridge.firstLoadDone()
             }
-            QQC2.Button {
+            PillButton {
+                flat: true
                 objectName: "firstLoadCancelButton"
                 text: qsTr("Cancel")
                 visible: card.active

@@ -295,12 +295,18 @@ def test_failed_scan_then_close_without_tick_invalidates_the_device_record(
 
     monkeypatch.setattr(scanner, "scan_holder", fail)
     controller.scan()
-    deadline = time.monotonic() + 5
-    while not controller._session.store.snapshot().trays and time.monotonic() < deadline:
+    store = controller._session.store
+    deadline = time.monotonic() + 10
+
+    def tray_stage():
+        trays = store.snapshot().trays
+        return trays[0].stage if trays else None
+
+    # Wait for the state itself: the tray is stored as SCANNING before its scan job is
+    # registered as pending, so "no scan pending" can be true before the failure has landed.
+    while tray_stage() is not TrayStage.FAILED and time.monotonic() < deadline:
         time.sleep(0.01)
-    while controller._session.runner.scan_pending() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert controller._session.store.snapshot().trays[0].stage is TrayStage.FAILED
+    assert tray_stage() is TrayStage.FAILED, f"tray never reached FAILED: {tray_stage()}"
     controller.close_batch()
     controller._command.submit(lambda: None).result(timeout=5)
     assert controller._session is None
@@ -577,7 +583,9 @@ def test_unknown_scan_warns_and_latched_scan_does_not(build, tmp_path, monkeypat
     open_new(controller, tmp_path / "batch")
     wait_until(controller, lambda: controller.state().can_scan)
     calls = []
-    monkeypatch.setattr(controller._session.runner, "scan_tray", lambda: calls.append("scan"))
+    monkeypatch.setattr(
+        controller._session.runner, "scan_tray", lambda skipped=(): calls.append("scan")
+    )
     controller.scan()
     wait_until(controller, lambda: controller.state().holder_latch_warning and calls)
     wait_until(controller, lambda: not controller._scans_queued)

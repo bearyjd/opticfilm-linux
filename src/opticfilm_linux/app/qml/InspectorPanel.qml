@@ -11,21 +11,12 @@ QQC2.ScrollView {
     readonly property int singleTray: summary.trays && summary.trays.length === 1 ? summary.trays[0] : -1
     property bool showBefore: false
     signal rescanRequested()
+    signal reexportRequested()
+    signal metaEditRequested()
     clip: true
     contentWidth: availableWidth
+    implicitWidth: 0
     QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
-
-    ConfirmDialog {
-        id: reexportDialog
-        objectName: "reexportSelectionDialog"
-        title: qsTr("Re-export selected slides?")
-        subtitle: qsTr("This writes new numbered files for the accepted slides in the selection. Existing files are kept. Writing files cannot be undone.")
-        onConfirmed: bridge.reexportSelection()
-    }
-    Connections {
-        target: bridge
-        function onBatchReplaced() { reexportDialog.close(); }
-    }
 
     function setting(field, fallback) {
         const value = summary.settings ? summary.settings[field] : null;
@@ -91,9 +82,28 @@ QQC2.ScrollView {
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spacing
             Layout.rightMargin: Theme.spacing
+            wrapMode: Text.Wrap
             text: panel.count ? qsTr("%1 selected").arg(panel.count) : qsTr("Select a slide to inspect")
             color: Theme.text
             font.pixelSize: Theme.fontHeading
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            enabled: panel.count > 0 && !bridge.readonly
+            PillButton {
+                objectName: "acceptSelection"
+                Layout.fillWidth: true
+                implicitWidth: 5.5 * Theme.gu
+                text: qsTr("Accept")
+                onClicked: bridge.setSelectionAccepted(true)
+            }
+            QQC2.Button {
+                objectName: "unacceptSelection"
+                text: qsTr("Unaccept")
+                onClicked: bridge.setSelectionAccepted(false)
+            }
         }
         Card {
             objectName: "inspectorPreviewCard"
@@ -109,7 +119,8 @@ QQC2.ScrollView {
                 }
                 Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.max(150, panel.width * 0.7)
+                    Layout.preferredHeight: Math.max(Theme.minCell * 0.5, Math.min(panel.width * 0.7, panel.height * Theme.inspectorPreviewFraction))
+                    Layout.maximumHeight: Math.max(Theme.minCell * 0.5, panel.height * Theme.inspectorPreviewFraction)
                     Image {
                         objectName: "inspectorPreview"
                         anchors.fill: parent
@@ -120,7 +131,7 @@ QQC2.ScrollView {
                     QQC2.Label {
                         anchors.centerIn: parent
                         visible: !(panel.showBefore ? panel.slide.beforeUrl : panel.slide.afterUrl || panel.slide.beforeUrl)
-                        text: panel.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
+                        text: panel.slide.status === "skipped" ? qsTr("Empty (not scanned)") : panel.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
                         color: Theme.muted
                     }
                 }
@@ -155,7 +166,7 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "markEmpty_" + (panel.slide.position || 0)
                     text: qsTr("Mark empty")
-                    enabled: !bridge.readonly && panel.slide.status !== "blank"
+                    enabled: !bridge.readonly && panel.slide.status !== "blank" && panel.slide.status !== "skipped"
                     onClicked: bridge.markEmpty(panel.slide.tray, panel.slide.position)
                 }
             }
@@ -166,21 +177,6 @@ QQC2.ScrollView {
             Layout.rightMargin: Theme.spacing
             enabled: panel.count > 0 && !bridge.readonly
             spacing: Theme.spacingSmall
-            RowLayout {
-                Layout.fillWidth: true
-                PillButton {
-                    objectName: "acceptSelection"
-                    Layout.fillWidth: true
-                    implicitWidth: 100
-                    text: qsTr("Accept")
-                    onClicked: bridge.setSelectionAccepted(true)
-                }
-                QQC2.Button {
-                    objectName: "unacceptSelection"
-                    text: qsTr("Unaccept")
-                    onClicked: bridge.setSelectionAccepted(false)
-                }
-            }
             RowLayout {
                 QQC2.Button {
                     objectName: "rejectSelection"
@@ -197,7 +193,8 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "rotateSelectionLeft"
                     text: "↶"
-                    font.pixelSize: Theme.fontHeading + 4
+                    implicitWidth: Theme.controlHeight
+                    font.pixelSize: Theme.fontRotation
                     implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate left")
                     QQC2.ToolTip.visible: hovered
@@ -207,7 +204,8 @@ QQC2.ScrollView {
                 QQC2.Button {
                     objectName: "rotateSelectionRight"
                     text: "↷"
-                    font.pixelSize: Theme.fontHeading + 4
+                    implicitWidth: Theme.controlHeight
+                    font.pixelSize: Theme.fontRotation
                     implicitHeight: Theme.controlHeight
                     Accessible.name: qsTr("Rotate right")
                     QQC2.ToolTip.visible: hovered
@@ -236,8 +234,16 @@ QQC2.ScrollView {
                 objectName: "reexportSelection"
                 Layout.fillWidth: true
                 text: qsTr("Re-export selected")
-                onClicked: reexportDialog.open()
+                onClicked: panel.reexportRequested()
             }
+        }
+        QQC2.Button {
+            objectName: "editMetaButton"
+            Layout.fillWidth: true
+            text: qsTr("Edit description / date")
+            Accessible.description: qsTr("Opens the description and date strip for the selected slides")
+            enabled: !bridge.readonly && panel.count > 0
+            onClicked: panel.metaEditRequested()
         }
         QQC2.Button {
             objectName: "rescanSelectionTray"

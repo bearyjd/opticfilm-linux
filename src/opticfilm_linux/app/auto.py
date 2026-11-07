@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from opticfilm_linux.app.raw import cleanup_pending, raw_failure, raw_inventory
-from opticfilm_linux.batch.empty import is_empty_confirmed
+from opticfilm_linux.batch.empty import is_empty_confirmed, is_known_empty
 from opticfilm_linux.batch.export import (
     CleanupPolicyRefused,
     CleanupRetryRequired,
@@ -19,7 +19,8 @@ from opticfilm_linux.batch.export import (
     export_batch,
     verify_tray_export,
 )
-from opticfilm_linux.batch.model import SlideStatus, TrayStage
+from opticfilm_linux.batch.metadata import without_meta
+from opticfilm_linux.batch.model import NO_DELIVERY, SlideStatus, TrayStage
 from opticfilm_linux.batch.review import accept_tray
 from opticfilm_linux.batch.store import BatchError, BatchStore
 
@@ -73,7 +74,7 @@ class AutoPipeline:
             ):
                 if self.store.update_tray_if(
                     tray.number,
-                    lambda current, previous=tray: current == previous,
+                    lambda current, previous=tray: without_meta(current) == without_meta(previous),
                     auto="freed",
                     auto_error="",
                     auto_failed=(),
@@ -304,7 +305,7 @@ class AutoPipeline:
         return tuple(
             s.position
             for s in tray.slides
-            if s.status not in (SlideStatus.ACCEPTED, SlideStatus.BLANK) and not s.owner_decided
+            if s.status not in (SlideStatus.ACCEPTED, *NO_DELIVERY) and not s.owner_decided
         )
 
     def _blocked(self, number: int, *, expected=None) -> bool:
@@ -436,9 +437,7 @@ class AutoPipeline:
 
     def _release_candidate(self, manifest):
         first = min(manifest.trays, key=lambda t: t.number)
-        confirmed_empty = bool(first.slides) and all(
-            s.status is SlideStatus.BLANK and is_empty_confirmed(first, s) for s in first.slides
-        )
+        confirmed_empty = bool(first.slides) and all(is_known_empty(first, s) for s in first.slides)
         if not first.raw_removed and not confirmed_empty:
             return first.number
         return next(
@@ -459,7 +458,7 @@ class AutoPipeline:
             and not any(s.preview_stale for s in tray.slides)
             and any(s.status is SlideStatus.ACCEPTED and s.exported for s in tray.slides)
             and all(
-                s.status is SlideStatus.BLANK or (s.status is SlideStatus.ACCEPTED and s.exported)
+                s.status in NO_DELIVERY or (s.status is SlideStatus.ACCEPTED and s.exported)
                 for s in tray.slides
             )
         )

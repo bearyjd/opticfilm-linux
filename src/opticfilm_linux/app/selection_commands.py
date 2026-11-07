@@ -8,8 +8,8 @@ from pathlib import Path
 from opticfilm_linux.app import selection
 from opticfilm_linux.app.state import Banner, selection_fields
 from opticfilm_linux.batch import review
-from opticfilm_linux.batch.events import SlideUpdated
 from opticfilm_linux.batch.export import clear_exported
+from opticfilm_linux.batch.metadata import checked_override
 from opticfilm_linux.batch.model import SlideSettings, SlideStatus, TrayStage
 
 
@@ -211,23 +211,118 @@ class SelectionCommands:
         self._bulk_result(result)
 
     def undo(self) -> None:
+        """Undo the latest render, status or metadata edit, in the order they were made."""
+
         def job(runner):
             with self._lock:
                 self._selection_undo_label()
                 entry = self._undo[-1] if self._undo else None
-            if entry is None:
-                return
-            result = review.restore_many(runner._store, entry.before)
-            runner._queue_stale_previews()
-            for number, position in result.before:
-                runner._emit(SlideUpdated(number, position))
-            with self._lock:
-                self._undo, _ = selection.pop_undo(self._undo)
-                self._auto_due.update(number for number, _ in result.before)
-            self._bulk_result(result)
-            self._submit_auto_due()
+            if isinstance(entry, selection.MetaUndoEntry):
+                self._undo_meta(runner, entry)
+            elif entry is not None:
+                self._undo_render(runner, entry)
 
         self._run_selection_writer(job, "Could not undo selected slides")
+
+    def _undo_render(self, runner, entry) -> None:
+        result = runner.restore_many(entry.before)
+        with self._lock:
+            self._undo, _ = selection.pop_undo(self._undo)
+            self._auto_due.update(number for number, _ in result.before)
+        self._bulk_result(result)
+        self._submit_auto_due()
+
+    def _undo_meta(self, runner, entry) -> None:
+        # metadata needs no previews, renders or automatic work: only the manifest changes
+        result = review.restore_meta_many(runner.store, entry.before)
+        with self._lock:
+            self._undo, _ = selection.pop_undo(self._undo)
+        self._bulk_result(result)
+        self._requeue_verified(runner, result.before)
+        self._kick_refresh()
+
+    def _requeue_verified(self, runner, before) -> None:
+        """Hand verified trays the edit touched back to automatic work, so a raw cleanup that
+        gave up because of the edit is tried again rather than waiting for a reopen."""
+        touched = {number for number, _ in before.slides} | set(before.trays)
+        due = {
+            t.number
+            for t in runner.store.snapshot().trays
+            if t.auto == "verified" and (before.batch is not None or t.number in touched)
+        }
+        if due:
+            with self._lock:
+                self._auto_due.update(due)
+            self._submit_auto_due()
+
+    def _check_meta_target(self, tray: int | None = None) -> None:
+        """Refuse at once, before queueing, what could not start."""
+        with self._lock:
+            session, manifest = self._session, self._manifest
+        if session is None:
+            raise ValueError("Open a batch first")
+        if session.runner is None:
+            raise ValueError("This batch is open read-only")
+        if tray is not None and manifest and all(t.number != tray for t in manifest.trays):
+            raise ValueError(f"There is no tray {tray} in this batch")
+
+    def set_selection_meta(self, field: str, value: str | None) -> None:
+        """Set one field on every selected slide: text, ``""`` blank, ``None`` inherit.
+
+        A value that breaks the rules, or nothing to edit, raises ValueError at once.
+        """
+        self.set_slides_meta(self._selection_keys(), field, value)
+
+    def set_slides_meta(self, keys, field: str, value: str | None) -> None:
+        """Like ``set_selection_meta`` for explicit ``(tray, position)`` keys: the strip passes
+        the slides selected when the owner started typing, not whatever is selected now."""
+        change = {field: checked_override(field, value)}
+        self._check_meta_target()
+        keys = frozenset((int(tray), int(position)) for tray, position in keys)
+        if not keys:
+            raise ValueError("Select at least one slide first")
+        with self._lock:
+            manifest = self._manifest
+        known = (
+            {(t.number, s.position) for t in manifest.trays for s in t.slides}
+            if manifest
+            else set()
+        )
+        if not keys <= known:
+            raise ValueError("Some of those slides are no longer in this batch")
+        self._run_meta_edit(lambda store: review.edit_meta_many(store, keys, change))
+
+    def reset_selection_meta(self, field: str) -> None:
+        self.set_selection_meta(field, None)
+
+    def set_tray_meta(self, number: int, field: str, value: str | None) -> None:
+        change = {field: checked_override(field, value)}
+        self._check_meta_target(number)
+        self._run_meta_edit(lambda store: review.edit_tray_meta(store, number, change))
+
+    def set_batch_meta(self, field: str, value: str | None, scope: str = "from_now_on") -> None:
+        """Change the batch default; ``from_now_on`` (the default) keeps existing trays as
+        they are, ``inheriting`` changes every slide that still inherits it."""
+        if scope not in review.META_SCOPES:
+            raise ValueError(f"scope must be one of {', '.join(review.META_SCOPES)}")
+        checked_override(field, value)
+        self._check_meta_target()
+        change = {field: value}
+        self._run_meta_edit(lambda store: review.edit_batch_meta(store, change, scope=scope))
+
+    def _run_meta_edit(self, edit) -> None:
+        def job(runner):
+            result = edit(runner.store)
+            with self._lock:
+                self._selection_undo_label()
+                if not result.before.empty:
+                    entry = selection.MetaUndoEntry("Edit metadata", result.before)
+                    self._undo = selection.push_undo(self._undo, entry)
+            self._bulk_result(result)
+            self._requeue_verified(runner, result.before)
+            self._kick_refresh()
+
+        self._run_selection_writer(job, "Could not change the description or date")
 
     def reexport_selection(self) -> None:
         from opticfilm_linux.app import controller
@@ -290,6 +385,7 @@ class SelectionCommands:
         reasons = {
             "raw_removed": "their raw scans were removed",
             "blank": "they are blank",
+            "skipped": "their openings were not scanned",
             "not_editable": "their trays are not ready for review",
             "missing": "they no longer exist",
             "not_accepted": "they are not accepted",

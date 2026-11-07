@@ -6,6 +6,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    preferredWidth: Math.min(28 * Theme.gu, parent ? parent.width * 0.9 : 28 * Theme.gu)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
 
     Kirigami.Theme.inherit: false
     Kirigami.Theme.backgroundColor: Theme.card
@@ -52,6 +57,11 @@ Kirigami.Dialog {
     }
     title: qsTr("Export accepted slides")
     padding: Theme.spacing
+    Binding {
+        target: dialog.header
+        property: "leftPadding"
+        value: dialog.leftPadding
+    }
     standardButtons: Kirigami.Dialog.NoButton
     closePolicy: bridge.exportRunning ? QQC2.Popup.NoAutoClose : QQC2.Popup.CloseOnEscape
     onClosed: if (bridge.hasExport && !bridge.exportRunning)
@@ -70,7 +80,6 @@ Kirigami.Dialog {
     }
     ColumnLayout {
         spacing: Theme.spacing
-        implicitWidth: Kirigami.Units.gridUnit * 28
         ColumnLayout {
             visible: !bridge.hasExport
             spacing: Theme.spacing
@@ -121,15 +130,6 @@ Kirigami.Dialog {
                 valueRole: "key"
                 enabled: formatBox.currentValue === "jpeg"
             }
-            PillButton {
-                objectName: "startExport"
-                Layout.alignment: Qt.AlignRight
-                text: qsTr("Export")
-                icon.name: "document-export"
-                highlighted: true
-                enabled: dialog.folderUrl !== ""
-                onClicked: bridge.startExport(dialog.folderUrl, formatBox.currentValue, sizeBox.currentValue)
-            }
         }
         ColumnLayout {
             visible: bridge.hasExport
@@ -147,19 +147,43 @@ Kirigami.Dialog {
                 wrapMode: Text.Wrap
                 text: bridge.exportFinished ? (bridge.exportCancelled ? qsTr("Cancelled. %1 slides were written; export again to continue.").arg(bridge.exportWritten) : (bridge.exportMessage !== "" ? bridge.exportMessage : qsTr("Done. %1 slides were written.").arg(bridge.exportWritten))) : qsTr("Exporting %1 of %2…").arg(bridge.exportDone).arg(bridge.exportTotal)
             }
+        }
+    }
+    footer: QQC2.Control {
+        id: footer
+        padding: Theme.spacing
+        contentItem: GridLayout {
+            columns: footer.availableWidth >= reexportButton.implicitWidth + Math.max(startButton.implicitWidth, exportStateButton.implicitWidth) + columnSpacing ? 2 : 1
+            columnSpacing: Theme.spacingSmall
             PillButton {
+                id: reexportButton
+                Layout.alignment: Qt.AlignLeft
+                flat: true
+                objectName: "reexportAllAccepted"
+                text: qsTr("Re-export all accepted")
+                visible: !bridge.exportRunning
+                onClicked: reexportConfirm.open()
+            }
+            PillButton {
+                id: startButton
+                visible: !bridge.hasExport
+                objectName: "startExport"
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Export")
+                icon.name: "document-export"
+                highlighted: true
+                enabled: dialog.folderUrl !== ""
+                onClicked: bridge.startExport(dialog.folderUrl, formatBox.currentValue, sizeBox.currentValue)
+            }
+            PillButton {
+                id: exportStateButton
+                visible: bridge.hasExport
                 Layout.alignment: Qt.AlignRight
                 text: bridge.exportFinished ? qsTr("Close") : qsTr("Cancel")
                 flat: true
                 icon.name: bridge.exportFinished ? "dialog-close" : "dialog-cancel"
                 onClicked: bridge.exportFinished ? dialog.close() : bridge.cancelExport()
             }
-        }
-        PillButton {
-            objectName: "reexportAllAccepted"
-            text: qsTr("Re-export all accepted")
-            visible: !bridge.exportRunning
-            onClicked: reexportConfirm.open()
         }
     }
 }

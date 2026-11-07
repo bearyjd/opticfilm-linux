@@ -420,15 +420,18 @@ def test_an_external_ctrl_c_to_the_driver_is_an_interrupted_scan(make, tmp_path,
         except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
             outcome.append(exc)
 
+    # A SIGINT that pytest inherited as ignored (background shell) would be inherited by the
+    # driver child too and Ctrl-C could not reach it: handle it here so exec resets it to default.
+    previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
     thread = threading.Thread(target=scan)
     thread.start()
     try:
-        _wait_for(pids_file)
-        time.sleep(0.3)
+        _wait_for(pids_file)  # written inside the driver's Ctrl-C handler, so no settle sleep
         os.kill(json.loads(pids_file.read_text())[0], signal.SIGINT)
         thread.join(60)
     finally:
         _kill_leftovers(pids_file)
+        signal.signal(signal.SIGINT, previous_sigint)
     assert outcome and isinstance(outcome[0], ScanInterrupted)
     assert interrupted.is_pending()
 

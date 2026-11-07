@@ -6,7 +6,17 @@ ListView {
     id: sheet
     objectName: "sheetView"
     signal reviewFocusRequested()
+    signal trayMetaRequested(int number)
+    // before a click changes the selection: lets the metadata strip finish a pending edit
+    signal aboutToSelect()
     property string lastFocus: ""
+    // the tray whose header context menu is open
+    property int menuTray: 0
+    readonly property real availableCellWidth: Math.max(0, width - 2 * Theme.spacing)
+    readonly property int columns: availableCellWidth >= 4 * Theme.minCell + 3 * Theme.spacingSmall ? 4 : 2
+    readonly property real cellWidth: Math.min(Theme.maxCell, Math.max(0, (availableCellWidth - (columns - 1) * Theme.spacingSmall) / columns))
+    readonly property real captionHeight: Theme.fontBody + 3 * Theme.spacingSmall
+    readonly property real cellHeight: cellWidth / 1.5 + captionHeight
     Connections {
         target: bridge
         function onChanged() {
@@ -34,10 +44,26 @@ ListView {
             positionViewAtIndex(row, ListView.Contain);
     }
 
+    QQC2.Menu {
+        id: trayMenu
+        objectName: "trayMenu"
+        QQC2.MenuItem {
+            objectName: "editTrayMeta"
+            text: qsTr("Edit tray description / date…")
+            enabled: !bridge.readonly
+            onTriggered: sheet.trayMetaRequested(sheet.menuTray)
+        }
+    }
+    function openTrayMenu(number, item) {
+        menuTray = number;
+        trayMenu.popup(item);
+    }
+
     TapHandler {
         parent: sheet
         onTapped: point => {
             if (!sheet.itemAt(point.position.x + sheet.contentX, point.position.y + sheet.contentY)) {
+                sheet.aboutToSelect();
                 bridge.clearSelection();
                 sheet.reviewFocusRequested();
             }
@@ -61,52 +87,70 @@ ListView {
         required property string error
         required property string auto
         required property var slides
-        width: sheet.width - Theme.spacing * 2
-        x: Theme.spacing
+        width: sheet.width
         spacing: Theme.spacingSmall
 
         QQC2.ItemDelegate {
             id: header
             function choose(modifiers) {
+                sheet.aboutToSelect();
                 bridge.selectTray(row.number, modifiers);
                 sheet.reviewFocusRequested();
             }
             objectName: "sheetTray_" + row.number
             Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
             text: qsTr("Tray %1 · %2").arg(row.number).arg(row.stageText) + (row.elapsed ? " · " + row.elapsed : "")
             onClicked: choose(0)
+            Accessible.description: qsTr("Menu key or right-click: edit tray description / date")
             Keys.onPressed: event => {
                 if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                     choose(event.modifiers);
+                    event.accepted = true;
+                } else if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) {
+                    sheet.openTrayMenu(row.number, header);
                     event.accepted = true;
                 }
             }
             MouseArea {
                 anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
                 onClicked: mouse => {
-                    header.choose(mouse.modifiers);
+                    if (mouse.button === Qt.RightButton)
+                        sheet.openTrayMenu(row.number, header);
+                    else
+                        header.choose(mouse.modifiers);
                 }
             }
         }
         QQC2.Label {
             Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
             visible: row.error !== ""
             text: row.error
             color: Theme.text
             wrapMode: Text.Wrap
         }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingSmall
+        GridLayout {
+            Layout.alignment: Qt.AlignHCenter
+            columns: sheet.columns
+            columnSpacing: Theme.spacingSmall
+            rowSpacing: Theme.spacingSmall
             Repeater {
                 model: row.slides
                 delegate: SlideThumb {
                     required property var slideData
-                    Layout.fillWidth: true
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: Math.max(130, Math.min(200, sheet.width * 0.28))
+                    Layout.preferredWidth: sheet.cellWidth
+                    Layout.minimumWidth: sheet.cellWidth
+                    Layout.maximumWidth: sheet.cellWidth
+                    Layout.preferredHeight: sheet.cellHeight
+                    Layout.minimumHeight: sheet.cellHeight
+                    Layout.maximumHeight: sheet.cellHeight
                     slide: slideData
                     onChosen: modifiers => {
+                        sheet.aboutToSelect();
                         bridge.selectSlide(slide.tray, slide.position, modifiers);
                         sheet.reviewFocusRequested();
                     }
@@ -114,6 +158,8 @@ ListView {
             }
         }
         QQC2.Label {
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
             visible: row.auto !== ""
             Layout.fillWidth: true
             text: row.auto

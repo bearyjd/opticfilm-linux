@@ -10,8 +10,8 @@ from opticfilm_linux.model import RawSweep, Slide
 from opticfilm_linux.output import OutputSpec, write_slide
 from opticfilm_linux.pipeline.detail import reduce_grain, sharpen
 from opticfilm_linux.pipeline.dust import remove_dust
-from opticfilm_linux.pipeline.orient import mirror, rotate
-from opticfilm_linux.pipeline.split import is_blank, split_slides
+from opticfilm_linux.pipeline.orient import apply_orientation
+from opticfilm_linux.pipeline.split import is_blank, split_positions
 from opticfilm_linux.pipeline.tone import (
     adjust_brightness,
     auto_exposure,
@@ -83,17 +83,17 @@ def enhance_slide(
         image = adjust_brightness(image, options.brightness_ev)
     image = reduce_grain(image, strength=options.grain_strength, dpi=dpi)
     image = sharpen(image, amount=options.sharpen_amount, dpi=dpi)
-    if options.rotation:
-        image = rotate(image, options.rotation)
-    return mirror(image) if options.mirror else image
+    if not options.rotation and not options.mirror:
+        return image
+    return apply_orientation(image, options.rotation, options.mirror)
 
 
 def process_sweep(sweep: RawSweep, options: ProcessOptions, out: OutputSpec) -> RunResult:
     written: list[Path] = []
     blank: list[int] = []
-    for slide in split_slides(sweep):
+    for position, slide in split_positions(sweep).items():
         if options.skip_blank and is_blank(slide):
-            blank.append(slide.index + 1)
+            blank.append(position)
             continue
         written.append(write_slide(enhance_slide(slide, options, sweep.dpi), out))
     return RunResult(written=tuple(written), blank_positions=tuple(blank))

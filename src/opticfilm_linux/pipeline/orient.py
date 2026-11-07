@@ -15,3 +15,9 @@ def rotate(rgb: np.ndarray, degrees: int) -> np.ndarray:
 def mirror(rgb: np.ndarray) -> np.ndarray:
     """Flip left and right (a horizontal flip); always returns a new contiguous array."""
     return np.flip(rgb, axis=1).copy(order="C")
+
+
+def apply_orientation(rgb: np.ndarray, rotation: int, flip: bool) -> np.ndarray:
+    """Turn clockwise by ``rotation``, then flip left-right if ``flip``: the pipeline's order."""
+    image = rotate(rgb, rotation)
+    return mirror(image) if flip else image

@@ -11,6 +11,7 @@ from opticfilm_linux.batch.model import (
     SlideStatus,
     TrayStage,
 )
+from opticfilm_linux.batch.review import BeforeMeta
 
 SlideSnapshot = tuple[SlideSettings, SlideStatus, bool]
 
@@ -36,14 +37,23 @@ class UndoEntry:
         object.__setattr__(self, "before", MappingProxyType(dict(self.before)))
 
 
+@dataclass(frozen=True)
+class MetaUndoEntry:
+    """A metadata edit on the same undo stack as render and status edits."""
+
+    label: str
+    before: BeforeMeta
+
+
 def selectable_keys(manifest: BatchManifest) -> tuple[SlideKey, ...]:
-    """Return display order, including blanks and excluding trays still processing."""
+    """Return display order, including blanks; excluding skipped openings and busy trays."""
     busy = (TrayStage.SCANNING, TrayStage.SCANNED, TrayStage.ENHANCING)
     return tuple(
         (tray.number, slide.position)
         for tray in sorted(manifest.trays, key=lambda tray: tray.number)
         if tray.stage not in busy
         for slide in sorted(tray.slides, key=lambda slide: slide.position)
+        if slide.status is not SlideStatus.SKIPPED  # nothing was scanned there to review
     )
 
 
@@ -131,18 +141,23 @@ def prune(sel: Selection, order: Sequence[SlideKey]) -> Selection:
     )
 
 
-def push_undo(stack: tuple[UndoEntry, ...], entry: UndoEntry) -> tuple[UndoEntry, ...]:
+Undoable = UndoEntry | MetaUndoEntry
+
+
+def push_undo(stack: tuple[Undoable, ...], entry: Undoable) -> tuple[Undoable, ...]:
     return (*stack[-19:], entry)
 
 
 def pop_undo(
-    stack: tuple[UndoEntry, ...],
-) -> tuple[tuple[UndoEntry, ...], UndoEntry | None]:
+    stack: tuple[Undoable, ...],
+) -> tuple[tuple[Undoable, ...], Undoable | None]:
     return (stack[:-1], stack[-1]) if stack else ((), None)
 
 
 def filter_matches(tray, slide, name: str) -> bool:
     """Use identical predicates for contact-sheet filters and their counters."""
+    if slide.status is SlideStatus.SKIPPED:
+        return False  # not selectable, so never counted either
     if name == "flagged":
         return (
             bool(slide.flags)
@@ -160,5 +175,7 @@ def failed_empty_trays(trays) -> frozenset[int]:
     return frozenset(
         tray.number
         for tray in trays
-        if not tray.slides and (tray.stage is TrayStage.FAILED or tray.auto == "failed")
+        # skipped openings are never counted, so a tray of only those is an empty one
+        if all(s.status is SlideStatus.SKIPPED for s in tray.slides)
+        and (tray.stage is TrayStage.FAILED or tray.auto == "failed")
     )

@@ -11,12 +11,18 @@ Kirigami.ScrollablePage {
     property url exportFolder: ""
     readonly property string automaticExportProblem: autoExportSwitch.checked ? bridge.automaticExportProblem : ""
     readonly property var automaticExportInputs: [autoExportSwitch.checked, parentFolder.toString(), nameField.text, exportFolder.toString()]
+    readonly property string dateText: dateField.dateText
+    // Create stays disabled while the date is invalid
+    readonly property string dateProblem: dateField.dateProblem
+    readonly property bool showDateProblem: dateField.showDateProblem
+    readonly property string dateHelp: qsTr("A guess is fine. Saved as approximate.")
     onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
     Component.onCompleted: exportFolder = bridge.lastExportFolder
     background: Rectangle {
         color: Theme.window
     }
     padding: Theme.spacing
+    verticalScrollBarPolicy: QQC2.ScrollBar.AlwaysOn
 
     title: qsTr("OpticFilm Linux")
     FolderDialog {
@@ -59,7 +65,7 @@ Kirigami.ScrollablePage {
                         font.pixelSize: Theme.fontBody
                         text: page.parentFolder.toString() === "" ? qsTr("(none chosen)") : decodeURIComponent(page.parentFolder.toString().replace("file://", ""))
                         elide: Text.ElideMiddle
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+                        Layout.maximumWidth: Theme.gu * 24
                     }
                     PillButton {
                         text: qsTr("Browse…")
@@ -72,6 +78,38 @@ Kirigami.ScrollablePage {
                     objectName: "newBatchName"
                     Kirigami.FormData.label: qsTr("Name:")
                     placeholderText: qsTr("Family trips")
+                }
+                QQC2.TextField {
+                    id: descriptionField
+                    objectName: "newBatchDescription"
+                    Kirigami.FormData.label: qsTr("Description:")
+                    placeholderText: qsTr("e.g. Lake trip, Grandpa's 70th")
+                    maximumLength: 500
+                    Accessible.name: qsTr("Description")
+                }
+                EstimatedDateField {
+                    id: dateField
+                    Kirigami.FormData.label: qsTr("Date (estimate):")
+                    namePrefix: "newBatch"
+                    help: page.dateHelp
+                }
+                QQC2.Label {
+                    objectName: "newBatchDateError"
+                    visible: page.showDateProblem
+                    text: page.dateProblem
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: page.dateProblem
+                    color: Kirigami.Theme.negativeTextColor
+                    font.pixelSize: Theme.fontBody
+                    wrapMode: Text.WordWrap
+                    Layout.maximumWidth: Theme.gu * 24
+                }
+                QQC2.Label {
+                    font.pixelSize: Theme.fontBody
+                    text: page.dateHelp
+                    color: Theme.muted
+                    wrapMode: Text.WordWrap
+                    Layout.maximumWidth: Theme.gu * 24
                 }
                 QQC2.TextField {
                     id: collectionField
@@ -111,11 +149,6 @@ Kirigami.ScrollablePage {
                     Kirigami.FormData.label: qsTr("Album:")
                     placeholderText: qsTr("Optional")
                 }
-                QQC2.TextField {
-                    id: dateField
-                    Kirigami.FormData.label: qsTr("Date:")
-                    placeholderText: qsTr("YYYY-MM-DD (optional)")
-                }
                 QQC2.ComboBox {
                     id: dpiBox
                     objectName: "newBatchDpi"
@@ -135,7 +168,7 @@ Kirigami.ScrollablePage {
                         font.pixelSize: Theme.fontBody
                         text: page.exportFolder.toString() === "" ? qsTr("(choose later)") : decodeURIComponent(page.exportFolder.toString().replace("file://", ""))
                         elide: Text.ElideMiddle
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+                        Layout.maximumWidth: Theme.gu * 24
                     }
                     PillButton {
                         text: qsTr("Browse…")
@@ -189,7 +222,7 @@ Kirigami.ScrollablePage {
                     objectName: "newBatchAutoExport"
                     Kirigami.FormData.label: qsTr("Automatic export:")
                     text: qsTr("Export JPEGs after each tray")
-                    checked: false
+                    checked: bridge.autoExportDefault
                 }
                 QQC2.Label {
                     color: Theme.text
@@ -197,7 +230,7 @@ Kirigami.ScrollablePage {
                     visible: autoExportSwitch.checked
                     text: keepRawBox.checked ? qsTr("Raw scans are kept after automatic export.") : qsTr("Raw data is kept until you check and free the first tray. Later trays are freed after verification.")
                     wrapMode: Text.Wrap
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                    Layout.maximumWidth: Theme.gu * 28
                 }
                 QQC2.CheckBox {
                     id: keepRawBox
@@ -212,7 +245,7 @@ Kirigami.ScrollablePage {
                     visible: page.automaticExportProblem !== ""
                     text: page.automaticExportProblem
                     wrapMode: Text.Wrap
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                    Layout.maximumWidth: Theme.gu * 28
                 }
                 RowLayout {
                     Kirigami.FormData.label: qsTr("Slide orientation:")
@@ -262,18 +295,18 @@ Kirigami.ScrollablePage {
                     text: qsTr("Applied to that slot in every tray, on top of the slide orientation above. Your own changes to a slide still apply on top.")
                     color: Theme.muted
                     wrapMode: Text.WordWrap
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+                    Layout.maximumWidth: Theme.gu * 24
                 }
                 PillButton {
                     objectName: "createBatch"
                     text: qsTr("Create batch")
                     icon.name: "document-new"
                     highlighted: true
-                    enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== "" && page.automaticExportProblem === ""
+                    enabled: page.parentFolder.toString() !== "" && nameField.text.trim() !== "" && page.dateProblem === "" && page.automaticExportProblem === ""
                     onClicked: {
                         // hidden slot rows do not count: the owner said all slots are loaded alike
                         const slots = slotsBox.checked ? [slot1, slot2, slot3, slot4] : [];
-                        bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, dateField.text, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value, autoExportSwitch.checked, keepRawBox.checked);
+                        bridge.newBatch(page.parentFolder.toString(), nameField.text, albumField.text, page.dateText, dpiBox.currentValue, parseInt(rotationBox.currentText), mirrorBox.checked, slots.map(s => s.rotation), slots.map(s => s.mirrored), page.exportFolder.toString(), exportFormatBox.currentValue, jpegSizeBox.currentValue, collectionField.text, boxField.value, sectionField.text, sectionSizeField.value, autoExportSwitch.checked, keepRawBox.checked, descriptionField.text);
                     }
                 }
             }

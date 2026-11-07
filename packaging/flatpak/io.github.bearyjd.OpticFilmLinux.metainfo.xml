@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.bearyjd.OpticFilmLinux</id>
+  <name>OpticFilm Linux</name>
+  <summary>Scan and review film slides</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.bearyjd">
+    <name>bearyjd</name>
+  </developer>
+  <url type="homepage">https://github.com/bearyjd/opticfilm-linux</url>
+  <url type="bugtracker">https://github.com/bearyjd/opticfilm-linux/issues</url>
+  <description>
+    <p>
+      A desktop app for scanning 35 mm slides and film strips with an OpticFilm 135i scanner
+      and reviewing the results.
+    </p>
+    <p>
+      The scanner driver is a separate program that is not part of this package.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.bearyjd.OpticFilmLinux.desktop</launchable>
+  <provides>
+    <binary>opticfilm</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-05"/>
+  </releases>
+</component>

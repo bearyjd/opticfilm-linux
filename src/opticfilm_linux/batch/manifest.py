@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, fields
 from typing import Any, get_args
 
+from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.batch.model import (
     AutoState,
     BatchDefaults,
@@ -50,8 +51,18 @@ def to_json(manifest: BatchManifest) -> str:
     for key, default in {"collection": "", "box": 1, "section": "a", "section_size": 140}.items():
         if data[key] == default:
             del data[key]
+    if not data["description"]:
+        del data["description"]
     _omit_tray_defaults(data)
     return json.dumps(data, indent=2)
+
+
+def _omit_meta(record: dict[str, Any]) -> None:
+    meta = {key: value for key, value in record["meta"].items() if value is not None}
+    if meta:
+        record["meta"] = meta
+    else:
+        del record["meta"]
 
 
 def _omit_tray_defaults(data: dict[str, Any]) -> None:
@@ -60,16 +71,19 @@ def _omit_tray_defaults(data: dict[str, Any]) -> None:
             del tray["evidence"]
         if tray["location"] is None:
             del tray["location"]
+        _omit_meta(tray)
         for key, default in (
             ("cleanup_sweeps", ()),
             ("auto", ""),
             ("auto_error", ""),
             ("auto_failed", ()),
             ("auto_flagged", ()),
+            ("skipped", ()),
         ):
             if tray[key] == default:
                 tray.pop(key)
         for slide in tray["slides"]:
+            _omit_meta(slide)
             if not slide["blank_fingerprint"]:
                 slide.pop("blank_fingerprint")
             if slide["empty_confirmed"] is None:
@@ -82,6 +96,9 @@ def _omit_tray_defaults(data: dict[str, Any]) -> None:
                 slide.pop("export_size")
             if not slide["export_sha256"]:
                 slide.pop("export_sha256")
+            for record in slide["exports"]:
+                if not record["meta_signature"]:
+                    del record["meta_signature"]
             if not slide["exports"]:
                 del slide["exports"]
 
@@ -113,14 +130,15 @@ def _export_record(data: Any) -> ExportRecord:
         raise ManifestFormatError("exports must contain JSON objects")
     for key in ("path", "scan_token", "export_path"):
         _receipt_text(data, key)
-    for key in ("raw_sha256", "sha256", "render_signature"):
+    for key in ("raw_sha256", "sha256", "render_signature", "meta_signature"):
         _receipt_text(data, key, digest=True)
     for key in ("width", "height", "scan_dpi", "delivered_dpi", "size_bytes"):
         minimum = 0 if key == "size_bytes" else 1
         value = data.get(key, 0)
         if type(value) is not int or value < minimum:
             raise ManifestFormatError(f"{key} must be an integer >= {minimum}")
-    return ExportRecord(**data)
+    known = {f.name for f in fields(ExportRecord)}
+    return ExportRecord(**{k: v for k, v in data.items() if k in known})
 
 
 def _slide_delivery(data: dict[str, Any]) -> tuple[ExportRecord, ...]:
@@ -137,6 +155,14 @@ def _slide_delivery(data: dict[str, Any]) -> tuple[ExportRecord, ...]:
     if not isinstance(exports, list):
         raise ManifestFormatError("exports must be a list")
     return tuple(_export_record(record) for record in exports)
+
+
+def _meta(data: dict[str, Any]) -> MetaOverride:
+    meta = data.get("meta", {})
+    if not isinstance(meta, dict):
+        raise ManifestFormatError("meta must be an object")
+    # Keys from a later build are ignored, and values are checked by resolve, not here.
+    return MetaOverride(description=meta.get("description"), date=meta.get("date"))
 
 
 def _slide(data: dict[str, Any]) -> SlideRecord:
@@ -158,6 +184,7 @@ def _slide(data: dict[str, Any]) -> SlideRecord:
         export_size=tuple(data.get("export_size", ())),
         export_sha256=data.get("export_sha256", ""),
         exports=exports,
+        meta=_meta(data),
     )
 
 
@@ -208,7 +235,17 @@ def _tray(data: dict[str, Any]) -> TrayRecord:
         auto_flagged=_integer_list(data, "auto_flagged"),
         location=TrayLocation(**data["location"]) if data.get("location") is not None else None,
         evidence=_evidence(data.get("evidence")),
+        meta=_meta(data),
+        skipped=_skipped(data),
     )
+
+
+def _skipped(data: dict[str, Any]) -> tuple[int, ...]:
+    """Holder openings left out of the scan; absent in trays written before skipping existed."""
+    value = data.get("skipped", [])
+    if not isinstance(value, list):
+        raise ManifestFormatError("skipped must be a list of holder openings")
+    return tuple(value)
 
 
 SLOT_KEYS = {"position", "rotation", "mirror"}
@@ -252,6 +289,7 @@ def from_json(text: str) -> BatchManifest:
             box=data.get("box", 1),
             section=data.get("section", "a"),
             section_size=data.get("section_size", 140),
+            description=data.get("description", ""),
         )
     except ManifestFormatError:
         raise

@@ -8,6 +8,20 @@ import numpy as np
 
 from opticfilm_linux.provenance import ScanEvidence
 
+ALL_POSITIONS = (1, 2, 3, 4)  # the openings of the mounted-slide holder, in sweep order
+
+
+def check_positions(positions: tuple[int, ...]) -> None:
+    """Refuse a position list the driver could misread: it scans frames in the order given."""
+    if (
+        type(positions) is not tuple
+        or not positions
+        or any(type(p) is not int or p not in ALL_POSITIONS for p in positions)
+        or list(positions) != sorted(set(positions))
+    ):
+        span = f"{ALL_POSITIONS[0]}-{ALL_POSITIONS[-1]}"
+        raise ValueError(f"positions must be ascending, unique openings {span}, got {positions!r}")
+
 
 class HolderKind(StrEnum):
     SLIDE4 = "slide4"
@@ -19,6 +33,10 @@ class ScanSettings:
     dpi: int = 3600
     mode: Literal["positive", "negative"] = "positive"
     infrared: bool = True
+    positions: tuple[int, ...] = ALL_POSITIONS  # holder openings to scan
+
+    def __post_init__(self) -> None:
+        check_positions(self.positions)
 
 
 @dataclass(frozen=True)
@@ -40,8 +58,10 @@ class RawSweep:
     dpi: int
     holder: HolderKind
     evidence: ScanEvidence | None = None
+    positions: tuple[int, ...] = ALL_POSITIONS  # the holder opening of each opening in the sweep
 
     def __post_init__(self) -> None:
+        check_positions(self.positions)
         if self.rgb.dtype != np.uint16:
             raise ValueError(f"rgb must be uint16, got {self.rgb.dtype}")
         if self.rgb.ndim != 3 or self.rgb.shape[2] != 3:

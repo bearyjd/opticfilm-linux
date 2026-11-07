@@ -111,3 +111,63 @@ class SelectionBridge(QObject):
     def undo(self) -> None:
         self._flush_now()
         self._controller.undo()
+
+    # -- description and date (the metadata strip). Each slot returns "" when the edit was
+    # started, or the reason it was refused (for an inline message). field: "description" or
+    # "date" ("1978" or "1978-07"). Clear sets a blank at that level; Reset inherits again.
+    # Batch scope: "from_now_on" (existing trays keep their values) or "inheriting".
+
+    def _meta(self, edit, *args) -> str:
+        self._flush_now()
+        try:
+            edit(*args)
+        except ValueError as exc:
+            return str(exc)
+        return ""
+
+    @Slot(str, str, result=str)
+    def setSelectionMeta(self, field: str, value: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_selection_meta, field, value)
+
+    @Slot(str, result=str)
+    def clearSelectionMeta(self, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_selection_meta, field, "")
+
+    @Slot(str, result=str)
+    def resetSelectionMeta(self, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_selection_meta, field, None)
+
+    # The strip passes the slides it was editing ([[tray, position], ...]) so a click that
+    # changes the selection before the edit is committed cannot redirect it.
+    @Slot("QVariantList", str, str, result=str)
+    def setSlidesMeta(self, keys: list, field: str, value: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_slides_meta, keys, field, value)
+
+    @Slot("QVariantList", str, result=str)
+    def clearSlidesMeta(self, keys: list, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_slides_meta, keys, field, "")
+
+    @Slot("QVariantList", str, result=str)
+    def resetSlidesMeta(self, keys: list, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_slides_meta, keys, field, None)
+
+    @Slot(int, str, str, result=str)
+    def setTrayMeta(self, number: int, field: str, value: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_tray_meta, number, field, value)
+
+    @Slot(int, str, result=str)
+    def clearTrayMeta(self, number: int, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_tray_meta, number, field, "")
+
+    @Slot(int, str, result=str)
+    def resetTrayMeta(self, number: int, field: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_tray_meta, number, field, None)
+
+    @Slot(str, str, str, result=str)
+    def setBatchMeta(self, field: str, value: str, scope: str) -> str:  # noqa: N802
+        return self._meta(self._controller.set_batch_meta, field, value, scope)
+
+    @Slot(str, str, result=str)
+    def clearBatchMeta(self, field: str, scope: str) -> str:  # noqa: N802
+        # the batch has no level above it, so a clear is also its reset
+        return self._meta(self._controller.set_batch_meta, field, "", scope)

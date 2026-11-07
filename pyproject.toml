@@ -35,9 +35,10 @@ packages = ["src/opticfilm_linux"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-m 'not hardware and not qt'"
+addopts = "-m 'not hardware and not qt and not qt_matrix'"
 tmp_path_retention_policy = "failed"  # batches and sweeps are large; keep only failed runs
 markers = [
+    "qt_matrix: full opt-in responsive layout matrix (fresh process per DPR/font)",
     "hardware: needs the real scanner plugged in (read-only); excluded by default",
     "qt: needs the distribution's PySide6 and Kirigami (headless smoke test); excluded by default",
 ]
@@ -60,3 +61,4 @@ select = ["E", "F", "I", "B", "UP", "T20"]
 "src/opticfilm_linux/cli.py" = ["T201"]
 "scripts/**" = ["T201"]
 "src/opticfilm_linux/batch/cli.py" = ["T201"]
+"src/opticfilm_linux/batch/run_cli.py" = ["T201"]

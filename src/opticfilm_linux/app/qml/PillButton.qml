@@ -6,7 +6,7 @@ import org.kde.kirigami as Kirigami
 QQC2.Button {
     id: control
 
-    implicitWidth: Math.max(100, implicitContentWidth + leftPadding + rightPadding)
+    implicitWidth: Math.max(5.5 * Theme.gu, implicitContentWidth + leftPadding + rightPadding)
     implicitHeight: Theme.controlHeight
     horizontalPadding: Theme.spacingLarge
     font.pixelSize: Theme.fontBody
@@ -15,8 +15,13 @@ QQC2.Button {
     Keys.onReturnPressed: if (enabled) click()
     Keys.onEnterPressed: if (enabled) click()
 
+    property bool danger: false
+    readonly property color fillColor: danger ? Theme.danger : Theme.accent
+    readonly property color pressedColor: danger ? Theme.pressedDanger : Theme.pressedAccent
+    readonly property color fillTextColor: danger ? Theme.dangerText : Theme.accentText
+
     // flat = outlined secondary action (Cancel, Close); otherwise a filled primary pill
-    readonly property color labelColor: !enabled ? Theme.muted : flat ? Theme.text : Theme.accentText
+    readonly property color labelColor: !enabled ? Theme.muted : flat ? Theme.text : fillTextColor
 
     contentItem: RowLayout {
         spacing: Theme.spacingSmall
@@ -25,8 +30,8 @@ QQC2.Button {
             source: control.icon.name
             color: control.labelColor
             Layout.alignment: Qt.AlignVCenter
-            Layout.preferredWidth: Theme.spacing
-            Layout.preferredHeight: Theme.spacing
+            Layout.preferredWidth: Theme.iconSmall
+            Layout.preferredHeight: Theme.iconSmall
             Accessible.ignored: true
         }
         Text {
@@ -41,9 +46,9 @@ QQC2.Button {
     }
     background: Rectangle {
         radius: height / 2
-        color: !control.enabled ? Theme.track : control.flat ? (control.down ? Theme.track : "transparent") : control.down ? Theme.pressedAccent : Theme.accent
+        color: !control.enabled ? Theme.track : control.flat ? (control.down ? Theme.track : "transparent") : control.down ? control.pressedColor : control.fillColor
         border.width: control.flat && control.enabled ? 2 : 0
-        border.color: Theme.accent
+        border.color: control.fillColor
     }
     Rectangle {
         objectName: "pillFocusRing"
@@ -61,7 +66,7 @@ QQC2.Button {
             radius: height / 2
             color: "transparent"
             border.width: 2
-            border.color: Theme.accentText
+            border.color: control.fillTextColor
         }
     }
 }

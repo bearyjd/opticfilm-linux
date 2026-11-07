@@ -4,6 +4,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.PromptDialog {
     id: dialog
+    preferredWidth: Math.min(30 * Theme.gu, parent ? parent.width * 0.9 : 30 * Theme.gu)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
     padding: Theme.spacing
     contentPadding: Theme.spacing
 
@@ -34,6 +39,9 @@ Kirigami.PromptDialog {
         value: Theme.card
     }
 
+    property bool destructive: false
+    // A dialog opened by a bare key press: Enter and Space must mean No, so Cancel takes the focus.
+    property bool defaultReject: false
     signal confirmed
     standardButtons: Kirigami.Dialog.Yes | Kirigami.Dialog.Cancel
     onAccepted: confirmed()
@@ -42,7 +50,7 @@ Kirigami.PromptDialog {
     onAboutToShow: Qt.callLater(focusAccept)
     function focusAccept() {
         for (let i = 0; i < buttonBox.count; ++i) {
-            if (!buttonBox.itemAt(i).rejecting) {
+            if (buttonBox.itemAt(i).rejecting === dialog.defaultReject) {
                 buttonBox.itemAt(i).forceActiveFocus(Qt.TabFocusReason);
                 break;
             }
@@ -52,12 +60,15 @@ Kirigami.PromptDialog {
     footer: QQC2.DialogButtonBox {
         id: buttonBox
         standardButtons: dialog.standardButtons
+        buttonLayout: QQC2.DialogButtonBox.GnomeLayout
         padding: Theme.spacing
         spacing: Theme.spacingSmall
         background: Item {}
         delegate: PillButton {
+            objectName: rejecting ? "confirmCancel" : "confirmAccept"
             readonly property bool rejecting: QQC2.DialogButtonBox.buttonRole === QQC2.DialogButtonBox.RejectRole
             flat: rejecting
+            danger: dialog.destructive && !rejecting
             highlighted: !rejecting
             icon.name: rejecting ? "dialog-cancel" : "dialog-ok"
         }

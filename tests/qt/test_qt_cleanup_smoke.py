@@ -6,8 +6,10 @@ pytestmark = pytest.mark.qt
 pytest.importorskip("PySide6")
 
 import test_qt_smoke as smoke  # noqa: E402
-from PySide6.QtCore import QMetaObject, QObject, QUrl  # noqa: E402
+from PySide6.QtCore import QMetaObject, QObject, QPointF, QUrl  # noqa: E402
+from PySide6.QtQml import QQmlExpression, qmlContext  # noqa: E402
 from PySide6.QtQuick import QQuickItem  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from test_qt_smoke import (  # noqa: E402
     TIMEOUT,
     _click,
@@ -94,6 +96,8 @@ def test_failed_automatic_cleanup_renders_actual_raw_outcome(loaded, tmp_path, o
     bridge._controller._rebuild()
     _drain_deferred_deletes()
     root = engine.rootObjects()[0]
+    if _prop(root, "trayDrawerToggle", "visible"):
+        _click(root, "trayDrawerToggle")
     queue = root.findChild(QQuickItem, "trayQueue")
     queue.setProperty("currentIndex", 0)
     # Keep the parentless delegate/content wrappers alive while reading their labels.
@@ -233,6 +237,33 @@ def test_unknown_cleanup_failure_is_terminal_and_visible(loaded):
     assert not bridge.freeSpaceReady
 
 
+def _scroll_status(root, item):
+    scroll = root.findChild(QQuickItem, "statusScroll")
+    top = item.mapToScene(QPointF(0, 0)).y()
+    viewport_top = scroll.mapToScene(QPointF(0, 0)).y()
+    delta = min(0, top - viewport_top)
+    if top + item.height() > viewport_top + scroll.height():
+        delta = top + item.height() - viewport_top - scroll.height()
+    expression = QQmlExpression(qmlContext(scroll), scroll, f"contentItem.contentY += {delta}")
+    expression.evaluate()
+    assert not expression.hasError(), expression.error().toString()
+    QTest.qWait(50)
+
+
+def _click_status(root, name):
+    item = root.findChild(QQuickItem, name)
+    assert item is not None, name
+    if not item.isVisible():
+        more = root.findChild(QQuickItem, "statusMore")
+        assert more is not None and more.isVisible()
+        _scroll_status(root, more)
+        _click(root, "statusMore")
+        QTest.qWait(50)
+    assert item.isVisible(), name
+    _scroll_status(root, item)
+    _click(root, name)
+
+
 def test_first_load_card_reseats_then_reports_exit_code(qapp, sweep600_dir, tmp_path):
     from test_first_load import InteractiveScanner
 
@@ -240,18 +271,18 @@ def test_first_load_card_reseats_then_reports_exit_code(qapp, sweep600_dir, tmp_
     c = Controller(lambda _dpi: scanner)
     bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: c.preview_path(n, p, k))
-    engine, warnings = create_engine(bridge, provider)
+    engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     try:
         root = engine.rootObjects()[0]
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "First", "", "", 600)
         _wait(bridge, lambda: bridge.canFirstLoad)
-        _click(root, "firstLoadButton")
+        _click_status(root, "firstLoadButton")
         _wait(bridge, lambda: bridge.loadPhase == "await_reinsert")
         assert _prop(root, "firstLoadText", "text") == (
             "Pull the holder fully OUT, then push it back in to the stop. Press Done."
         )
         assert not _prop(root, "ejectButton", "enabled")
-        _click(root, "firstLoadDoneButton")
+        _click_status(root, "firstLoadDoneButton")
         bridge.firstLoadDone()
         _wait(bridge, lambda: bridge.loadPhase == "done" and not bridge.holderBusy)
         assert bridge.loadExitCode == "0" and scanner.calls == ["load", "done"]
@@ -268,14 +299,14 @@ def test_first_load_card_cancel_warns_then_stops(qapp, sweep600_dir, tmp_path):
     scanner = InteractiveScanner(sweep600_dir)
     c = Controller(lambda _dpi: scanner)
     bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
-    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
+    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None), size=(1220, 780))
     try:
         root = engine.rootObjects()[0]
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Cancel", "", "", 600)
         _wait(bridge, lambda: bridge.canFirstLoad)
-        _click(root, "firstLoadButton")
+        _click_status(root, "firstLoadButton")
         _wait(bridge, lambda: bridge.loadPhase == "await_reinsert")
-        _click(root, "firstLoadCancelButton")
+        _click_status(root, "firstLoadCancelButton")
         dialog = root.findChild(QObject, "firstLoadCancelDialog")
         _wait(bridge, lambda: dialog.property("visible"))
         assert "power cycle" in dialog.property("subtitle")
@@ -309,13 +340,13 @@ def test_first_load_quit_warns_and_can_be_rejected(qapp, sweep600_dir, tmp_path,
     scanner = _held_first_load_scanner(sweep600_dir, phase)
     c = Controller(lambda _dpi: scanner)
     bridge = Bridge(c, MemoryPrefs(), demo_dpi=600)
-    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None))
+    engine, warnings = create_engine(bridge, PreviewProvider(lambda *_: None), size=(1220, 780))
     stopped = False
     try:
         root = engine.rootObjects()[0]
         bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Quit", "", "", 600)
         _wait(bridge, lambda: bridge.canFirstLoad)
-        _click(root, "firstLoadButton")
+        _click_status(root, "firstLoadButton")
         target = "await_reinsert" if phase == "loading" else phase
         _wait(bridge, lambda: bridge.loadPhase == target and scanner.calls == ["load"])
         if phase == "loading":

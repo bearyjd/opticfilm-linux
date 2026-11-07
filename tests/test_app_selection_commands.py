@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from controller_helpers import make_controller, wait_until
+from opticfilm_linux.batch.metadata import MetaOverride
 from opticfilm_linux.batch.model import (
     SlideRecord,
     SlideSettings,
@@ -226,3 +227,167 @@ def test_empty_selection_starts_no_job_and_touches_no_store(selected, monkeypatc
         command()
     writer.assert_not_called()
     assert selected.state().banner is None
+
+
+def _metas(controller):
+    return {key: slide.meta for key, slide in _slides(controller).items()}
+
+
+def test_select_all_meta_edit_changes_every_slide_even_on_a_freed_tray(selected):
+    selected._session.store.update_tray(3, raw_removed=True)
+    selected.select_all()
+    selected.set_selection_meta("description", "Lake trip")
+    wait_until(
+        selected, lambda: all(m.description == "Lake trip" for m in _metas(selected).values())
+    )
+    wait_until(
+        selected,
+        lambda: dict(selected.state().selection_summary.meta)["description"] == "Lake trip",
+    )
+    assert dict(selected.state().selection_summary.meta_levels)["description"] == "slide"
+    assert selected.state().banner is None
+
+
+def test_shift_range_meta_edit_then_undo_restores_exactly(selected):
+    selected.select_slide(1, 1)
+    selected.set_selection_meta("date", "1978")
+    selected.select_slide(2, 1)
+    selected.select_slide(1, 2, shift=True)
+    selected.set_selection_meta("date", "")
+    wait_until(selected, lambda: _metas(selected)[2, 1].date == "")
+    selected.undo()
+    wait_until(selected, lambda: _metas(selected)[2, 1].date is None)
+    metas = _metas(selected)
+    assert metas[1, 1] == MetaOverride(date="1978") and metas[1, 2] == MetaOverride()
+    selected.reset_selection_meta("date")  # selection is (2,1)-(1,2); None means inherit
+    wait_until(selected, lambda: selected._undo and selected._undo[-1].label == "Edit metadata")
+
+
+def test_batch_meta_from_now_on_and_its_undo(selected):
+    store = selected._session.store
+    store.update(lambda m: dataclasses.replace(m, description="Old"))
+    selected.set_tray_meta(2, "description", "Tray two")
+    selected.set_batch_meta("description", "New")  # default scope: from now on
+    wait_until(selected, lambda: store.snapshot().description == "New")
+    trays = {t.number: t.meta for t in store.snapshot().trays}
+    assert trays == {1: MetaOverride("Old"), 2: MetaOverride("Tray two"), 3: MetaOverride("Old")}
+    selected.undo()
+    wait_until(selected, lambda: store.snapshot().description == "Old")
+    assert {t.number: t.meta.description for t in store.snapshot().trays} == {
+        1: None,
+        2: "Tray two",
+        3: None,
+    }
+    selected.set_batch_meta("date", "1980", scope="inheriting")
+    wait_until(selected, lambda: store.snapshot().date == "1980")
+    assert store.snapshot().trays[0].meta == MetaOverride()
+
+
+def test_interleaved_rotate_and_meta_edits_undo_in_order(selected):
+    selected.select_all()
+    selected.rotate_selection(1)
+    selected.set_selection_meta("description", "A")
+    selected.rotate_selection(1)
+    wait_until(selected, lambda: _slides(selected)[1, 1].settings.rotation == 180)
+    selected.undo()
+    wait_until(selected, lambda: _slides(selected)[1, 1].settings.rotation == 90)
+    assert _metas(selected)[1, 1].description == "A"
+    selected.undo()
+    wait_until(selected, lambda: _metas(selected)[1, 1].description is None)
+    assert _slides(selected)[1, 1].settings.rotation == 90
+    selected.undo()
+    wait_until(selected, lambda: _slides(selected)[1, 1].settings.rotation == 0)
+
+
+def test_meta_edits_stay_off_the_render_path(selected, monkeypatch):
+    runner = selected._session.runner
+    for name in ("_hold_turns", "_queue_stale_previews", "_submit", "_emit"):
+        monkeypatch.setattr(runner, name, Mock(side_effect=AssertionError(name)))
+    invalidate = Mock()
+    monkeypatch.setattr(selected._session.previews, "invalidate", invalidate)
+    monkeypatch.setattr(selected, "_submit_auto_due", Mock())  # the tick would drain it
+    selected._auto_due = set()
+    before = selected._session.store.snapshot()
+    selected.select_all()
+    selected.set_selection_meta("description", "x")
+    selected.set_tray_meta(1, "date", "1990")
+    selected.set_batch_meta("description", "b")
+    selected.undo()
+    wait_until(selected, lambda: selected._session.store.snapshot().description == "")
+    after = selected._session.store.snapshot()
+    assert [s.settings for t in after.trays for s in t.slides] == [
+        s.settings for t in before.trays for s in t.slides
+    ]
+    assert selected.state().banner is None
+    assert not invalidate.called and not selected._auto_due
+
+
+def test_invalid_meta_is_refused_at_once_and_starts_no_job(selected, monkeypatch):
+    writer = Mock()
+    monkeypatch.setattr(selected, "_run_writer", writer)
+    selected.select_all()
+    for command in (
+        lambda: selected.set_selection_meta("date", "1850"),
+        lambda: selected.set_tray_meta(1, "description", "x" * 501),
+        lambda: selected.set_batch_meta("date", "July"),
+        lambda: selected.set_batch_meta("date", "1980", scope="later"),
+        lambda: selected.set_selection_meta("rotation", "90"),
+    ):
+        with pytest.raises(ValueError):
+            command()
+    writer.assert_not_called()
+
+
+def test_meta_commands_refuse_what_cannot_start_before_queueing(selected, monkeypatch):
+    writer = Mock()
+    monkeypatch.setattr(selected, "_run_writer", writer)
+    selected.clear_selection()
+    with pytest.raises(ValueError, match="Select at least one slide"):
+        selected.set_selection_meta("description", "nobody")
+    selected._session.store.update_tray(2, stage=TrayStage.ENHANCING)
+    wait_until(selected, lambda: (2, 1) not in selected._selection_order)
+    selected.select_tray_slides(2)  # a tray with nothing selectable: no slides selected
+    with pytest.raises(ValueError, match="Select at least one slide"):
+        selected.reset_selection_meta("date")
+    with pytest.raises(ValueError, match="no tray 9"):
+        selected.set_tray_meta(9, "date", "1980")
+    session = selected._session
+    monkeypatch.setattr(selected, "_session", dataclasses.replace(session, runner=None))
+    with pytest.raises(ValueError, match="read-only"):
+        selected.set_batch_meta("description", "x")
+    writer.assert_not_called()
+
+
+def test_meta_edit_requeues_verified_trays_and_no_op_leaves_no_undo(selected, monkeypatch):
+    store = selected._session.store
+    store.update_tray(1, auto="verified")
+    submit = Mock()
+    monkeypatch.setattr(selected, "_submit_auto_due", submit)
+    selected._auto_due = set()
+    selected.set_tray_meta(1, "date", "1980")
+    wait_until(selected, lambda: selected._auto_due == {1})
+    assert submit.called
+    # the first edit's undo entry is pushed by the same job; wait for it before the baseline
+    wait_until(selected, lambda: len(selected._undo) >= 1)
+    depth = len(selected._undo)
+    selected.set_tray_meta(1, "date", "1980")  # the same value again: nothing to undo
+    selected.set_batch_meta("description", "")  # already blank
+    selected.set_tray_meta(2, "date", "1981")
+    wait_until(selected, lambda: store.snapshot().trays[1].meta.date == "1981")
+    assert len(selected._undo) == depth + 1
+
+
+def test_slides_meta_edits_the_given_keys_not_the_live_selection(selected):
+    selected.select_slide(1, 1)
+    selected.set_slides_meta([(1, 2), (2, 1)], "description", "Lake")
+    wait_until(selected, lambda: _metas(selected)[2, 1].description == "Lake")
+    metas = _metas(selected)
+    assert metas[1, 2].description == "Lake" and metas[1, 1] == MetaOverride()
+    selected.set_slides_meta([(1, 2)], "description", None)
+    wait_until(selected, lambda: _metas(selected)[1, 2] == MetaOverride())
+    with pytest.raises(ValueError, match="no longer"):
+        selected.set_slides_meta([(1, 2), (99, 1)], "description", "x")
+    with pytest.raises(ValueError):
+        selected.set_slides_meta([], "description", "x")
+    with pytest.raises(ValueError):
+        selected.set_slides_meta([(1, 2)], "date", "1850")

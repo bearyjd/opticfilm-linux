@@ -5,6 +5,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    preferredWidth: Math.min(32 * Theme.gu, parent ? parent.width * 0.9 : 32 * Theme.gu)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
 
     Kirigami.Theme.inherit: false
     Kirigami.Theme.backgroundColor: Theme.card
@@ -27,9 +32,23 @@ Kirigami.Dialog {
     standardButtons: Kirigami.Dialog.Close
     // while the scanner works, the power steps would ruin the scan: they stay hidden throughout
     readonly property bool busy: bridge.scanPending || bridge.holderBusy
+    Binding {
+        target: dialog.contentItem.QQC2.ScrollBar.vertical
+        property: "policy"
+        value: QQC2.ScrollBar.AlwaysOn
+    }
+    Binding {
+        target: dialog.header
+        property: "leftPadding"
+        value: dialog.leftPadding
+    }
+    Binding {
+        target: dialog.contentItem
+        property: "rightPadding"
+        value: dialog.contentItem.effectiveScrollBarWidth
+    }
     ColumnLayout {
         spacing: Theme.spacing
-        implicitWidth: Kirigami.Units.gridUnit * 32
         Card {
             id: busyWarning
             objectName: "loadBusyWarning"
@@ -45,8 +64,8 @@ Kirigami.Dialog {
                 Kirigami.Icon {
                     source: "dialog-warning"
                     color: Theme.warn
-                    Layout.preferredWidth: Theme.spacingLarge
-                    Layout.preferredHeight: Theme.spacingLarge
+                    Layout.preferredWidth: Theme.iconMedium
+                    Layout.preferredHeight: Theme.iconMedium
                     Accessible.ignored: true
                 }
                 Kirigami.SelectableLabel {
@@ -91,18 +110,20 @@ Kirigami.Dialog {
                 wrapMode: Text.Wrap
                 text: qsTr("3. Open a terminal, paste this command and press Enter:")
             }
-            RowLayout {
+            ColumnLayout {
                 Layout.fillWidth: true
-                QQC2.TextField {
+                QQC2.TextArea {
                     objectName: "loadCommandField"
                     Layout.fillWidth: true
                     readOnly: true
                     selectByMouse: true
+                    wrapMode: TextEdit.WrapAnywhere
                     font.family: "monospace"
                     text: bridge.loadCommand
                 }
                 PillButton {
                     objectName: "copyLoadCommand"
+                    Layout.alignment: Qt.AlignRight
                     enabled: !dialog.busy
                     text: qsTr("Copy command")
                     icon.name: "edit-copy"

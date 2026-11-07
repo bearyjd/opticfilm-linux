@@ -7,7 +7,6 @@ Rectangle {
     required property var slide
     signal chosen(int modifiers)
     objectName: "slideThumb_" + slide.tray + "_" + slide.position
-    implicitHeight: 170
     color: Theme.card
     radius: Theme.cardRadius
     border.width: slide.focused ? 3 : slide.selected ? 2 : 1
@@ -39,7 +38,8 @@ Rectangle {
             QQC2.Label {
                 anchors.centerIn: parent
                 visible: !thumb.slide.afterUrl && !thumb.slide.beforeUrl
-                text: thumb.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
+                objectName: "thumbPlaceholder"
+                text: thumb.slide.status === "skipped" ? qsTr("Empty (not scanned)") : thumb.slide.status === "blank" ? qsTr("Looks empty") : qsTr("Preview pending")
                 color: Theme.muted
                 font.pixelSize: Theme.fontSmall
             }
@@ -62,6 +62,19 @@ Rectangle {
                 color: Theme.text
                 elide: Text.ElideRight
                 font.pixelSize: Theme.fontSmall
+            }
+            QQC2.Label {
+                objectName: "metadataPendingBadge"
+                text: "✎"
+                visible: thumb.slide.metadataPending === true
+                color: Theme.muted
+                font.pixelSize: Theme.fontSmall
+                Accessible.name: qsTr("Metadata not yet in JPEG")
+                QQC2.ToolTip.text: Accessible.name
+                QQC2.ToolTip.visible: badgeHover.hovered
+                HoverHandler {
+                    id: badgeHover
+                }
             }
             QQC2.Label {
                 text: "⚑"

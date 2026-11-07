@@ -17,7 +17,6 @@ from opticfilm_linux.app.prefs import (
     DPI_CHOICES,
     THEMES,
     Prefs,
-    batch_subfolder,
     export_defaults,
     forget_batch,
     read_theme,
@@ -28,7 +27,7 @@ from opticfilm_linux.app.prefs import (
 )
 from opticfilm_linux.app.qt.destination import DestinationCheck
 from opticfilm_linux.app.qt.models import DictListModel, SheetModel
-from opticfilm_linux.app.qt.selection import FIELDS, SelectionBridge
+from opticfilm_linux.app.qt.selection import FIELDS
 from opticfilm_linux.app.qt.sheet import (
     _slide_dict,
     _tray_dict,
@@ -38,9 +37,9 @@ from opticfilm_linux.app.qt.sheet import (
     sheet_rows,
 )
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
+from opticfilm_linux.app.qt.workflow_bridge import WorkflowBridge
 from opticfilm_linux.app.state import EMPTY_STATE, AppState
 from opticfilm_linux.batch.model import ROTATIONS, SlideStatus
-from opticfilm_linux.batch.slots import slot_orientations
 
 TICK_MS = 500
 DEBOUNCE_MS = 300
@@ -58,6 +57,7 @@ TRAY_KEYS = (
     "autoFailed",
     "autoError",
     "autoFlagged",
+    "meta",
 )
 SLIDE_KEYS = (
     "position",
@@ -72,6 +72,7 @@ SLIDE_KEYS = (
     "sharpen",
     "ownerDecided",
     "exported",
+    "metadataPending",
     "updating",
     "afterUrl",
     "beforeUrl",
@@ -82,7 +83,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
     return Property(kind, lambda self: read(self._state, self), notify=changed)
 
 
-class Bridge(SelectionBridge):
+class Bridge(WorkflowBridge):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
@@ -225,6 +226,7 @@ class Bridge(SelectionBridge):
     nextStripEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.next_strip_enabled, constant=True
     )
+    scanOpenings = _p("QVariantList", changed, lambda s, _: list(s.scan_openings))  # noqa: N815
 
     hasBatch = _p(bool, changed, lambda s, _: s.batch_name is not None)  # noqa: N815
     batchName = _p(str, changed, lambda s, _: s.batch_name or "")  # noqa: N815
@@ -277,6 +279,8 @@ class Bridge(SelectionBridge):
         str, changed, lambda s, _: "" if s.load_exit_code is None else str(s.load_exit_code)
     )  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
+    canLoadAndScan = _p(bool, changed, lambda s, _: s.can_load_and_scan)  # noqa: N815
+    loadScanPhase = _p(str, changed, lambda s, _: s.load_scan_phase)  # noqa: N815
     holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
     canConfirmScanner = _p(bool, changed, lambda s, _: s.can_confirm_scanner)  # noqa: N815
     scannerStatus = _p(str, changed, lambda s, _: s.scanner.value)  # noqa: N815
@@ -302,6 +306,7 @@ class Bridge(SelectionBridge):
         int, changed, lambda s, _: s.export.not_accepted if s.export else 0
     )
     exportRawFreed = _p(int, changed, lambda s, _: s.export.raw_freed if s.export else 0)  # noqa: N815
+    metadataPending = _p(int, changed, lambda s, _: s.metadata_pending)  # noqa: N815
     exportMessage = _p(str, changed, lambda s, _: s.export.message if s.export else "")  # noqa: N815
     freeSpaceReady = _p(  # noqa: N815
         bool,
@@ -346,157 +351,6 @@ class Bridge(SelectionBridge):
         str, lambda self: self._destination.problem, notify=automaticExportProblemChanged
     )
 
-    @Slot(bool, str, str, str)
-    def checkAutomaticExport(
-        self, enabled: bool, parent_url: str, name: str, export_url: str
-    ) -> None:  # noqa: N802
-        """Debounce filesystem checks and invalidate any result for previous inputs."""
-        destination = QUrl(export_url)
-        parent = QUrl(parent_url)
-        problem = ""
-        if not enabled:
-            problem = "Automatic export is off."
-        elif not export_url.strip():
-            problem = "Choose an export folder for automatic export."
-        elif not destination.isLocalFile():
-            problem = "Choose a local export folder for automatic export."
-        elif not parent.isLocalFile() or not name.strip():
-            problem = "Choose a batch folder and enter a batch name."
-        self._destination.request(parent.toLocalFile(), name, destination.toLocalFile(), problem)
-
-    @Slot(str, str, str, str, int)
-    @Slot(str, str, str, str, int, int)
-    @Slot(str, str, str, str, int, int, bool)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList")
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList")
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str)
-    @Slot(str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str)
-    @Slot(
-        str, str, str, str, int, int, bool, "QVariantList", "QVariantList", str, str, str, str, int
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-        int,
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-        int,
-        bool,
-    )
-    @Slot(
-        str,
-        str,
-        str,
-        str,
-        int,
-        int,
-        bool,
-        "QVariantList",
-        "QVariantList",
-        str,
-        str,
-        str,
-        str,
-        int,
-        str,
-        int,
-        bool,
-        bool,
-    )
-    def newBatch(  # noqa: N802
-        self,
-        parent_url: str,
-        name: str,
-        album: str,
-        date: str,
-        dpi: int,
-        rotation: int = 0,
-        mirror: bool = False,
-        slot_rotations: list[int] | None = None,
-        slot_mirrors: list[bool] | None = None,
-        export_dir: str = "",
-        export_format: str = "jpeg",
-        jpeg_size: str = "full",
-        collection: str = "",
-        box: int = 1,
-        section: str = "a",
-        section_size: int = 140,
-        auto_export: bool = False,
-        keep_raw: bool = False,
-    ) -> None:
-        """``slot_rotations`` and ``slot_mirrors`` are per holder slot, slot 1 first."""
-        rotations = {i: int(r) for i, r in enumerate(slot_rotations or (), start=1)}
-        mirrored = [i for i, m in enumerate(slot_mirrors or (), start=1) if m]
-        folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
-        self._pending.clear()
-        self._opening = self._last_attempt = folder
-        self._controller.new_batch(
-            folder,
-            name.strip() or folder.name,
-            album,
-            date or None,
-            dpi,
-            rotation,
-            mirror,
-            slot_orientations(rotations, mirrored),
-            export_dir=QUrl(export_dir).toLocalFile() or export_dir,
-            export_format=export_format,  # type: ignore[arg-type]
-            jpeg_size=jpeg_size,  # type: ignore[arg-type]
-            auto_export=auto_export,
-            keep_raw=keep_raw,
-            collection=collection,
-            box=box,
-            section=section,
-            section_size=section_size,
-        )
-
     @Slot(bool)
     def finishBox(self, next_box: bool) -> None:  # noqa: N802
         self._flush_now()
@@ -526,9 +380,22 @@ class Bridge(SelectionBridge):
     # -- scanning and review -------------------------------------------------------------
 
     @Slot()
+    def updateExportedMetadata(self) -> None:  # noqa: N802
+        self._flush_now()  # a description still being typed is stored first
+        self._controller.update_exported_metadata()
+
+    @Slot()
     def scan(self) -> None:
         self._flush_now()
         self._controller.scan()
+
+    @Slot("QVariantList")
+    def setScanOpenings(self, openings: list) -> None:  # noqa: N802
+        # A JavaScript number arrives as a float: only a whole one becomes an int. Anything else
+        # (1.9, True, "1", None) is passed on and refused by the controller, after its switch check.
+        self._controller.set_scan_openings(
+            tuple(int(p) if type(p) is float and p.is_integer() else p for p in openings)
+        )
 
     @Slot(int)
     def rescan(self, number: int) -> None:
@@ -558,6 +425,12 @@ class Bridge(SelectionBridge):
     @Slot()
     def loadNextHolder(self) -> None:  # noqa: N802
         self._controller.load_next_holder()
+
+    @Slot()
+    def loadAndScan(self) -> None:  # noqa: N802
+        """The owner's "holder seated and latched": load it, wait for READY, scan it."""
+        self._flush_now()
+        self._controller.load_and_scan()
 
     @Slot()
     def confirmScannerReset(self) -> None:  # noqa: N802

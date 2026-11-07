@@ -5,6 +5,11 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.Dialog {
     id: dialog
+    preferredWidth: Math.min(56 * Theme.gu, parent ? parent.width * 0.9 : 56 * Theme.gu)
+    maximumWidth: preferredWidth
+    // Keep centering independent of wrapped body and footer measurements.
+    width: preferredWidth
+    maximumHeight: parent ? parent.height * 0.9 : Infinity
 
     Kirigami.Theme.inherit: false
     Kirigami.Theme.backgroundColor: Theme.card
@@ -26,11 +31,56 @@ Kirigami.Dialog {
     property int sweepVersion: 0
     property var previews: []
     property int loaded: 0
+    readonly property var bodyFlickable: contentItem.contentItem
+    // "At the end" is judged from the Flickable's own contentHeight/height/contentY (atYEnd), never from
+    // child geometry, so it stays correct whatever the body contains. Unscrollable content is at its end.
+    readonly property bool framesFullyVisible: !!bodyFlickable && bodyFlickable.atYEnd
+    readonly property bool evidenceReviewed: framesFullyVisible
     objectName: "emptyFramesDialog"
     title: qsTr("Review empty frames in tray %1").arg(tray)
     standardButtons: Kirigami.Dialog.NoButton
     property string zoomUrl: ""
-    onPreviewsChanged: Qt.callLater(refreshLoaded)
+    onPreviewsChanged: Qt.callLater(() => { refreshLoaded(); resetReview(); })
+    onAboutToShow: resetReview()
+    // Focus the body so PageDown/Down reach it before any Tab press.
+    onOpened: body.forceActiveFocus()
+
+    // Keyboard-only users cannot drag the body, so scrolling and focus both go through here.
+    function scrollBodyBy(delta: real) {
+        const top = bodyFlickable.originY;
+        const last = Math.max(top, top + bodyFlickable.contentHeight - bodyFlickable.height);
+        bodyFlickable.contentY = Math.max(top, Math.min(last, bodyFlickable.contentY + delta));
+    }
+
+    function revealItem(item: Item) {
+        const top = item.mapToItem(bodyFlickable.contentItem, 0, 0).y - Theme.spacing;
+        const bottom = top + item.height + 2 * Theme.spacing;
+        if (top < bodyFlickable.contentY)
+            scrollBodyBy(top - bodyFlickable.contentY);
+        else if (bottom > bodyFlickable.contentY + bodyFlickable.height)
+            scrollBodyBy(bottom - bodyFlickable.contentY - bodyFlickable.height);
+    }
+
+    function resetReview() {
+        if (bodyFlickable)
+            bodyFlickable.contentY = bodyFlickable.originY;
+    }
+
+    Binding {
+        target: dialog.contentItem.QQC2.ScrollBar.vertical
+        property: "policy"
+        value: QQC2.ScrollBar.AlwaysOn
+    }
+    Binding {
+        target: dialog.header
+        property: "leftPadding"
+        value: dialog.leftPadding
+    }
+    Binding {
+        target: dialog.contentItem
+        property: "rightPadding"
+        value: dialog.contentItem.effectiveScrollBarWidth
+    }
 
     function refreshLoaded() {
         let ready = 0;
@@ -89,9 +139,22 @@ Kirigami.Dialog {
     }
 
     ColumnLayout {
+        id: body
         spacing: Theme.spacing
-        implicitWidth: Kirigami.Units.gridUnit * 44
+        Keys.onPressed: event => {
+            const steps = {
+                [Qt.Key_PageDown]: dialog.bodyFlickable.height * 0.9,
+                [Qt.Key_PageUp]: -dialog.bodyFlickable.height * 0.9,
+                [Qt.Key_Down]: 4 * Theme.gu,
+                [Qt.Key_Up]: -4 * Theme.gu
+            };
+            if (event.key in steps) {
+                dialog.scrollBodyBy(steps[event.key]);
+                event.accepted = true;
+            }
+        }
         QQC2.Label {
+            id: instructions
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             color: Theme.text
@@ -99,21 +162,31 @@ Kirigami.Dialog {
             text: qsTr("Check every frame below. Confirm only if all are empty; their raw scans may then be removed.")
         }
         GridLayout {
+            id: frameGrid
             Layout.fillWidth: true
-            columns: 2
+            columns: width >= 4 * 12 * Theme.gu ? 4 : width >= 2 * 12 * Theme.gu ? 2 : 1
+            rowSpacing: Theme.spacingSmall
+            columnSpacing: Theme.spacingSmall
             Repeater {
                 id: frames
                 model: dialog.previews
                 onItemAdded: Qt.callLater(dialog.refreshLoaded)
                 onItemRemoved: Qt.callLater(dialog.refreshLoaded)
                 delegate: ColumnLayout {
+                    id: frame
                     required property var modelData
                     required property int index
                     property bool ready: preview.status === Image.Ready && modelData.fingerprint !== ""
                     onReadyChanged: Qt.callLater(dialog.refreshLoaded)
                     Component.onCompleted: Qt.callLater(dialog.refreshLoaded)
                     Layout.fillWidth: true
+                    spacing: Theme.spacingSmall
+                    readonly property real previewHeightLimit: Math.max(2 * Theme.gu, Math.floor(
+                        (dialog.contentItem.maximumHeight
+                        - instructions.implicitHeight - body.spacing - frameGrid.rowSpacing) / 2
+                        - frameLabel.implicitHeight - enlargeButton.implicitHeight - 2 * spacing))
                     QQC2.Label {
+                        id: frameLabel
                         color: Theme.text
                         font.pixelSize: Theme.fontBody
                         text: qsTr("Frame %1").arg(modelData.position)
@@ -121,15 +194,17 @@ Kirigami.Dialog {
                     Image {
                         id: preview
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Kirigami.Units.gridUnit * 8
+                        Layout.preferredHeight: Math.min(Theme.gu * 8, width / 1.5, frame.previewHeightLimit)
                         fillMode: Image.PreserveAspectFit
                         source: modelData.url
                     }
                     PillButton {
+                        id: enlargeButton
                         objectName: "enlargeEmptyFrame" + modelData.position
                         text: qsTr("Enlarge frame %1").arg(modelData.position)
                         icon.name: "zoom-in"
                         enabled: preview.status === Image.Ready
+                        onActiveFocusChanged: if (activeFocus) dialog.revealItem(enlargeButton)
                         onClicked: dialog.enlargeFrame(index)
                     }
                 }
@@ -143,24 +218,33 @@ Kirigami.Dialog {
             visible: dialog.previews.some(item => item.fingerprint === "" || item.url === "")
             text: qsTr("Some empty frames have no current scan evidence or preview. Rescan this tray to review and confirm them.")
         }
-        RowLayout {
-            spacing: Theme.spacingSmall
+    }
+    footer: QQC2.Control {
+        id: footer
+        padding: Theme.spacing
+        contentItem: GridLayout {
+            columns: footer.availableWidth >= confirmButton.implicitWidth + cancelButton.implicitWidth + columnSpacing ? 2 : 1
+            columnSpacing: Theme.spacingSmall
             PillButton {
-                objectName: "confirmReviewedEmptyFrames"
-                text: qsTr("Confirm all these frames are empty")
-                icon.name: "dialog-ok-apply"
-                highlighted: true
-                enabled: dialog.previews.length > 0 && dialog.loaded === dialog.previews.length
-                onClicked: {
-                    bridge.confirmEmptyFrames(dialog.tray, dialog.sweepVersion, dialog.previews);
-                    dialog.close();
-                }
-            }
-            PillButton {
+                id: cancelButton
+                Layout.alignment: Qt.AlignLeft
                 text: qsTr("Cancel")
                 flat: true
                 icon.name: "dialog-cancel"
                 onClicked: dialog.close()
+            }
+            PillButton {
+                id: confirmButton
+                Layout.alignment: Qt.AlignRight
+                objectName: "confirmReviewedEmptyFrames"
+                text: qsTr("Confirm all these frames are empty")
+                icon.name: "dialog-ok-apply"
+                highlighted: true
+                enabled: dialog.previews.length > 0 && dialog.loaded === dialog.previews.length && dialog.evidenceReviewed
+                onClicked: {
+                    bridge.confirmEmptyFrames(dialog.tray, dialog.sweepVersion, dialog.previews);
+                    dialog.close();
+                }
             }
         }
     }
