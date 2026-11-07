@@ -21,6 +21,11 @@ THEMES = ("dark", "light")
 EXPORT_FOLDER_KEY = "export_folder"
 EXPORT_FORMAT_KEY = "export_format"
 EXPORT_JPEG_SIZE_KEY = "export_jpeg_size"
+AUTO_EJECT_KEY = "workflow/auto_eject"
+SKIP_EMPTY_KEY = "workflow/skip_empty"
+AUTO_EXPORT_KEY = "workflow/auto_export_default"
+SWITCH_KEYS = (AUTO_EJECT_KEY, SKIP_EMPTY_KEY, AUTO_EXPORT_KEY)
+_SWITCH_ON = ("1", "true")
 
 
 class Prefs(Protocol):
@@ -50,6 +55,19 @@ def remember_theme(prefs: Prefs, name: str) -> None:
     if name not in THEMES:
         raise ValueError(f"Unknown theme: {name}")
     prefs.set(THEME_KEY, name)
+
+
+def read_switch(prefs: Prefs, key: str) -> bool:
+    """A saved workflow switch; absent, malformed or unknown values are off."""
+    if key not in SWITCH_KEYS:
+        return False
+    return (prefs.get(key, "") or "").strip().lower() in _SWITCH_ON
+
+
+def remember_switch(prefs: Prefs, key: str, value: bool) -> None:
+    if key not in SWITCH_KEYS:
+        raise ValueError(f"Unknown workflow switch: {key}")
+    prefs.set(key, "1" if value else "0")
 
 
 @dataclass(frozen=True)

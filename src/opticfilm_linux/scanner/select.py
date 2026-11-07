@@ -1,5 +1,6 @@
 """Pick the real scanner backend."""
 
+import logging
 import os
 
 from opticfilm_linux.scanner.base import ScanError
@@ -23,6 +24,24 @@ AUTO_EJECT_ENV = "OPTICFILM_AUTO_EJECT"
 
 EJECT_BUTTON_OFF = ("0", "false", "no", "off")
 SWITCH_ON = ("1", "true", "yes", "on")
+
+_log = logging.getLogger(__name__)
+
+
+def env_switch(name: str) -> bool | None:
+    """True or False when the variable says so; None when unset, blank or unreadable (logged).
+
+    Callers that have a saved preference let an explicit value win over it; None defers to it."""
+    raw = os.environ.get(name)
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    if value in SWITCH_ON:
+        return True
+    if value in EJECT_BUTTON_OFF:
+        return False
+    _log.warning("ignoring %s=%r: expected on/off, 1/0, true/false or yes/no", name, raw)
+    return None
 
 
 def _switched_on(name: str) -> bool:

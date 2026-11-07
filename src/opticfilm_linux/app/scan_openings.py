@@ -39,6 +39,7 @@ class ScanOpeningsCommands:
     def _init_scan_openings(self, skip_empty: bool | None, skip_gaps: bool | None) -> None:
         self._skip_empty = skip_empty_enabled() if skip_empty is None else skip_empty
         gaps = skip_gaps_enabled() if skip_gaps is None else skip_gaps
+        self._gaps_requested = gaps
         self._skip_gaps = self._skip_empty and gaps  # gaps refine the choice; alone they do nothing
         self._scan_openings = ALL_POSITIONS
 
