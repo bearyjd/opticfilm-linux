@@ -11,7 +11,7 @@
     "numpy comes from io.qt.PySide.BaseApp (6.11), so it is not installed from a wheel here.",
     "Wheel pins produced 2026-11-04 by hand from PyPI's JSON API (https://pypi.org/pypi/<name>/<version>/json; D11 hand-pin fallback), newest releases: pillow 13.0.0 (cp313 manylinux_2_28), tifffile 2026.10.15 (py3-none-any), opencv-python-headless 5.0.0.93 (cp37-abi3 manylinux_2_28, installs on cp313), pyusb 1.3.1 (py3-none-any). These are the versions the dev environment tests against. pip runs with --no-deps, so every Requires-Dist was checked: pillow none at runtime, pyusb none, tifffile needs numpy>=2.1 (BaseApp), opencv needs numpy>=2 with no upper bound. imagecodecs is not needed: the app only writes uncompressed RGB TIFFs and reads them back.",
     "numpy finding: the BaseApp ships numpy 2.3.5 and Python 3.13, which satisfies tifffile numpy>=2.1 and opencv-python-headless 5.0.0.93 numpy>=2 (built against the numpy 2 ABI, forward compatible), so no numpy wheel is shipped. Not yet verified by an import inside the sandbox; that is the build PR's smoke test.",
-    "The scanner driver is an EXTERNAL dependency: the owner's fork (github.com/bearyjd/opticfilm135i-linux) pinned at commit eaa6f88, which has the calibration stop gate default 'enforce'. Upstream cgillinger master (6270867) has the gate OFF by default and exits 4 on slide scans here, so it is NOT used. Nothing from Plustek or the vendor driver is vendored here.",
+    "The scanner driver is an EXTERNAL dependency: the owner's fork (github.com/bearyjd/opticfilm135i-linux) pinned at commit cae1c50 (v0.2.10), which has the calibration stop gate default 'enforce'. Upstream cgillinger master (6270867) has the gate OFF by default and exits 4 on slide scans here, so it is NOT used. Nothing from Plustek or the vendor driver is vendored here.",
     "--device=all is the broad choice for raw USB access (07b3:1436): it works on the host but is untested inside the sandbox, and it also grants GPU access that Qt Quick may rely on, so narrowing to --device=usb needs --device=dri alongside and is untested.",
     "--talk-name=org.freedesktop.Flatpak lets the app run `flatpak-spawn --host systemctl --user ...` to stop and restart the host's Eject-button watcher unit while it scans. Security implication: access to the Flatpak session helper lets the app run ANY command on the host outside the sandbox, so it effectively removes the sandbox. The app only uses it for systemctl on its own watcher unit, but the permission itself is not limited to that. Untested inside a sandbox; flathub review normally rejects it, so this is for a self-hosted Flatpak. Without it the app cannot step the watcher aside and the watcher must be stopped by hand."
   ],
@@ -68,7 +68,7 @@
         {
           "type": "git",
           "url": "https://github.com/bearyjd/opticfilm135i-linux.git",
-          "commit": "eaa6f889f09796bc8f4ddab73cd5daa0bdb273fd"
+          "commit": "cae1c504f4a6d4e4235226d56bd1287b4ebb0138"
         }
       ]
     },

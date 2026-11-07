@@ -311,6 +311,9 @@ QQC2.ScrollView {
                 text: qsTr("Eject holder")
                 icon.name: "media-eject"
                 enabled: bridge.canEject
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                QQC2.ToolTip.text: qsTr("Eject holder (E)")
                 onClicked: bridge.ejectHolder()
             }
             Item {
@@ -320,7 +323,7 @@ QQC2.ScrollView {
                 implicitHeight: loadNextButton.implicitHeight
                 QQC2.ToolTip.visible: loadNextHover.hovered
                 QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Load the next holder after the first terminal load.") : qsTr("Switched off by OPTICFILM_NEXT_STRIP. Unset it and restart the app to enable loading the next holder.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
+                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Load the next holder after the first terminal load.") + " " + qsTr("Key: L.") : qsTr("Switched off by OPTICFILM_NEXT_STRIP. Unset it and restart the app to enable loading the next holder.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
 
                 HoverHandler {
                     id: loadNextHover

@@ -52,7 +52,7 @@ Kirigami.Page {
     // they give way before the toolbar is starved).
     readonly property real toolbarFloor: Theme.controlHeight
     readonly property real headerInset: width < 7 * toolbarFloor ? Theme.spacingSmall / 2 : Theme.spacing
-    readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo (outside text fields)")
+    readonly property string shortcutText: qsTr("Ctrl+A select all · Shift+click range · Space accept toggle · A accept · R reject · N needs look · [ ] rotate · M mirror · Ctrl+Z undo (outside text fields) · S scan · E eject · L load next holder · X export · F finish box")
 
     function focusReview() {
         const active = page.Window.window ? page.Window.window.activeFocusItem : null;
@@ -72,6 +72,20 @@ Kirigami.Page {
             confirmScannerDialog.open();
     }
 
+    // S, E, L, X, F: the same gates as the buttons; a held key must not repeat a motor move.
+    function handleTrayKey(event) {
+        const keys = [Qt.Key_S, Qt.Key_E, Qt.Key_L, Qt.Key_X, Qt.Key_F];
+        const modified = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier);
+        if (modified || keys.indexOf(event.key) < 0) return false;
+        if (event.isAutoRepeat) return true;
+        if (event.key === Qt.Key_S) { if (bridge.canScan) bridge.scan(); }
+        else if (event.key === Qt.Key_E) { if (bridge.canEject) bridge.ejectHolder(); }
+        else if (event.key === Qt.Key_L) { if (bridge.canLoadNext) bridge.loadNextHolder(); }
+        else if (event.key === Qt.Key_X) { if (bridge.trays.rowCount() > 0) exportDialog.open(); }
+        else if (bridge.collection !== "" && bridge.canFinishBox) finishBoxDialog.open();
+        return true;
+    }
+
     function handleKey(event) {
         const active = page.Window.window ? page.Window.window.activeFocusItem : null;
         if (active && typeof active.cursorPosition === "number") return;
@@ -87,6 +101,7 @@ Kirigami.Page {
         else if (event.key === Qt.Key_Down) bridge.moveSelectionFocus(4, shift);
         else if (event.key === Qt.Key_Escape) bridge.clearSelection();
         else if (bridge.readonly) return;
+        else if (handleTrayKey(event)) { event.accepted = true; return; }
         else if (event.key === Qt.Key_Space) bridge.toggleSelectionAccepted();
         else if (event.key === Qt.Key_A) bridge.setSelectionStatus("accepted");
         else if (event.key === Qt.Key_R) bridge.setSelectionStatus("rejected");
@@ -163,6 +178,14 @@ Kirigami.Page {
         subtitle: qsTr("A scan or holder move was cut off, so the scanner's state is unknown. Only confirm after you have switched the scanner off until its lights went out, switched it on, and loaded the holder again. Then rescan the interrupted tray.")
         onConfirmed: bridge.confirmScannerReset()
     }
+    ConfirmDialog {
+        id: finishBoxDialog
+        objectName: "finishBoxDialog"
+        defaultReject: true
+        title: qsTr("Finish this box?")
+        subtitle: qsTr("The batch moves on to the next box. Check that every tray of this box is scanned and reviewed.")
+        onConfirmed: if (bridge.canFinishBox) bridge.finishBox(true)
+    }
     ExportDialog {
         id: exportDialog
     }
@@ -238,6 +261,9 @@ Kirigami.Page {
                 Layout.maximumWidth: implicitWidth
                 Layout.minimumWidth: page.toolbarFloor
                 enabled: bridge.canScan || bridge.canLoadNext || bridge.canFirstLoad || bridge.canConfirmScanner
+                QQC2.ToolTip.visible: hovered && QQC2.ToolTip.text !== ""
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                QQC2.ToolTip.text: bridge.canLoadNext && !bridge.canScan ? qsTr("Load next holder (L)") : bridge.canScan ? qsTr("Scan (S)") : ""
                 onClicked: page.primaryAction()
             }
             QQC2.Button {
@@ -260,6 +286,9 @@ Kirigami.Page {
                 text: qsTr("Finish box")
                 visible: bridge.collection !== ""
                 enabled: bridge.canFinishBox
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                QQC2.ToolTip.text: qsTr("Finish box (F)")
                 onClicked: bridge.finishBox(true)
             }
             QQC2.Button {
@@ -327,6 +356,7 @@ Kirigami.Page {
                     Kirigami.Action {
                         objectName: "exportAction"
                         text: qsTr("Export…")
+                        tooltip: qsTr("Export (X)")
                         icon.name: "document-export"
                         enabled: !bridge.readonly && bridge.trays.rowCount() > 0
                         onTriggered: exportDialog.open()
