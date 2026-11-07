@@ -2,7 +2,8 @@
 
 - **Tests first.** Write the failing test, watch it fail for the right reason, then make it pass.
 - **Coverage gate:** 80 % (`uv run pytest --cov=opticfilm_linux --cov-fail-under=80`), plus
-  `uv run ruff check .` and `uv run ruff format --check .`. CI runs both.
+  `uv run ruff check .` (CI runs the lint and the coverage run; run `uv run ruff format --check .`
+  yourself before pushing, CI does not).
 - **Immutable data flow.** Pipeline steps return new arrays and never modify their input;
   dataclasses are frozen.
 - **Hardware tests** carry `@pytest.mark.hardware`, are read-only, and are excluded from the
@@ -18,8 +19,9 @@
   `dnf install python3-pyside6 kf6-kirigami qt6-qtdeclarative`). Use a separate environment that
   can see them: `uv venv --system-site-packages --python /usr/bin/python3 .venv-qt &&
   UV_PROJECT_ENVIRONMENT=.venv-qt uv sync --python /usr/bin/python3`, then
-  `QT_QPA_PLATFORM=offscreen .venv-qt/bin/python -m pytest -m qt tests/qt`. Qt tests carry
-  `@pytest.mark.qt`, are excluded from the default run, and run in the optional Fedora CI job.
+  `QT_QPA_PLATFORM=offscreen .venv-qt/bin/python -m pytest -m qt tests/qt -q`. Qt tests carry
+  `@pytest.mark.qt` (the opt-in responsive layout matrix carries `qt_matrix`); both are excluded
+  from the default run, and the `qt` tests run in the optional Fedora CI job.
 
 <!-- AUTO-GENERATED from pyproject.toml, the CLI definitions, the scripts/ folder and the environment lookups in src/ and scripts/ (2026-10-31). Edit the source, not this section. -->
 ## Commands
@@ -43,12 +45,24 @@
 | `scripts/hardware/ab_gate_test.sh ATTEMPT_DIR` / `tray_and_armc_test.sh tray\|armc ATTEMPT_DIR` | Supervised hardware series that move the motor; they need a real terminal for the confirmation |
 | `scripts/hardware/merge_when_green.sh OWNER/REPO PR BRANCH` | Maintainer tooling: wait for CI on the current head, then merge with a merge commit |
 | `uv sync` | Install project dependencies and the default `dev` group: `pytest>=8.0`, `pytest-cov>=5.0`, `ruff>=0.5` (`pyproject.toml`); also used by CI |
-| `uv run pytest --cov=opticfilm_linux --cov-fail-under=80` | Normal CI test command; default pytest selection is `-m 'not hardware and not qt'`. `hardware` means read-only real-scanner tests; `qt` means distribution PySide6/Kirigami headless smoke tests (`pyproject.toml`, `.github/workflows/ci.yml`) |
-| `uv run ruff check .` | Lint command run by normal CI (`.github/workflows/ci.yml`) |
+| `uv run pytest --cov=opticfilm_linux --cov-fail-under=80` | Normal CI test command; default pytest selection is `-m 'not hardware and not qt and not qt_matrix'`. `hardware` means read-only real-scanner tests; `qt` means distribution PySide6/Kirigami headless smoke tests (`pyproject.toml`, `.github/workflows/ci.yml`) |
+| `uv run ruff check .` | Lint command run by normal CI (`.github/workflows/ci.yml`); rules `E F I B UP T20` |
+| `uv run ruff format --check .` | Format check; not run by CI, run it locally (line length 100) |
+| `uv run pytest tests/test_app_scan_openings.py::test_name -q` | Run a single test (any `file::test` id, or `-k EXPR`) |
+| `uv run pytest -m qt_matrix tests/qt` | Opt-in responsive layout matrix; needs the `.venv-qt` environment like the `qt` tests, not part of CI |
 | `QT_QPA_PLATFORM=offscreen .venv-qt/bin/python -m pytest -m qt tests/qt -q` | Optional Fedora CI Qt job; `-m qt` overrides the default marker selection. CI creates `.venv-qt` with `--system-site-packages` using `/usr/bin/python3`, then syncs with `UV_PROJECT_ENVIRONMENT=.venv-qt` (`.github/workflows/ci.yml`) |
 
-Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage at least 80 %,
-`ruff check` and `ruff format --check` (line length 100, Python 3.11 target).
+Gates: `pytest` (default run excludes the `hardware`, `qt` and `qt_matrix` markers), coverage at
+least 80 % (the Qt layer `opticfilm_linux/app/qt/*` is omitted from coverage), `ruff check` in CI
+and `ruff format --check` locally (line length 100, Python 3.11 target, `requires-python >=3.11`).
+Source rules enforced by tests: functions under 50 lines (`tests/test_pr2b_function_lengths.py`,
+`tests/test_review_function_lengths.py`; the latter compares against git history, which is why CI
+checks out full history). Files stay under 800 lines by convention only.
+
+PR checklist: failing test first; `uv run ruff check .`; `uv run ruff format --check .`;
+`uv run pytest --cov=opticfilm_linux --cov-fail-under=80`; conventional commit message; no vendor
+material; no scanner command without a reviewed design; update `docs/ENV.md` when a variable
+changes.
 
 ## Environment variables
 
@@ -62,6 +76,7 @@ Gates: `pytest` (default run excludes the `hardware` and `qt` markers), coverage
 | `OPTICFILM_SKIP_EMPTY` | No (off) | `1`, `true`, `yes` or `on` (any case) shows "Slides in this holder" next to Eject: N scans openings 1..N and records the rest as empty, not scanned. The choice goes back to 4 when Scan is pressed (even if the scan is refused or fails), on any holder move or latch change (eject, load next, first load, latch confirmed), and when a batch is opened, closed or created; it cannot be changed while a scan is queued or running. A rescan always scans all four openings: it restores the reserved numbers and drives the motor to openings the owner had marked empty. Untested on hardware |
 | `OPTICFILM_SKIP_GAPS` | No (off) | With `OPTICFILM_SKIP_EMPTY` on: four opening toggles, so any ascending set (for example `1,3,4`) can be scanned. Alone it does nothing. Untested on hardware |
 | `OPTICFILM_AUTO_EJECT` | No (off) | `1`, `true`, `yes` or `on` (any case): after a good tray (sweep saved, tray SCANNED, scan ended) the app runs one separate `eject` through the usual Eject path, never `scan --eject`; no eject after any failed, stopped or cut-off scan, and a refused one shows "Automatic eject skipped". No automatic load. Fake driver: `FAKE_DRIVER_EJECT_MODE` = `ok`, `skipped`, `fail` or `hang`. Untested on hardware (plan rungs H5, H7, H8) |
+| `OPTICFILM_WINDOW_SIZE` | No | `WIDTHxHEIGHT` (for example `1400x900`) overrides the app's startup window size; malformed values are ignored |
 | `OPTICFILM_LOAD_COMMAND` | No | Replaces the first-load terminal command shown in the app's help dialog |
 | `OPTICFILM_HW_ASSUME_YES` | No | Only for `scripts/hardware/` wrappers that supervise the scanner: skips the interactive confirmation of the motor-moving series and prints a notice. Without it, a closed or piped stdin aborts with no driver call |
 | `OF135I_DEPS_OVERLAY` | No | Extra `PYTHONPATH` entry for `scripts/hardware/hw_run.sh` (a folder with pure-Python driver deps such as `tifffile`) |
