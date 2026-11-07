@@ -49,6 +49,7 @@ from opticfilm_linux.app.state import (
     build_state,
 )
 from opticfilm_linux.app.status import CachedStatusScanner, StatusPoller
+from opticfilm_linux.app.workflow_settings import WorkflowSettings
 from opticfilm_linux.batch.events import ScanFinished, SlideUpdated, TrayFailed, TrayStageChanged
 from opticfilm_linux.batch.manifest import ManifestFormatError
 from opticfilm_linux.batch.model import (
@@ -91,6 +92,7 @@ class Controller(
     ReviewCommands,
     ScanOpeningsCommands,
     SelectionCommands,
+    WorkflowSettings,
 ):
     def __init__(
         self,
@@ -102,6 +104,7 @@ class Controller(
         skip_empty: bool | None = None,  # None: read OPTICFILM_SKIP_EMPTY
         skip_gaps: bool | None = None,  # None: read OPTICFILM_SKIP_GAPS
         auto_eject: bool | None = None,  # None: read OPTICFILM_AUTO_EJECT
+        env_locked: frozenset[str] = frozenset(),  # switches an environment variable decides
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
@@ -110,6 +113,7 @@ class Controller(
         self._eject_button = eject_button  # the front-panel Eject button works (kill switch)
         self._auto_eject = auto_eject_enabled() if auto_eject is None else auto_eject
         self._init_scan_openings(skip_empty, skip_gaps)
+        self._init_workflow_settings(env_locked)
         self._init_holder_workers()
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
         self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker

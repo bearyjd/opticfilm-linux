@@ -36,8 +36,8 @@ from opticfilm_linux.app.qt.sheet import (
     selection_summary,
     sheet_rows,
 )
-from opticfilm_linux.app.qt.start_bridge import StartBridge
 from opticfilm_linux.app.qt.theme import make_palette, qml_palette_colors
+from opticfilm_linux.app.qt.workflow_bridge import WorkflowBridge
 from opticfilm_linux.app.state import EMPTY_STATE, AppState
 from opticfilm_linux.batch.model import ROTATIONS, SlideStatus
 
@@ -83,7 +83,7 @@ def _p(kind: Any, changed: Signal, read) -> Property:
     return Property(kind, lambda self: read(self._state, self), notify=changed)
 
 
-class Bridge(StartBridge):
+class Bridge(WorkflowBridge):
     changed = Signal()
     themeChanged = Signal()
     batchReplaced = Signal()  # noqa: N815
@@ -225,12 +225,6 @@ class Bridge(StartBridge):
     loadRunnerNote = Property(str, lambda self: self._load_runner_note, constant=True)  # noqa: N815
     nextStripEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.next_strip_enabled, constant=True
-    )
-    skipEmptyEnabled = Property(  # noqa: N815
-        bool, lambda self: self._controller.skip_empty_enabled, constant=True
-    )
-    skipGapsEnabled = Property(  # noqa: N815
-        bool, lambda self: self._controller.skip_gaps_enabled, constant=True
     )
     scanOpenings = _p("QVariantList", changed, lambda s, _: list(s.scan_openings))  # noqa: N815
 

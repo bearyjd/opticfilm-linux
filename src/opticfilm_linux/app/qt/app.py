@@ -18,6 +18,7 @@ from opticfilm_linux.app.qt.window_geometry import (
     resolve_override,
 )
 from opticfilm_linux.app.sandbox import in_flatpak
+from opticfilm_linux.app.workflow_settings import startup_switches
 from opticfilm_linux.scanner.base import Scanner
 from opticfilm_linux.scanner.driver import (
     DRIVER_ENV,
@@ -26,12 +27,7 @@ from opticfilm_linux.scanner.driver import (
     install_signal_cleanup,
 )
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.select import (
-    eject_button_enabled,
-    next_strip_enabled,
-    skip_empty_enabled,
-    skip_gaps_enabled,
-)
+from opticfilm_linux.scanner.select import eject_button_enabled, next_strip_enabled
 from opticfilm_linux.sweepstore import SweepFormatError, sweep_dpi
 
 EXIT_MISSING_QT = 3
@@ -201,17 +197,17 @@ def main(argv: list[str] | None = None) -> int:
     QGuiApplication.setDesktopFileName(APP_ID)
     configure_style()
     install_signal_cleanup()  # the driver runs in its own session: stop it if the app is killed
+    prefs = QSettingsPrefs()
     controller = Controller(
         scanner_factory(args.fake),
         next_strip=next_strip_enabled(),
         eject_button=eject_button_enabled(),
-        skip_empty=skip_empty_enabled(),
-        skip_gaps=skip_gaps_enabled(),
+        **startup_switches(prefs),
         eject_watch=None if args.fake is not None else EjectWatch(),  # demo mode: no scanner
     )
     bridge = Bridge(
         controller,
-        QSettingsPrefs(),
+        prefs,
         demo_dpi,
         load_command_text=load_command_text(),
         load_runner_note=load_runner_note(),

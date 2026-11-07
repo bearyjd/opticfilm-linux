@@ -124,7 +124,7 @@ class HolderCommands:
         """OPTICFILM_AUTO_EJECT: one eject through the usual path once a good scan has fully
         ended. Called by the drain outside the lock, for the open session only. A refusal is
         shown, never retried; a closing batch or failed scan simply ends without one."""
-        if not (self._auto_eject and event.ok) or self._closing.is_set():
+        if not (self._auto_eject and self._eject_at_start and event.ok) or self._closing.is_set():
             return
         session = self._session
         with self._lock:
@@ -328,6 +328,7 @@ class HolderCommands:
                 return
             if not refused:
                 self._scans_queued += 1
+                self._snapshot_auto_eject()  # a later toggle waits for the next scan
         if refused:
             self._set(_banner=Banner(WAIT_HOLDER))
             return
