@@ -67,6 +67,11 @@ Not verified, or known problems:
   run on the real scanner by the owner on 2026-10-28 (one unit). No logs of that run are kept in
   this repository, and the cases that must do nothing (a press during a scan, a held press) are
   covered by fake-scanner tests only.
+- **Load & scan** (one press loads the next holder and scans it) is **off by default and has never
+  been run on the scanner**. The supervised hardware check has not been done; the project keeps
+  it off by default until that check has passed twice. Nothing in the app prevents switching it
+  on, so do not enable it before then. It has been tested on the fake scanner only. The same holds for
+  the automatic eject and automatic export settings.
 
 Do not treat the word "ejected" in any output as proof that the holder was released; check the
 holder physically.
@@ -144,6 +149,11 @@ ofscan batch export ~/slides/trips --out ~/Pictures/scans
   rescan` and is never enhanced or exported, and every `scan`, `eject` and `load` (and the app's
   buttons) is refused until you power-cycle the scanner, load the holder again and run
   `ofscan batch confirm-scanner --yes` (in the app: **Confirm scanner reset…**). Then rescan the tray.
+- **Headless tray:** `ofscan batch run BATCH --out ALBUM --auto-export` scans one tray, accepts,
+  exports and frees in one command; `ofscan batch free-held BATCH 1 --yes` lets tray 1 leave the
+  raw hold after you checked its JPEGs. It never loads, ejects or confirms the latch, so the first
+  load stays a hand step; with the real scanner it refuses `--count` above 1 (exit 3). Details:
+  [PRODUCTION](docs/PRODUCTION.md#24-headless-tray-ofscan-batch-run).
 - **Enhancement runs in the background** while the next tray scans. Slides with no review flag are
   accepted automatically; flagged ones (very dark, very bright, clipped, dusty) wait for you.
   A choice you make on a slide is never overwritten later.
@@ -186,6 +196,47 @@ is ready, keep loading trays, and review the results as they arrive or all at th
 - Optional: a systemd user service keeps the front-panel Eject button working with the app
   closed (on the bare host, no container needed; a distrobox runner is also supported), and the app steps it aside while it uses the scanner; see
   [Eject button without the app](docs/eject-watch-service.md).
+
+### Keyboard and workflow settings
+
+Plain letter keys run the tray controls, behind the same gates as the buttons: `S`, `E` and `L`
+do nothing when their button is disabled, `X` needs at least one tray in the list, `F` needs a box
+(collection) that can be finished, and `Enter` is also ignored while a button has keyboard focus
+(for example Eject reached by Tab). Any modifier key, a held (auto-repeating) key, a read-only batch or
+typing in a text field turns them off. **Keyboard shortcuts…** in the overflow menu lists them.
+
+| Key | Action |
+|---|---|
+| `S` | Scan |
+| `E` | Eject holder |
+| `L` | Load next holder |
+| `X` | Open the Export dialog (it never exports by itself) |
+| `F` | Ask to finish the box (a confirm dialog opens with **Cancel** focused, so Enter or Space cannot finish it) |
+| `Enter` | **Load & scan** only, and only when that setting is on; never a plain scan or load |
+
+**Workflow settings…** (overflow menu) holds four switches, saved between runs and all off on a
+fresh profile: export automatically in new batches (only the starting choice for a new batch;
+existing batches keep theirs), eject the holder after each good scan, choose which holder openings
+to scan, and **Load & scan with one press**. The environment variables `OPTICFILM_AUTO_EJECT`,
+`OPTICFILM_SKIP_EMPTY` and `OPTICFILM_LOAD_AND_SCAN` override the saved value in either direction
+and lock the switch in the dialog, which names the variable (see [ENV](docs/ENV.md)). For
+`OPTICFILM_AUTO_EJECT` and `OPTICFILM_SKIP_EMPTY` a value that is not on/off is logged and defers
+to the saved setting; only `OPTICFILM_LOAD_AND_SCAN` treats such a value as off and locks the
+switch. Auto-eject
+applies to a scan only if it was on when that scan started and is still on when it ends.
+
+**Load & scan** is for the moment after an eject this app saw finish (a manual Eject or an
+automatic eject):  you swap the holder, seat it
+and check that it is latched, then press **Holder latched – Load & scan** (or Enter). That press
+is your confirmation. The app loads the holder once, waits up to 30 s for the scanner to report
+ready, then scans; it never retries a load. If the load fails or the scanner is not ready in
+time, nothing is scanned and the window says so ("Check the holder by hand, then use the manual
+buttons"). A power-cycle is not always needed: a load refused before the driver moved leaves the
+holder state as it was. The front-panel Eject button never starts it. The 30 s limit is unmeasured. Load & scan
+has not been run on the scanner: the supervised hardware check has not been done. The project
+keeps it off by default until that check has passed twice; nothing in the app prevents switching
+it on, so do not enable it before then. `OPTICFILM_LOAD_AND_SCAN` set to anything that is not an on/off
+value counts as off and locks the switch.
 
 ```sh
 opticfilm --fake demo-sweep      # demo mode: runs on the fake scanner, no hardware needed

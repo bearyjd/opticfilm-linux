@@ -110,12 +110,17 @@ been run cold through the finished app. See section 7.
 
 ### 2.3 After the scan
 
-- The holder **stays latched** after a scan. Automatic eject exists but is **off by default**: set
-  `OPTICFILM_AUTO_EJECT=1` (also `true`, `yes`, `on`) before starting the app and it runs its own
-  eject once a good scan has fully ended. It skips with a banner ("Automatic eject skipped") and
+- The holder **stays latched** after a scan. Automatic eject exists but is **off by default**: switch it on in
+  **Workflow settings…** (saved between runs) or set `OPTICFILM_AUTO_EJECT=1` (also `true`, `yes`,
+  `on`) before starting the app; the variable overrides the saved setting and locks the switch.
+  It then runs its own eject once a good scan has fully ended. It skips with a banner ("Automatic eject skipped") and
   does not retry if the scan failed, the driver exited with an error, the batch is closing or the
   scanner state is unknown. It has **not** been run on the scanner, supervised or not
   (`docs/ROADMAP.md`: stays off until hardware rungs H5, H7 and H8 have passed twice).
+- **Load & scan** (one press, or Enter, after an eject the app saw finish) is off by default and has not been run on the scanner; its supervised
+  hardware check has not been done; the project keeps it off by default until that has passed
+  twice, and nothing in the app prevents switching it on, so do not enable it before then. See the README
+  section "Keyboard and workflow settings".
 - Eject with the app's **Eject holder** button, or the scanner's front-panel Eject button.
   The panel button works while the app window is idle, not during a scan or holder move.
 - Look at the holder. Confirm it is released before you pull it.
