@@ -1,33 +1,46 @@
-<!-- Generated: 2026-11-01 | Source: main @ 39062e7 | Files: app/ 9 Python + app/qt/ 6 Python + app/qml/ 13 QML = 28 | Token estimate: ~950 -->
+<!-- Generated: 2026-11-06 | Files scanned: 22 app + 12 app/qt + 28 qml = 62 | Token estimate: ~950 -->
 # App layer (Qt-free controller + thin Qt shell)
 
-Paths below are relative to `src/opticfilm_linux/`.
+Paths relative to `src/opticfilm_linux/app/`.
 
-## Files (lines)
-- `app/controller.py` 677: `Controller(HolderCommands)`; `tick() -> bool`, batch lifetime, review edits, worker coordination.
-- `app/state.py` 204: frozen views; `build_state(...) -> AppState` derives buttons, banners, trays and slides.
-- `app/status.py` 119: `StatusPoller`, off-thread status and `take_eject_press()`; press TTL 2 s.
-- `app/holder.py` 171: `HolderCommands.eject_holder()`, `load_next_holder()`, `confirm_scanner_reset()`.
-- `app/eject_watch.py` 173: `EjectWatch.yield_to_app() -> None`, `restore() -> str | None`.
-- `app/jobs.py` 156: `run_export(...) -> None`, `free_space_candidates(store) -> FreeSpaceView`, `run_free_space(...) -> None`.
-- `app/messages.py` 183: UI text, `load_command(driver_dir: Path | None, runner: str | None = None) -> str`.
-- `app/prefs.py` 67: preferences/recent batches.
-- `app/qt/app.py` 149: `main()`, scanner factory, `--fake SWEEP_DIR`, bridge/QML startup.
-- `app/qt/bridge.py` 440: `Bridge` exposes state as QObject properties; slots dispatch controller commands.
-- `app/qt/{images,models,settings}.py` 32/39/16: previews, list model, QSettings.
-- `app/qml/` 13 files: main/start pages, tray/slide/adjustment views and dialogs; `ExportDialog.qml` 119, `LoadHelpDialog.qml` 112.
+## Composition
+Controller(FirstLoadCommands, HolderCommands, LifecycleCommands, ReviewCommands, ScanOpeningsCommands, SelectionCommands)
+ controller.py 654  tick() -> bool, session (_Session: store, runner, poller, holder, scanner, auto_export), worker coordination
+ state.py 634       frozen views; build_state(...) -> AppState (buttons, banners, trays, slides, out-of-date metadata keys)
+ commands.py 577    ReviewCommands: slide edits, status, bulk edit, undo
+ selection_commands.py 402 + selection.py 181: Selection/UndoEntry, click/extend/select_tray, metadata edits on explicit keys
+ lifecycle_commands.py 183: new_batch / open_batch / close_batch (export, re-export, free space, Update JPEGs are in commands.py)
+ holder.py 376      HolderCommands: eject_holder, load_next_holder, confirm_scanner_reset, holder latch sync, auto-eject
+ first_load.py 145  guided first holder load; scan_openings.py 96: which openings the next scan covers
+ status.py 136 StatusPoller (off-thread, take_eject_press TTL 2 s); jobs.py 250 run_export/run_free_space
+ messages.py 220 UI text, load_command(driver_dir, runner); prefs.py 112; provenance.py/raw.py/recovery_checks.py/preview_tokens.py helpers
 
-## Scanner ownership and holder controls
-`Controller._attach(store, readonly)` -> `EjectWatch.yield_to_app()` -> scanner factory -> poller/runner/holder.
-The watcher stops `opticfilm-eject-watch.service` if running, waits for it to settle and checks for surviving `of135i watch` processes; a live watcher prevents scanner opening. Batch replacement keeps it stopped. Detach stops jobs/poller/runner and closes the store; restoration requires idle holder/status work and restarts only a previously running watcher. Failures become banners; read-only batches open no scanner.
+## Hands-free AutoPipeline (auto.py 487)
+arm(n) / run(n): accept_tray(automatic) -> export_batch -> verify_tray_export -> guarded cleanup_raw.
+resume() / retry_missing_destination() / retry_completed_exports(): restart after reopen. Holds on unreviewed flags,
+empty frames, missing album folder; states pending -> exported -> verified. Runs on the controller's serial jobs worker.
+Auto-eject: runner emits ScanFinished(number, ok, driver_exit); holder.py ejects once only if ok and exit code 0
+(OPTICFILM_AUTO_EJECT); refusals say "Automatic eject skipped".
 
-`DriverScanner.status_reading()` -> `StatusPoller` rising edge -> `Controller.tick()` -> `_act_on_eject_button(poller)` -> `eject_holder()`.
-Presses are consumed once, dropped when disabled/busy/stale, and require `can_eject` plus fresh READY/NOT_READY status. Holder moves use a separate worker, refuse queued/running scans and export/free-space jobs, and suppress duplicate clicks. State also guards read-only, holder capability and interruption. Load-next additionally requires its experimental flag and NOT_READY. Reset confirmation sends no scanner command.
+## Scanner ownership
+Controller._attach(store, readonly) -> EjectWatch.yield_to_app() -> scanner factory -> poller/runner/holder.
+eject_watch.py: EjectWatch(runner=run_systemctl, unit, process_check); yield_to_app() stops the unit, waits to settle,
+checks for surviving `of135i watch` (watch_process_running via /proc); restore() restarts only if it was running.
+sandbox.py: in_flatpak(), HOST_PREFIX=("flatpak-spawn","--host"), host_terminal_hint(). In Flatpak, systemctl runs on the
+host; if the host cannot be asked the scanner is not opened (banner). Read-only batches open no scanner.
+Eject press: DriverScanner.status_reading -> StatusPoller edge -> Controller.tick -> _act_on_eject_button -> eject_holder
+(once, needs can_eject and fresh READY/NOT_READY; refuses while scans/export/free-space run).
 
-## Load help and export
-`qt/app.py:load_command_text()` -> `messages.load_command(...)` -> `Bridge.loadCommand` -> `LoadHelpDialog.qml` (copy via `copyLoadCommand()`). `OPTICFILM_DRIVER_RUNNER`: unset/invalid selects distrobox `dev`; `host` runs directly; `distrobox:<name>` selects a container. The shown command wraps `cd -- <driver-dir> && PYTHONPATH=. python3 -m of135i load` in `bash -lc`, with the distrobox prefix when selected. `OPTICFILM_LOAD_COMMAND` overrides the displayed command; `loadRunnerNote` explains its runner.
+## Qt shell (qt/, only PySide6 importer)
+app.py 226 main(argv), scanner_factory(fake_sweep), load_command_text(), create_engine, window geometry
+bridge.py 616 Bridge QObject: properties from AppState, slots -> Controller; start_bridge.py (new batch), selection.py,
+sheet.py (contact-sheet rows), models.py, images.py, destination.py (debounced path checks off the Qt thread), settings.py
+qml/ (28): Main, MainPage, StartPage, TrayPane/TrayQueue, SheetView, SlideThumb, InspectorPanel, ReviewDrawer,
+MetadataStrip + TrayMetaDialog + EstimatedDateField (description/date), ScanOpeningsSelector, Export/FreeSpace/
+LoadHelp/EmptyFrames/Orientation dialogs, FirstLoadCard, StatusArea, Theme.
 
-`ExportDialog.qml` -> `Bridge.startExport(folder_url: str, fmt: str)` -> `Controller.export(directory: Path, fmt: Format)` -> `jobs.run_export(...)` -> immutable `ExportView` -> bridge properties/dialog.
-Bridge flushes pending adjustments before jobs. Empty export explains already-exported, unaccepted and raw-freed counts via `exportMessage`. Re-export confirmation -> `Bridge.reexportAllAccepted()` -> `Controller.reexport_all_accepted()` -> `clear_exported(store)`; next export writes new numbered files, retaining old files. Removed raw scans can block re-export. Free-space confirmation rechecks eligibility and removes confirmed raw scans.
-
-Only `app/qt/` imports PySide6; controller locks protect state, with jobs on worker pools.
+## Flows
+Export: ExportDialog -> Bridge.startExport(folder_url, fmt) -> Controller.export -> jobs.run_export -> ExportView.
+Metadata: MetadataStrip -> Bridge slots -> setSlidesMeta(explicit keys) -> review.edit_meta_many; badge "not yet in JPEG"
+ -> Update JPEGs -> meta_sync.update_exported_metadata.
+Load help: messages.load_command (OPTICFILM_DRIVER_RUNNER; OPTICFILM_LOAD_COMMAND overrides; "host terminal" in Flatpak).
