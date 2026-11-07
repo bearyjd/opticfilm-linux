@@ -74,15 +74,15 @@ Kirigami.Page {
 
     // S, E, L, X, F: the same gates as the buttons; a held key must not repeat a motor move.
     function handleTrayKey(event) {
+        const keys = [Qt.Key_S, Qt.Key_E, Qt.Key_L, Qt.Key_X, Qt.Key_F];
+        const modified = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier);
+        if (modified || keys.indexOf(event.key) < 0) return false;
         if (event.isAutoRepeat) return true;
         if (event.key === Qt.Key_S) { if (bridge.canScan) bridge.scan(); }
         else if (event.key === Qt.Key_E) { if (bridge.canEject) bridge.ejectHolder(); }
         else if (event.key === Qt.Key_L) { if (bridge.canLoadNext) bridge.loadNextHolder(); }
         else if (event.key === Qt.Key_X) { if (bridge.trays.rowCount() > 0) exportDialog.open(); }
-        else if (event.key === Qt.Key_F) {
-            if (bridge.collection !== "" && bridge.canFinishBox) finishBoxDialog.open();
-        }
-        else return false;
+        else if (bridge.collection !== "" && bridge.canFinishBox) finishBoxDialog.open();
         return true;
     }
 
@@ -181,6 +181,7 @@ Kirigami.Page {
     ConfirmDialog {
         id: finishBoxDialog
         objectName: "finishBoxDialog"
+        defaultReject: true
         title: qsTr("Finish this box?")
         subtitle: qsTr("The batch moves on to the next box. Check that every tray of this box is scanned and reviewed.")
         onConfirmed: if (bridge.canFinishBox) bridge.finishBox(true)
@@ -257,9 +258,9 @@ Kirigami.Page {
                 Layout.maximumWidth: implicitWidth
                 Layout.minimumWidth: page.toolbarFloor
                 enabled: bridge.canScan || bridge.canLoadNext || bridge.canFirstLoad || bridge.canConfirmScanner
-                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.visible: hovered && QQC2.ToolTip.text !== ""
                 QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                QQC2.ToolTip.text: bridge.canLoadNext && !bridge.canScan ? qsTr("Load next holder (L)") : qsTr("Scan (S)")
+                QQC2.ToolTip.text: bridge.canLoadNext && !bridge.canScan ? qsTr("Load next holder (L)") : bridge.canScan ? qsTr("Scan (S)") : ""
                 onClicked: page.primaryAction()
             }
             QQC2.Button {

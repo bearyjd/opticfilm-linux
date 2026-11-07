@@ -114,7 +114,7 @@ def _dialog(root, name):
 
 
 def _open_count(root, *names):
-    return [bool(_dialog(root, n).property("opened")) for n in names]
+    return [bool(_dialog(root, n).property("visible")) for n in names]
 
 
 def test_each_key_calls_its_slot_once_when_its_gate_is_open(tray, monkeypatch):
@@ -216,9 +216,96 @@ def test_modified_letters_are_not_the_motor_keys(tray, monkeypatch, name):
     bridge, root, _calls, _warnings = tray
     log = _record(bridge, monkeypatch)
     _force(bridge, can_scan=True, can_eject=True, can_load_next=True, can_finish_box=True)
-    for modifier in (Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.AltModifier):
+    bridge._trays.set_rows([{"number": 1}])
+    QTest.qWait(30)
+    for modifier in (
+        Qt.KeyboardModifier.ControlModifier,
+        Qt.KeyboardModifier.AltModifier,
+        Qt.KeyboardModifier.ShiftModifier,
+        Qt.KeyboardModifier.MetaModifier,
+    ):
         _press(root, name, modifiers=modifier)
     assert log == []
+    assert _open_count(root, "exportDialog", "finishBoxDialog") == [False, False]
+
+
+def test_f_without_a_collection_does_nothing(tray, monkeypatch):
+    bridge, root, _calls, _warnings = tray
+    log = _record(bridge, monkeypatch)
+    _force(bridge, can_finish_box=True, readonly=False, collection="")
+    _press(root, "finish")
+    assert log == []
+    assert _open_count(root, "finishBoxDialog") == [False]
+
+
+@pytest.mark.parametrize("name", ["scan", "eject", "load", "finish"])
+def test_keys_do_nothing_while_a_modal_dialog_is_open(tray, monkeypatch, name):
+    bridge, root, _calls, _warnings = tray
+    log = _record(bridge, monkeypatch)
+    _force(
+        bridge,
+        can_scan=True,
+        can_eject=True,
+        can_load_next=True,
+        can_finish_box=True,
+        readonly=False,
+    )
+    bridge._trays.set_rows([{"number": 1}])
+    QTest.qWait(30)
+    export = _dialog(root, "exportDialog")
+    _press(root, "export")
+    _wait(bridge, lambda: export.property("opened"), label="export dialog")
+    _press(root, name)
+    assert log == []
+    assert _open_count(root, "finishBoxDialog") == [False]
+
+
+def test_held_review_keys_still_repeat(tray, monkeypatch):
+    bridge, root, _calls, _warnings = tray
+    seen: list[str] = []
+    monkeypatch.setattr(bridge._controller, "move_focus", lambda *a: seen.append("move"))
+    monkeypatch.setattr(
+        bridge._controller, "toggle_selection_accepted", lambda: seen.append("space")
+    )
+    _force(bridge, readonly=False)
+    for key in (Qt.Key.Key_Space, Qt.Key.Key_Right):
+        event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True)
+        QCoreApplication.sendEvent(root, event)
+    QTest.qWait(30)
+    assert seen == ["space", "move"]
+
+
+def test_f_then_enter_or_space_does_not_finish_the_box(tray, monkeypatch):
+    bridge, root, _calls, _warnings = tray
+    log = _record(bridge, monkeypatch)
+    _force(bridge, can_finish_box=True, readonly=False)
+    finish = _dialog(root, "finishBoxDialog")
+    _press(root, "finish")
+    _wait(bridge, lambda: finish.property("opened"), label="finish dialog")
+    cancel = finish.findChild(QQuickItem, "confirmCancel")
+    yes = finish.findChild(QQuickItem, "confirmAccept")
+    _wait(bridge, lambda: cancel.property("activeFocus"), label="Cancel focused")
+    assert not yes.property("activeFocus")
+    QTest.keyClick(root, Qt.Key.Key_Space)
+    QTest.qWait(50)
+    assert log == []
+    finish.open()
+    QTest.keyClick(root, Qt.Key.Key_Return)
+    QTest.qWait(50)
+    assert log == []
+    assert not finish.property("opened")  # Enter on the focused Cancel closes it
+
+
+def test_an_explicit_yes_still_finishes_the_box(tray, monkeypatch):
+    bridge, root, _calls, _warnings = tray
+    log = _record(bridge, monkeypatch)
+    _force(bridge, can_finish_box=True, readonly=False)
+    finish = _dialog(root, "finishBoxDialog")
+    _press(root, "finish")
+    _wait(bridge, lambda: finish.property("opened"), label="finish dialog")
+    yes = finish.findChild(QQuickItem, "confirmAccept")
+    QMetaObject.invokeMethod(yes, "click")
+    _wait(bridge, lambda: log == ["finishTrue"], label="confirmed finish")
 
 
 def test_keys_typed_into_a_text_field_do_nothing(tray, monkeypatch):
