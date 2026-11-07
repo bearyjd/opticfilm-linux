@@ -116,6 +116,11 @@ been run cold through the finished app. See section 7.
   does not retry if the scan failed, the driver exited with an error, the batch is closing or the
   scanner state is unknown. It has **not** been run on the scanner, supervised or not
   (`docs/ROADMAP.md`: stays off until hardware rungs H5, H7 and H8 have passed twice).
+- Automatic eject can also be switched on in **Workflow settings…** (saved between runs); the
+  environment variable overrides it and locks the switch. **Load & scan** (one press, or Enter,
+  after an app eject) is off by default and has not been run on the scanner; its supervised
+  hardware check has not been done and it stays off until that passes twice. See the README
+  section "Keyboard and workflow settings".
 - Eject with the app's **Eject holder** button, or the scanner's front-panel Eject button.
   The panel button works while the app window is idle, not during a scan or holder move.
 - Look at the holder. Confirm it is released before you pull it.

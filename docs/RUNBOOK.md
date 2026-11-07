@@ -36,6 +36,13 @@ holder** uses `load --next-strip` and is enabled by default; set `OPTICFILM_NEXT
 to disable it (see [ENV.md](ENV.md)). The first load after power-on still requires the interactive
 terminal command above.
 
+Keys `S`, `E`, `L`, `X` and `F` run the matching tray controls (`F` asks to confirm first). The
+optional **Load & scan with one press** setting (**Workflow settings…**; Enter) is off by default
+and has never been run on the scanner; the supervised hardware check has not been done, and it
+stays off until it passes twice. Keep hands clear of the slot and watch the holder while it runs.
+If it reports a load error or the scanner not ready within 30 s, nothing was scanned: follow
+Failure recovery below and do not retry. See the README section "Keyboard and workflow settings".
+
 On 2026-11-01, a supervised five-swap holder series and a full tray at 7200 dpi passed on one unit with one operator. This is a solid series, not a reliability figure.
 
 ## Watcher operations and checks
