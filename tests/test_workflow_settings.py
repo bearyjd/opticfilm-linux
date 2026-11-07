@@ -106,16 +106,37 @@ def test_load_and_scan_is_off_on_a_fresh_profile():
     assert "load_and_scan" not in result["env_locked"]
 
 
-@pytest.mark.parametrize("env", [None, "1", "0", "junk"])
+@pytest.mark.parametrize(
+    ("env", "expected", "locked"),
+    [
+        (None, None, False),  # unset: the saved value decides
+        ("", None, False),  # blank counts as unset
+        ("1", True, True),
+        ("on", True, True),
+        ("0", False, True),
+        ("off", False, True),
+        ("maybe", False, True),  # set but unreadable: fails safe to OFF, locked
+        ("2", False, True),
+    ],
+)
 @pytest.mark.parametrize("pref", [False, True])
-def test_load_and_scan_env_beats_the_saved_value(monkeypatch, env, pref):
+def test_load_and_scan_env_beats_the_saved_value(monkeypatch, env, expected, locked, pref):
     if env is not None:
         monkeypatch.setenv(LOAD_AND_SCAN_ENV, env)
     store = MemoryPrefs()
     preferences.remember_switch(store, preferences.LOAD_AND_SCAN_KEY, pref)
     result = startup_switches(store)
-    assert result["load_and_scan"] is {"1": True, "0": False}.get(env, pref)
-    assert ("load_and_scan" in result["env_locked"]) is (env in ("1", "0"))
+    assert result["load_and_scan"] is (pref if expected is None else expected)
+    assert ("load_and_scan" in result["env_locked"]) is locked
+
+
+def test_junk_in_the_other_switches_still_defers_to_the_saved_value(monkeypatch):
+    monkeypatch.setenv(AUTO_EJECT_ENV, "maybe")
+    store = MemoryPrefs()
+    preferences.remember_switch(store, preferences.AUTO_EJECT_KEY, True)
+    result = startup_switches(store)
+    assert result["auto_eject"] is True
+    assert "auto_eject" not in result["env_locked"]
 
 
 def test_startup_skip_gaps_stays_env_only(monkeypatch):

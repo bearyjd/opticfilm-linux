@@ -45,6 +45,18 @@ def env_switch(name: str) -> bool | None:
     return None
 
 
+def env_switch_fail_off(name: str) -> bool | None:
+    """Like ``env_switch``, but a set value that cannot be read is False (logged), not None.
+
+    For switches that move the motor: an unreadable value must lock them off, never defer to a
+    saved ON."""
+    value = env_switch(name)
+    if value is None and (os.environ.get(name) or "").strip():
+        _log.warning("treating %s as off (locked) until it says on/off", name)
+        return False
+    return value
+
+
 def _switched_on(name: str) -> bool:
     """Off unless explicitly on: an unreadable value must not enable an untested path."""
     return os.environ.get(name, "").strip().lower() in SWITCH_ON

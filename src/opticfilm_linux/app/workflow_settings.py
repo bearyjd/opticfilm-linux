@@ -22,6 +22,7 @@ from opticfilm_linux.scanner.select import (
     LOAD_AND_SCAN_ENV,
     SKIP_EMPTY_ENV,
     env_switch,
+    env_switch_fail_off,
     skip_gaps_enabled,
 )
 
@@ -48,6 +49,7 @@ def resolve_switch(env: bool | None, pref: bool) -> bool:
 def startup_switches(prefs: Prefs) -> dict:
     """``Controller`` keyword arguments for the saved switches and the environment."""
     envs = {name: env_switch(env) for name, env in ENV_NAMES.items()}
+    envs["load_and_scan"] = env_switch_fail_off(LOAD_AND_SCAN_ENV)  # moves the motor: fail safe
     values = {
         name: resolve_switch(env, read_switch(prefs, SAVED_KEYS[name]))
         for name, env in envs.items()
