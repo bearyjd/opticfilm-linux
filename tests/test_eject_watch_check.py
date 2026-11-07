@@ -640,7 +640,9 @@ def test_cleanup_stops_and_disables_before_journal_diagnostics(rig):
 def test_journal_calls_are_bounded_even_when_the_tool_hangs(rig):
     _short_timeouts(rig)
     journal = rig.tmp / "bin" / "journalctl"
-    _exe(journal, '#!/bin/bash\ntrap "" TERM\nsleep 5\n')
+    # exec: no orphaned child can hold the pipe open if a non-GNU timeout (uutils)
+    # signals only the direct child; the ignored-TERM disposition survives exec.
+    _exe(journal, '#!/bin/bash\ntrap "" TERM\nexec sleep 5\n')
     before = time.monotonic()
     r, _ = rig.run(rig.driver)
     assert time.monotonic() - before < 4
