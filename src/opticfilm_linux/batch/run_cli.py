@@ -10,7 +10,7 @@ import dataclasses
 import sys
 from pathlib import Path
 
-from opticfilm_linux.app.auto import MISSING_DESTINATION, AutoPipeline
+from opticfilm_linux.app.auto import MISSING_DESTINATION, READY, AutoPipeline
 from opticfilm_linux.app.batch_rules import box_section_refusal, check_export_directory
 from opticfilm_linux.batch.model import BatchManifest, TrayRecord
 from opticfilm_linux.batch.runner import BatchRunner
@@ -61,10 +61,10 @@ def add_run_commands(sub: argparse._SubParsersAction) -> None:
     held.add_argument("--yes", action="store_true", help="I checked the exported JPEGs")
 
 
-def _changes(manifest: BatchManifest, args: argparse.Namespace) -> BatchManifest:
+def _changes(manifest: BatchManifest, args: argparse.Namespace, out: Path | None) -> BatchManifest:
     """The manifest the flags ask for; raises ``RunRefused`` for anything not allowed."""
     wanted = {
-        "export_dir": str(args.out.expanduser().absolute()) if args.out else None,
+        "export_dir": str(out) if out else None,
         "jpeg_size": args.jpeg_size,
         "auto_export": args.auto_export,
         "keep_raw": args.keep_raw,
@@ -87,15 +87,25 @@ def _changes(manifest: BatchManifest, args: argparse.Namespace) -> BatchManifest
     )
 
 
+def _out_path(args: argparse.Namespace) -> Path | None:
+    if args.out is None:
+        return None
+    try:
+        return args.out.expanduser().absolute()
+    except (RuntimeError, OSError) as exc:  # e.g. ~unknownuser, or no working directory
+        raise RunRefused(f"cannot use --out {args.out}: {exc}") from exc
+
+
 def _persist_flags(store: BatchStore, args: argparse.Namespace) -> None:
-    if args.out is not None:
+    out = _out_path(args)
+    if out is not None:
         try:
-            check_export_directory(store.directory, args.out.expanduser().absolute())
+            check_export_directory(store.directory, out)
         except BatchError as exc:
             raise RunRefused(str(exc)) from exc
     before = store.snapshot()
     try:
-        after = store.update(lambda manifest: _changes_or_refuse(manifest, args))
+        after = store.update(lambda manifest: _changes_or_refuse(manifest, args, out))
     except BatchError as exc:
         raise RunRefused(str(exc)) from exc
     for name in (*CHANGEABLE, "box", "section"):
@@ -105,22 +115,26 @@ def _persist_flags(store: BatchStore, args: argparse.Namespace) -> None:
             print(f"changed {name}: {old!r} -> {new!r}")
 
 
-def _changes_or_refuse(manifest: BatchManifest, args: argparse.Namespace) -> BatchManifest:
+def _changes_or_refuse(
+    manifest: BatchManifest, args: argparse.Namespace, out: Path | None
+) -> BatchManifest:
     try:
-        return _changes(manifest, args)
+        return _changes(manifest, args, out)
     except (RunRefused, ValueError) as exc:
         raise BatchError(str(exc)) from exc
 
 
-def _open_scanner(args: argparse.Namespace) -> Scanner:
-    real = args.fake is None
-    if real and args.count > 1:
+def _precheck(args: argparse.Namespace) -> None:
+    if args.fake is None and args.count > 1:
         raise RunRefused(
             "the real scanner has one holder per run and there is no swap step; use --count 1"
         )
     if interrupted.is_pending():
         raise RunRefused(interrupted.refusal_text())
-    if not real:
+
+
+def _open_scanner(args: argparse.Namespace) -> Scanner:
+    if args.fake is not None:
         return FakeScanner(args.fake)
     try:
         scanner = real_scanner()
@@ -138,67 +152,91 @@ def _open_scanner(args: argparse.Namespace) -> Scanner:
     return scanner
 
 
+class _Interrupted(Exception):
+    def __init__(self, numbers: tuple[int, ...], scan_in_flight: bool) -> None:
+        super().__init__("interrupted")
+        self.numbers = numbers
+        self.scan_in_flight = scan_in_flight
+
+
+def _drain_backlog(pipeline: AutoPipeline) -> None:
+    """Older trays the pipeline considers eligible are exported or freed too."""
+    for number in pipeline.resume():
+        pipeline.run(number)
+
+
 def _scan_trays(store: BatchStore, scanner: Scanner, count: int) -> list[int]:
     runner = BatchRunner(store, scanner)
     pipeline = AutoPipeline(store)
     numbers: list[int] = []
+    scanning = False
     try:
         runner.resume()
-        for number in pipeline.resume():
-            pipeline.run(number)
+        _drain_backlog(pipeline)
         for _ in range(count):
-            number = runner.scan_tray()
-            numbers.append(number)
+            scanning = True
+            numbers.append(runner.scan_tray())
             runner.wait_scans_idle()
+            scanning = False
             runner.wait_idle()
-            if pipeline.arm(number):  # arm() writes auto="off" when auto-export is off
-                pipeline.run(number)
+            if pipeline.arm(numbers[-1]):  # arm() writes auto="off" when auto-export is off
+                pipeline.run(numbers[-1])
     except KeyboardInterrupt:
-        _print_interrupted(store, numbers)
-        raise _Interrupted from None
+        raise _Interrupted(tuple(numbers), scanning) from None
     finally:
         runner.close()
     return numbers
 
 
-class _Interrupted(Exception):
-    pass
+def _touched(
+    before: BatchManifest, after: BatchManifest, scanned: tuple[int, ...] | list[int]
+) -> list[tuple[TrayRecord, TrayRecord | None]]:
+    old = {t.number: t for t in before.trays}
+
+    def key(tray: TrayRecord | None):
+        return None if tray is None else (tray.stage, tray.auto, tray.raw_removed)
+
+    return [
+        (t, old.get(t.number))
+        for t in after.trays
+        if t.number in scanned or key(t) != key(old.get(t.number))
+    ]
 
 
-def _print_interrupted(store: BatchStore, numbers: list[int]) -> None:
-    print(
-        "interrupted: finishing the scan in progress. If this program is stopped before "
-        "it ends, power-cycle the scanner, load the holder again and run: "
-        f"{interrupted.CONFIRM_COMMAND}",
-        file=sys.stderr,
-    )
-    _print_summary(store, numbers)
+def _summary(tray: TrayRecord, old: TrayRecord | None) -> str:
+    auto = tray.auto or "-"
+    if old is not None and old.auto != tray.auto:
+        auto = f"{old.auto or '-'}->{auto}"
+    raw = "freed" if tray.raw_removed else "kept"
+    return f"tray {tray.number}  {tray.stage}  auto={auto}  raw {raw}"
 
 
-def _summary(tray: TrayRecord) -> str:
-    return f"tray {tray.number}  {tray.stage}  auto={tray.auto or '-'}  raw {_raw(tray)}"
-
-
-def _raw(tray: TrayRecord) -> str:
-    return "freed" if tray.raw_removed else "kept"
-
-
-def _print_summary(store: BatchStore, numbers: list[int]) -> None:
-    for tray in store.snapshot().trays:
-        if tray.number in numbers:
-            print(_summary(tray))
-
-
-def _report(store: BatchStore, directory: Path, numbers: list[int]) -> int:
-    _print_summary(store, numbers)
+def _warn_manual_trays(store: BatchStore) -> None:
     manifest = store.snapshot()
-    trays = [t for t in manifest.trays if t.number in numbers]
-    bad = [t for t in trays if t.error or t.auto == "failed"]
+    if not manifest.defaults.auto_export:
+        return
+    for tray in manifest.trays:
+        if tray.auto == "off" and tray.stage in READY and not tray.raw_removed:
+            print(
+                f"warning: tray {tray.number} stays manual (auto=off) even with --auto-export; "
+                "export it by hand",
+                file=sys.stderr,
+            )
+
+
+def _report(
+    store: BatchStore, directory: Path, before: BatchManifest, scanned: tuple[int, ...] | list[int]
+) -> int:
+    after = store.snapshot()
+    touched = _touched(before, after, scanned)
+    for tray, old in touched:
+        print(_summary(tray, old))
+    bad = [t for t, _ in touched if t.error or t.auto == "failed"]
     for tray in bad:
         print(f"error: tray {tray.number} failed: {tray.error or tray.auto_error}", file=sys.stderr)
-    if not manifest.defaults.auto_export:
+    if not after.defaults.auto_export:
         print("auto-export is off: the tray(s) wait in review; export is manual")
-    for tray in trays:
+    for tray, _ in touched:
         if tray.auto == "held":
             print(
                 f"raw kept for tray {tray.number}; check the JPEGs, then run "
@@ -207,19 +245,56 @@ def _report(store: BatchStore, directory: Path, numbers: list[int]) -> int:
     return EXIT_FAILED if bad else 0
 
 
+def _interrupted_exit(store: BatchStore, before: BatchManifest, stop: _Interrupted) -> int:
+    if stop.scan_in_flight:
+        print(
+            "interrupted: finishing the scan in progress. If this program is stopped before "
+            "it ends, power-cycle the scanner, load the holder again and run: "
+            f"{interrupted.CONFIRM_COMMAND}",
+            file=sys.stderr,
+        )
+    else:
+        print("interrupted: no scan was in progress", file=sys.stderr)
+    for tray, old in _touched(before, store.snapshot(), stop.numbers):
+        print(_summary(tray, old))
+    return EXIT_INTERRUPTED
+
+
 def run(args: argparse.Namespace) -> int:
     try:
+        _precheck(args)
         with BatchStore.open(args.directory) as store:
+            _persist_flags(store, args)  # before any scan: arm() reads these defaults
+            _warn_manual_trays(store)
             scanner = _open_scanner(args)
-            _persist_flags(store, args)
+            before = store.snapshot()
             try:
                 numbers = _scan_trays(store, scanner, args.count)
-            except _Interrupted:
-                return EXIT_INTERRUPTED
-            return _report(store, args.directory, numbers)
+            except _Interrupted as stop:
+                return _interrupted_exit(store, before, stop)
+            return _report(store, args.directory, before, numbers)
     except RunRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
+    except KeyboardInterrupt:
+        print("interrupted: no scan was in progress", file=sys.stderr)
+        return EXIT_INTERRUPTED
+
+
+def _free_refusal(manifest: BatchManifest, pipeline: AutoPipeline, number: int) -> str | None:
+    tray = next((t for t in manifest.trays if t.number == number), None)
+    if tray is None:
+        return f"tray {number} does not exist"
+    if tray.auto != "held" or tray.raw_removed:
+        return f"tray {number} is not held"
+    candidate = pipeline._release_candidate(manifest)
+    if number != candidate:
+        return f"tray {number} is not the tray to release (tray {candidate} is)"
+    if manifest.defaults.keep_raw:
+        return "keep_raw is set, so raw scans are never freed"
+    if not manifest.defaults.auto_export:
+        return "auto-export is off, so raw scans are never freed automatically"
+    return None
 
 
 def free_held(args: argparse.Namespace) -> int:
@@ -232,16 +307,19 @@ def free_held(args: argparse.Namespace) -> int:
         return EXIT_FAILED
     with BatchStore.open(args.directory) as store:
         pipeline = AutoPipeline(store)
-        tray = next((t for t in store.snapshot().trays if t.number == args.number), None)
-        if tray is None or tray.auto != "held":
-            print(f"error: tray {args.number} is not held", file=sys.stderr)
-            return EXIT_FAILED
+        reason = _free_refusal(store.snapshot(), pipeline, args.number)
+        if reason is not None:
+            print(f"refused: {reason}", file=sys.stderr)
+            return EXIT_REFUSED
+        before = store.snapshot()
         pipeline.confirm_free_held(args.number)
-        for number in pipeline.resume():
-            pipeline.run(number)
-        tray = next(t for t in store.snapshot().trays if t.number == args.number)
+        _drain_backlog(pipeline)
+        after = store.snapshot()
+        for tray, old in _touched(before, after, [args.number]):
+            print(_summary(tray, old))
+        tray = next(t for t in after.trays if t.number == args.number)
         if not tray.raw_removed:
-            reason = tray.auto_error or "verification did not pass"
+            reason = tray.auto_error or "verification or cleanup did not pass"
             print(f"error: raw of tray {args.number} was kept: {reason}", file=sys.stderr)
             return EXIT_FAILED
     print(f"freed the raw scans of tray {args.number}")

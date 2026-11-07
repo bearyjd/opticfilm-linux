@@ -1,6 +1,7 @@
 """``ofscan batch run`` and ``free-held``: headless scan -> accept -> export -> free (fake only)."""
 
 import ast
+import dataclasses
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from opticfilm_linux.cli import main
 from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import ScanError, ScannerStatus
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 
 @pytest.fixture
@@ -115,21 +117,26 @@ def test_free_held_needs_yes_then_frees_raw(batch, synthetic_sweep_dir, tmp_path
 
 def test_free_held_refuses_a_tray_that_is_not_held(batch, synthetic_sweep_dir, capsys):
     _run(batch, synthetic_sweep_dir, "--no-auto-export")
-    assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 2
+    assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 3
     assert "not held" in capsys.readouterr().err
-    assert main(["batch", "free-held", str(batch), "9", "--yes"]) == 2
+    assert main(["batch", "free-held", str(batch), "9", "--yes"]) == 3
+    assert "does not exist" in capsys.readouterr().err
 
 
-def test_two_fake_trays_free_raw_after_release(batch, synthetic_sweep_dir, tmp_path):
+def test_two_fake_trays_free_raw_after_release(batch, synthetic_sweep_dir, tmp_path, capsys):
     out = tmp_path / "album"
     assert _run(batch, synthetic_sweep_dir, "--out", str(out), "--auto-export", "--count", "2") == 0
     first, second = _trays(batch)
     assert first.auto == "held" and not first.raw_removed
     assert not second.raw_removed
+    capsys.readouterr()
     assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 0
     first, second = _trays(batch)
     assert first.raw_removed and second.raw_removed
     assert len(list(out.glob("*.jpg"))) == 8
+    lines = capsys.readouterr().out.splitlines()
+    assert any(ln.startswith("tray 1") and "raw freed" in ln for ln in lines)
+    assert any(ln.startswith("tray 2") and "raw freed" in ln for ln in lines)
 
 
 @pytest.mark.parametrize("where", ["inside", "symlink", "none"])
@@ -252,6 +259,134 @@ def test_export_verification_failure_keeps_raw_and_exits_2(
     (tray,) = _trays(batch)
     assert tray.auto == "failed" and not tray.raw_removed
     assert "damaged" in capsys.readouterr().err
+
+
+def _edit_manifest(path, change):
+    with BatchStore.open(path) as store:
+        store.update(change)
+
+
+def _scan_only(path, sweep):
+    assert main(["batch", "scan", str(path), "--fake", str(sweep)]) == 0
+
+
+@pytest.mark.parametrize("reason", ["keep_raw", "auto_export"])
+def test_free_held_names_the_setting_that_blocks_it(
+    batch, synthetic_sweep_dir, tmp_path, capsys, reason
+):
+    _run(batch, synthetic_sweep_dir, "--out", str(tmp_path / "album"), "--auto-export")
+    capsys.readouterr()
+    _edit_manifest(
+        batch,
+        lambda m: dataclasses.replace(
+            m, defaults=dataclasses.replace(m.defaults, **{reason: reason == "keep_raw"})
+        ),
+    )
+    assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 3
+    assert reason in capsys.readouterr().err.replace("auto-export", "auto_export")
+    assert not _trays(batch)[0].raw_removed
+
+
+def test_free_held_refuses_a_held_tray_that_is_not_the_release_candidate(
+    batch, synthetic_sweep_dir, tmp_path, capsys
+):
+    out = tmp_path / "album"
+    _run(batch, synthetic_sweep_dir, "--out", str(out), "--auto-export", "--count", "2")
+    capsys.readouterr()
+    _edit_manifest(
+        batch,
+        lambda m: dataclasses.replace(
+            m, trays=(m.trays[0], dataclasses.replace(m.trays[1], auto="held"))
+        ),
+    )
+    assert main(["batch", "free-held", str(batch), "2", "--yes"]) == 3
+    assert "not the tray to release" in capsys.readouterr().err
+
+
+def test_old_tray_is_exported_and_reported_by_run(batch, synthetic_sweep_dir, tmp_path, capsys):
+    _scan_only(batch, synthetic_sweep_dir)  # tray 1 waits with auto == ""
+    out = tmp_path / "album"
+    assert _run(batch, synthetic_sweep_dir, "--out", str(out), "--auto-export") == 0
+    first, second = _trays(batch)
+    assert first.auto == "held" and len(list(out.glob("*.jpg"))) == 8
+    lines = capsys.readouterr().out.splitlines()
+    assert any(ln.startswith("tray 1") and "auto=-" in ln and "held" in ln for ln in lines)
+    assert any(ln.startswith("tray 2") for ln in lines)
+
+
+def test_no_auto_export_flips_an_old_pending_tray_to_off_and_says_so(
+    batch, synthetic_sweep_dir, capsys
+):
+    _scan_only(batch, synthetic_sweep_dir)
+    with BatchStore.open(batch) as store:
+        store.update_tray(1, auto="pending")
+    assert _run(batch, synthetic_sweep_dir, "--no-auto-export") == 0
+    assert _trays(batch)[0].auto == "off"
+    assert any(
+        ln.startswith("tray 1") and "pending->off" in ln
+        for ln in capsys.readouterr().out.splitlines()
+    )
+
+
+def test_old_manual_tray_under_auto_export_is_warned_about(
+    batch, synthetic_sweep_dir, tmp_path, capsys
+):
+    _run(batch, synthetic_sweep_dir, "--no-auto-export")
+    capsys.readouterr()
+    out = tmp_path / "album"
+    assert _run(batch, synthetic_sweep_dir, "--out", str(out), "--auto-export") == 0
+    assert "tray 1 stays manual" in capsys.readouterr().err
+    assert _trays(batch)[0].auto == "off"
+
+
+def test_released_latch_is_refused(batch, synthetic_sweep_dir, monkeypatch, capsys):
+    scanner = FakeScanner(synthetic_sweep_dir)
+    scanner.usb_address = (1, 2)
+    monkeypatch.setattr(run_cli, "real_scanner", lambda: scanner)
+    monkeypatch.setattr(run_cli, "load_latch", lambda bus, address: HolderLatch.RELEASED)
+    assert main(["batch", "run", str(batch)]) == 3
+    assert "latch" in capsys.readouterr().err
+    assert _trays(batch) == ()
+
+
+def test_export_settings_cannot_change_after_the_first_tray_is_released(
+    batch, synthetic_sweep_dir, tmp_path, capsys
+):
+    _run(batch, synthetic_sweep_dir, "--out", str(tmp_path / "album"), "--auto-export")
+    assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 0
+    capsys.readouterr()
+    other = tmp_path / "other"
+    assert _run(batch, synthetic_sweep_dir, "--out", str(other), "--auto-export") == 3
+    assert "after releasing the first tray" in capsys.readouterr().err
+    assert len(_trays(batch)) == 1 and not other.exists()
+
+
+def test_ctrl_c_during_export_does_not_talk_about_the_scanner(
+    batch, synthetic_sweep_dir, tmp_path, monkeypatch, capsys
+):
+    def interrupt(self, number):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_cli.AutoPipeline, "run", interrupt)
+    out = tmp_path / "album"
+    assert _run(batch, synthetic_sweep_dir, "--out", str(out), "--auto-export") == 130
+    err = capsys.readouterr().err
+    assert "no scan was in progress" in err and "power-cycle" not in err
+
+
+def test_ctrl_c_before_scanning_exits_130_quietly(batch, synthetic_sweep_dir, monkeypatch, capsys):
+    def interrupt(_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_cli, "_open_scanner", interrupt)
+    assert _run(batch, synthetic_sweep_dir) == 130
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_unresolvable_out_path_is_a_refusal(batch, synthetic_sweep_dir, capsys):
+    assert _run(batch, synthetic_sweep_dir, "--out", "~no_such_user_zz/album") == 3
+    assert "cannot use --out" in capsys.readouterr().err
+    assert _trays(batch) == ()
 
 
 def test_batch_rules_check_export_directory(tmp_path):
