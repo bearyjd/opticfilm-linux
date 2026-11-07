@@ -343,6 +343,7 @@ def test_the_decision_uses_the_exit_code_of_the_event_own_scan(
     """The scanner object only remembers its LATEST scan; the event carries its own."""
     c, scanner = build()
     scanner.scan_exit_code = latest_exit  # as if a later scan had ended meanwhile
+    c._snapshot_auto_eject()  # the event stands for a scan that was started with it on
     c._session.runner.events.put(ScanFinished(1, ok=True, driver_exit=event_exit))
     _settle(c)
     wait_until(c, lambda: scanner.ejects == ejects and (ejects or _banner(c) != ""))

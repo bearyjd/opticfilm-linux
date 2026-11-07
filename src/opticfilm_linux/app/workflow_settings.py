@@ -20,6 +20,9 @@ from opticfilm_linux.scanner.select import (
 ENV_NAMES = {"auto_eject": AUTO_EJECT_ENV, "skip_empty": SKIP_EMPTY_ENV}
 
 
+OPENINGS_DROPPED = "The chosen openings were cleared: the next scan covers all four."
+
+
 def resolve_switch(env: bool | None, pref: bool) -> bool:
     """The environment decides when it is set (either way); otherwise the saved value."""
     return pref if env is None else env
@@ -46,6 +49,7 @@ class WorkflowSettings:
 
     def _init_workflow_settings(self, env_locked: frozenset[str]) -> None:
         self._env_locked = env_locked
+        self._eject_at_start = False  # the auto-eject setting when the running scan was started
 
     @property
     def env_locked(self) -> frozenset[str]:
@@ -66,8 +70,14 @@ class WorkflowSettings:
                 return False
             self._skip_empty = on
             self._skip_gaps = on and self._gaps_requested
-            self._scan_openings = ALL_POSITIONS  # a choice made under the old setting is dropped
+            if self._scan_openings != ALL_POSITIONS:  # a choice made under the old setting
+                self._banner = Banner(OPENINGS_DROPPED)
+            self._scan_openings = ALL_POSITIONS
             return True
+
+    def _snapshot_auto_eject(self) -> None:
+        """Called under the lock when a scan is reserved: the setting that scan starts with."""
+        self._eject_at_start = self._auto_eject
 
     def _refuse_locked(self, name: str) -> bool:
         """Called under the lock."""

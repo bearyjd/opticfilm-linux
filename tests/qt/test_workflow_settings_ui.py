@@ -180,3 +180,13 @@ def test_wording_says_unproven_on_the_scanner(window):
     for name in ("autoExportSetting", "autoEjectSetting"):
         labels = [c.property("text") for c in _find(root, name).children()]
         assert any("not yet proven" in (t or "") for t in labels), name
+
+
+def test_a_locked_change_shows_the_banner_and_is_not_saved(window):
+    prefs = MemoryPrefs()
+    bridge, controller, _root, _ = window(prefs, OPTICFILM_SKIP_EMPTY="0")
+    bridge.setSkipEmpty(True)
+    assert controller.skip_empty_enabled is False
+    assert preferences.read_switch(prefs, preferences.SKIP_EMPTY_KEY) is False
+    _wait_for(lambda: bridge.poll() or bridge.hasBanner)
+    assert "OPTICFILM_SKIP_EMPTY" in bridge.bannerMessage
