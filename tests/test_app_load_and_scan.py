@@ -434,7 +434,7 @@ def test_a_click_while_a_click_is_running_starts_nothing_more(build, tmp_path):
     controller, scanner = build()
     gate = threading.Event()
     released(controller, scanner, tmp_path)
-    scanner.during_load = gate.wait
+    scanner.during_load = lambda: gate.wait(SHORT)
     controller.load_and_scan()
     wait_phase(controller, "loading")
     controller.load_and_scan()  # a key repeat
@@ -451,3 +451,21 @@ def test_bad_status_message_names_the_status(build, tmp_path):
     controller.load_and_scan()
     wait_phase(controller, "failed")
     wait_until(controller, lambda: banner_text(controller) == STOPPED_ANOMALY, SHORT)
+
+
+def test_a_manual_scan_during_the_wait_is_refused_and_only_one_scan_runs(build, tmp_path):
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+    scanner.after_load = ScannerStatus.NOT_READY
+    controller.load_and_scan()
+    wait_phase(controller, "waiting_ready")
+
+    controller.scan()  # holder still reserved by the chain
+    wait_until(controller, lambda: banner_text(controller) == WAIT_HOLDER, SHORT)
+    scanner.current_status = ScannerStatus.READY
+
+    wait_until(controller, lambda: scanner.scans == 1)
+    wait_phase(controller, "idle")
+    settle(controller)
+    assert scanner.scans == 1
+    assert scanner.load_calls == 1
