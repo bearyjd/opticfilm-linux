@@ -96,13 +96,22 @@ def _out_path(args: argparse.Namespace) -> Path | None:
         raise RunRefused(f"cannot use --out {args.out}: {exc}") from exc
 
 
-def _persist_flags(store: BatchStore, args: argparse.Namespace) -> None:
+def _validate_flags(store: BatchStore, args: argparse.Namespace) -> Path | None:
+    """Every pure refusal, computed on the loaded manifest; writes nothing."""
     out = _out_path(args)
     if out is not None:
         try:
             check_export_directory(store.directory, out)
         except BatchError as exc:
             raise RunRefused(str(exc)) from exc
+    try:
+        _changes(store.snapshot(), args, out)
+    except ValueError as exc:
+        raise RunRefused(str(exc)) from exc
+    return out
+
+
+def _persist_flags(store: BatchStore, args: argparse.Namespace, out: Path | None) -> None:
     before = store.snapshot()
     try:
         after = store.update(lambda manifest: _changes_or_refuse(manifest, args, out))
@@ -264,9 +273,10 @@ def run(args: argparse.Namespace) -> int:
     try:
         _precheck(args)
         with BatchStore.open(args.directory) as store:
-            _persist_flags(store, args)  # before any scan: arm() reads these defaults
+            out = _validate_flags(store, args)  # 1: pure refusals, nothing written
+            scanner = _open_scanner(args)  # 2-3: scanner state; read-only refusals
+            _persist_flags(store, args, out)  # 4: the only write; arm() reads these defaults
             _warn_manual_trays(store)
-            scanner = _open_scanner(args)
             before = store.snapshot()
             try:
                 numbers = _scan_trays(store, scanner, args.count)
@@ -282,18 +292,35 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _free_refusal(manifest: BatchManifest, pipeline: AutoPipeline, number: int) -> str | None:
+    """Mirror the silent returns of ``confirm_free_held``, read-only, with a reason for each."""
     tray = next((t for t in manifest.trays if t.number == number), None)
     if tray is None:
         return f"tray {number} does not exist"
-    if tray.auto != "held" or tray.raw_removed:
+    if tray.auto != "held" or tray.raw_removed or tray.stage not in READY:
         return f"tray {number} is not held"
     candidate = pipeline._release_candidate(manifest)
+    if candidate is None:
+        return "no tray is waiting to be released"
     if number != candidate:
         return f"tray {number} is not the tray to release (tray {candidate} is)"
     if manifest.defaults.keep_raw:
         return "keep_raw is set, so raw scans are never freed"
     if not manifest.defaults.auto_export:
         return "auto-export is off, so raw scans are never freed automatically"
+    return _review_refusal(pipeline, tray)
+
+
+def _review_refusal(pipeline: AutoPipeline, tray: TrayRecord) -> str | None:
+    waiting = pipeline._awaiting_review(tray)
+    if waiting:
+        return f"slides {', '.join(map(str, waiting))} await your review"
+    excluded = pipeline._owner_excluded(tray)
+    if excluded:
+        return f"slides {', '.join(map(str, excluded))} were excluded by your decision"
+    if pipeline._unreviewed_flags(tray):
+        return "some slides have flags you have not reviewed"
+    if any(s.preview_stale for s in tray.slides):
+        return "previews are out of date; wait for them, then try again"
     return None
 
 
@@ -304,7 +331,7 @@ def free_held(args: argparse.Namespace) -> int:
             f"then run: ofscan batch free-held {args.directory} {args.number} --yes",
             file=sys.stderr,
         )
-        return EXIT_FAILED
+        return EXIT_REFUSED
     with BatchStore.open(args.directory) as store:
         pipeline = AutoPipeline(store)
         reason = _free_refusal(store.snapshot(), pipeline, args.number)

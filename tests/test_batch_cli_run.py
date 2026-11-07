@@ -2,6 +2,7 @@
 
 import ast
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 from opticfilm_linux.app import batch_rules
 from opticfilm_linux.batch import export as exports
 from opticfilm_linux.batch import run_cli
-from opticfilm_linux.batch.model import BatchDefaults, TrayStage
+from opticfilm_linux.batch.model import BatchDefaults, SlideStatus, TrayStage
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.cli import main
 from opticfilm_linux.scanner import interrupted
@@ -108,7 +109,7 @@ def test_free_held_needs_yes_then_frees_raw(batch, synthetic_sweep_dir, tmp_path
     out = tmp_path / "album"
     _run(batch, synthetic_sweep_dir, "--out", str(out), "--auto-export")
     capsys.readouterr()
-    assert main(["batch", "free-held", str(batch), "1"]) == 2
+    assert main(["batch", "free-held", str(batch), "1"]) == 3
     assert not _trays(batch)[0].raw_removed
     assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 0
     assert _trays(batch)[0].raw_removed
@@ -195,12 +196,38 @@ def test_real_scanner_refuses_more_than_one_tray_before_building_it(batch, monke
     assert _trays(batch) == ()
 
 
-def test_real_scanner_not_ready_is_refused(batch, synthetic_sweep_dir, monkeypatch, capsys):
-    scanner = FakeScanner(synthetic_sweep_dir, statuses=(ScannerStatus.NOT_READY,))
+def _manifest_hash(path):
+    return hashlib.sha256((path / "batch.json").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("status", "text"),
+    [(ScannerStatus.NOT_READY, "not ready"), (ScannerStatus.BUSY, "busy")],
+)
+def test_real_scanner_not_usable_is_refused_without_touching_the_manifest(
+    batch, synthetic_sweep_dir, tmp_path, monkeypatch, capsys, status, text
+):
+    scanner = FakeScanner(synthetic_sweep_dir, statuses=(status,))
     monkeypatch.setattr(run_cli, "real_scanner", lambda: scanner)
-    assert main(["batch", "run", str(batch)]) == 3
-    assert "not ready" in capsys.readouterr().err
-    assert _trays(batch) == ()
+    before = _manifest_hash(batch)
+    assert (
+        main(
+            [
+                "batch",
+                "run",
+                str(batch),
+                "--out",
+                str(tmp_path / "album"),
+                "--auto-export",
+                "--keep-raw",
+                "--jpeg-size",
+                "3600",
+            ]
+        )
+        == 3
+    )
+    assert text in capsys.readouterr().err
+    assert _trays(batch) == () and _manifest_hash(batch) == before
 
 
 def test_real_scanner_ready_runs_one_tray(batch, synthetic_sweep_dir, monkeypatch):
@@ -209,11 +236,24 @@ def test_real_scanner_ready_runs_one_tray(batch, synthetic_sweep_dir, monkeypatc
     assert len(_trays(batch)) == 1
 
 
-def test_interrupted_marker_is_refused(batch, synthetic_sweep_dir, capsys):
+def test_interrupted_marker_is_refused(batch, synthetic_sweep_dir, tmp_path, capsys):
     interrupted.begin("scan")
-    assert _run(batch, synthetic_sweep_dir) == 3
+    before = _manifest_hash(batch)
+    assert (
+        _run(
+            batch,
+            synthetic_sweep_dir,
+            "--out",
+            str(tmp_path / "album"),
+            "--auto-export",
+            "--keep-raw",
+            "--jpeg-size",
+            "3600",
+        )
+        == 3
+    )
     assert "cut off" in capsys.readouterr().err
-    assert _trays(batch) == ()
+    assert _trays(batch) == () and _manifest_hash(batch) == before
 
 
 def test_old_manifest_without_export_keys_runs(batch, synthetic_sweep_dir, tmp_path):
@@ -303,6 +343,77 @@ def test_free_held_refuses_a_held_tray_that_is_not_the_release_candidate(
     assert "not the tray to release" in capsys.readouterr().err
 
 
+def test_free_held_with_no_tray_waiting_does_not_say_none(
+    batch, synthetic_sweep_dir, tmp_path, capsys
+):
+    out = tmp_path / "album"
+    _run(batch, synthetic_sweep_dir, "--out", str(out), "--auto-export", "--count", "2")
+
+    def edit(manifest):
+        first, second = manifest.trays
+        return dataclasses.replace(
+            manifest,
+            trays=(
+                dataclasses.replace(first, raw_removed=True),
+                dataclasses.replace(second, auto="held", stage=TrayStage.REVIEW),
+            ),
+        )
+
+    _edit_manifest(batch, edit)
+    capsys.readouterr()
+    assert main(["batch", "free-held", str(batch), "2", "--yes"]) == 3
+    err = capsys.readouterr().err
+    assert "None" not in err and "no tray is waiting to be released" in err
+
+
+def _first_slide(change):
+    def edit(manifest):
+        tray = manifest.trays[0]
+        slides = (change(tray.slides[0]), *tray.slides[1:])
+        return dataclasses.replace(
+            manifest, trays=(dataclasses.replace(tray, slides=slides), *manifest.trays[1:])
+        )
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    ("change", "text"),
+    [
+        (lambda s: dataclasses.replace(s, status=SlideStatus.NEEDS_LOOK), "await your review"),
+        (
+            lambda s: dataclasses.replace(s, status=SlideStatus.NEEDS_LOOK, owner_decided=True),
+            "excluded",
+        ),
+        (lambda s: dataclasses.replace(s, preview_stale=True), "previews"),
+    ],
+)
+def test_free_held_names_review_and_preview_blockers(
+    batch, synthetic_sweep_dir, tmp_path, capsys, change, text
+):
+    _run(batch, synthetic_sweep_dir, "--out", str(tmp_path / "album"), "--auto-export")
+    _edit_manifest(batch, _first_slide(change))
+    capsys.readouterr()
+    assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 3
+    err = capsys.readouterr().err
+    assert text in err and "did not pass" not in err
+    assert not _trays(batch)[0].raw_removed
+
+
+def test_free_held_names_unreviewed_flags(batch, synthetic_sweep_dir, tmp_path, capsys):
+    _run(batch, synthetic_sweep_dir, "--out", str(tmp_path / "album"), "--auto-export")
+    _edit_manifest(
+        batch,
+        lambda m: dataclasses.replace(
+            m, trays=(dataclasses.replace(m.trays[0], auto_flagged=(1,)), *m.trays[1:])
+        ),
+    )
+    capsys.readouterr()
+    assert main(["batch", "free-held", str(batch), "1", "--yes"]) == 3
+    assert "flags" in capsys.readouterr().err
+    assert not _trays(batch)[0].raw_removed
+
+
 def test_old_tray_is_exported_and_reported_by_run(batch, synthetic_sweep_dir, tmp_path, capsys):
     _scan_only(batch, synthetic_sweep_dir)  # tray 1 waits with auto == ""
     out = tmp_path / "album"
@@ -339,14 +450,30 @@ def test_old_manual_tray_under_auto_export_is_warned_about(
     assert _trays(batch)[0].auto == "off"
 
 
-def test_released_latch_is_refused(batch, synthetic_sweep_dir, monkeypatch, capsys):
+def test_released_latch_is_refused(batch, synthetic_sweep_dir, tmp_path, monkeypatch, capsys):
     scanner = FakeScanner(synthetic_sweep_dir)
     scanner.usb_address = (1, 2)
     monkeypatch.setattr(run_cli, "real_scanner", lambda: scanner)
     monkeypatch.setattr(run_cli, "load_latch", lambda bus, address: HolderLatch.RELEASED)
-    assert main(["batch", "run", str(batch)]) == 3
+    before = _manifest_hash(batch)
+    assert (
+        main(
+            [
+                "batch",
+                "run",
+                str(batch),
+                "--out",
+                str(tmp_path / "album"),
+                "--auto-export",
+                "--keep-raw",
+                "--jpeg-size",
+                "3600",
+            ]
+        )
+        == 3
+    )
     assert "latch" in capsys.readouterr().err
-    assert _trays(batch) == ()
+    assert _trays(batch) == () and _manifest_hash(batch) == before
 
 
 def test_export_settings_cannot_change_after_the_first_tray_is_released(

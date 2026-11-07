@@ -129,7 +129,8 @@ ofscan batch free-held BATCH 1 --yes     # after you checked tray 1's JPEGs
 - It never loads, ejects or confirms the latch. With the real scanner it refuses `--count` above 1,
   a scanner that is not ready, a released latch, and a pending "scanner cut off" mark (exit 3).
 - Tray 1 keeps its raw scans until `free-held`. Exit codes: 0 ok, 2 tray or export failed
-  (raw kept), 3 refused before scanning, 130 interrupted.
+  (raw kept), 3 refused before anything is written or scanned (`free-held`: 3 for any refusal,
+  including a missing `--yes`), 130 interrupted.
 - `--box` and `--section` only apply while the current section has no trays.
 
 ## 3. Review, export and swap trays
