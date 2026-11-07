@@ -20,6 +20,7 @@ SKIP_EMPTY_ENV = "OPTICFILM_SKIP_EMPTY"  # on: offer "Slides in this holder" (sc
 SKIP_GAPS_ENV = "OPTICFILM_SKIP_GAPS"  # on, with SKIP_EMPTY: any set of openings, e.g. 1,3,4
 # The app's own eject after a good tray (plan rungs H5/H7/H8, untested on hardware): off.
 AUTO_EJECT_ENV = "OPTICFILM_AUTO_EJECT"
+LOAD_AND_SCAN_ENV = "OPTICFILM_LOAD_AND_SCAN"  # on/off decides over the saved setting
 
 
 EJECT_BUTTON_OFF = ("0", "false", "no", "off")
@@ -42,6 +43,18 @@ def env_switch(name: str) -> bool | None:
         return False
     _log.warning("ignoring %s=%r: expected on/off, 1/0, true/false or yes/no", name, raw)
     return None
+
+
+def env_switch_fail_off(name: str) -> bool | None:
+    """Like ``env_switch``, but a set value that cannot be read is False (logged), not None.
+
+    For switches that move the motor: an unreadable value must lock them off, never defer to a
+    saved ON."""
+    value = env_switch(name)
+    if value is None and (os.environ.get(name) or "").strip():
+        _log.warning("treating %s as off (locked) until it says on/off", name)
+        return False
+    return value
 
 
 def _switched_on(name: str) -> bool:

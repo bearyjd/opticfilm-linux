@@ -144,6 +144,7 @@ Kirigami.ApplicationWindow {
 
     Kirigami.PromptDialog {
         id: waitDialog
+        objectName: "waitDialog"
 
         title: qsTr("A scan is running")
         subtitle: qsTr("A scan cannot be stopped safely. Wait for it to finish and then close, or keep working.")

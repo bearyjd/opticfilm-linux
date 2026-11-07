@@ -100,5 +100,14 @@ Kirigami.Dialog {
             onToggled: on => bridge.setSkipEmpty(on)
             switchObject.objectName: "skipEmptySwitch"
         }
+        Setting {
+            objectName: "loadAndScanSetting"
+            label: qsTr("Load & scan with one press")
+            detail: qsTr("After an eject, one press (or Enter) loads the next holder, waits for the scanner and scans it. Press it only when the holder is seated and latched. Not yet proven on the scanner; watch the first few holders.")
+            value: bridge.loadAndScanEnabled
+            lockedBy: bridge.loadAndScanLockedBy
+            onToggled: on => bridge.setLoadAndScan(on)
+            switchObject.objectName: "loadAndScanSwitch"
+        }
     }
 }

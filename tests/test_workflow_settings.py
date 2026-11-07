@@ -9,9 +9,14 @@ from opticfilm_linux.app.prefs import MemoryPrefs
 from opticfilm_linux.app.workflow_settings import resolve_switch, startup_switches
 from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.select import AUTO_EJECT_ENV, SKIP_EMPTY_ENV
+from opticfilm_linux.scanner.select import AUTO_EJECT_ENV, LOAD_AND_SCAN_ENV, SKIP_EMPTY_ENV
 
-ENVS = ("OPTICFILM_AUTO_EJECT", "OPTICFILM_SKIP_EMPTY", "OPTICFILM_SKIP_GAPS")
+ENVS = (
+    "OPTICFILM_AUTO_EJECT",
+    "OPTICFILM_SKIP_EMPTY",
+    "OPTICFILM_SKIP_GAPS",
+    "OPTICFILM_LOAD_AND_SCAN",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +58,9 @@ def test_old_prefs_without_the_keys_load_unchanged():
     store = MemoryPrefs()
     preferences.remember_theme(store, "light")
     preferences.remember_export(store, "/tmp/x", "png8", "3600")
-    assert [preferences.read_switch(store, k) for k in preferences.SWITCH_KEYS] == [False] * 3
+    assert [preferences.read_switch(store, k) for k in preferences.SWITCH_KEYS] == [False] * len(
+        preferences.SWITCH_KEYS
+    )
     assert preferences.read_theme(store) == "light"
     assert preferences.export_defaults(store).format == "png8"
 
@@ -93,6 +100,45 @@ def test_startup_switches_apply_the_matrix(monkeypatch, env, pref):
     assert result["env_locked"] == (frozenset({"auto_eject", "skip_empty"}) if locked else set())
 
 
+def test_load_and_scan_is_off_on_a_fresh_profile():
+    result = startup_switches(MemoryPrefs())
+    assert result["load_and_scan"] is False
+    assert "load_and_scan" not in result["env_locked"]
+
+
+@pytest.mark.parametrize(
+    ("env", "expected", "locked"),
+    [
+        (None, None, False),  # unset: the saved value decides
+        ("", None, False),  # blank counts as unset
+        ("1", True, True),
+        ("on", True, True),
+        ("0", False, True),
+        ("off", False, True),
+        ("maybe", False, True),  # set but unreadable: fails safe to OFF, locked
+        ("2", False, True),
+    ],
+)
+@pytest.mark.parametrize("pref", [False, True])
+def test_load_and_scan_env_beats_the_saved_value(monkeypatch, env, expected, locked, pref):
+    if env is not None:
+        monkeypatch.setenv(LOAD_AND_SCAN_ENV, env)
+    store = MemoryPrefs()
+    preferences.remember_switch(store, preferences.LOAD_AND_SCAN_KEY, pref)
+    result = startup_switches(store)
+    assert result["load_and_scan"] is (pref if expected is None else expected)
+    assert ("load_and_scan" in result["env_locked"]) is locked
+
+
+def test_junk_in_the_other_switches_still_defers_to_the_saved_value(monkeypatch):
+    monkeypatch.setenv(AUTO_EJECT_ENV, "maybe")
+    store = MemoryPrefs()
+    preferences.remember_switch(store, preferences.AUTO_EJECT_KEY, True)
+    result = startup_switches(store)
+    assert result["auto_eject"] is True
+    assert "auto_eject" not in result["env_locked"]
+
+
 def test_startup_skip_gaps_stays_env_only(monkeypatch):
     monkeypatch.setenv("OPTICFILM_SKIP_GAPS", "1")
     assert startup_switches(MemoryPrefs())["skip_gaps"] is True
@@ -129,6 +175,27 @@ def test_env_locked_switch_refuses_a_change_and_says_why(sweep600_dir, tmp_path)
         wait_until(c, lambda: c.state().banner is not None)
         assert AUTO_EJECT_ENV in c.state().banner.message
         assert c.set_skip_empty(True) is True  # the other switch is not locked
+    finally:
+        c.shutdown()
+
+
+def test_load_and_scan_toggles_live_and_its_env_lock_refuses(sweep600_dir, tmp_path):
+    c = _controller(sweep600_dir, tmp_path)
+    try:
+        assert c.load_and_scan_enabled is False
+        assert c.set_load_and_scan(True) is True
+        assert c.load_and_scan_enabled is True
+        assert c.set_load_and_scan(False) is True
+    finally:
+        c.shutdown()
+    c = _controller(
+        sweep600_dir, tmp_path / "x", load_and_scan=False, env_locked=frozenset({"load_and_scan"})
+    )
+    try:
+        assert c.set_load_and_scan(True) is False
+        assert c.load_and_scan_enabled is False
+        wait_until(c, lambda: c.state().banner is not None)
+        assert LOAD_AND_SCAN_ENV in c.state().banner.message
     finally:
         c.shutdown()
 

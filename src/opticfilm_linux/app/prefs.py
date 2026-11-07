@@ -24,7 +24,8 @@ EXPORT_JPEG_SIZE_KEY = "export_jpeg_size"
 AUTO_EJECT_KEY = "workflow/auto_eject"
 SKIP_EMPTY_KEY = "workflow/skip_empty"
 AUTO_EXPORT_KEY = "workflow/auto_export_default"
-SWITCH_KEYS = (AUTO_EJECT_KEY, SKIP_EMPTY_KEY, AUTO_EXPORT_KEY)
+LOAD_AND_SCAN_KEY = "workflow/load_and_scan"
+SWITCH_KEYS = (AUTO_EJECT_KEY, SKIP_EMPTY_KEY, AUTO_EXPORT_KEY, LOAD_AND_SCAN_KEY)
 _SWITCH_ON = ("1", "true")
 
 
