@@ -14,6 +14,8 @@ class FakeScanner:
     """Replays a stored sweep. ``statuses`` is a script for ``status()``; the last one repeats.
 
     ``before_scan`` runs at the start of every scan, so tests can block or fail a scan.
+    ``load_error`` is raised by every ``load_next_strip`` (a missed load); ``load_calls`` counts
+    them.
     """
 
     def __init__(
@@ -21,12 +23,15 @@ class FakeScanner:
         sweep_dir: Path,
         statuses: Sequence[ScannerStatus] = (ScannerStatus.READY,),
         before_scan: Callable[[], None] | None = None,
+        load_error: ScanError | None = None,
     ) -> None:
         self._sweep_dir = sweep_dir
         self._statuses = tuple(statuses) or (ScannerStatus.READY,)
         self._next = 0
         self._lock = threading.Lock()
         self._before_scan = before_scan
+        self.load_error = load_error  # tests may set it later
+        self.load_calls = 0
 
     def status(self) -> ScannerStatus:
         with self._lock:
@@ -55,4 +60,7 @@ class FakeScanner:
         return None
 
     def load_next_strip(self) -> None:
-        return None
+        with self._lock:
+            self.load_calls += 1
+        if self.load_error is not None:
+            raise self.load_error

@@ -249,6 +249,8 @@ class AppState:
     undo_label: str = ""
     scan_openings: tuple[int, ...] = ALL_POSITIONS  # what the next scan covers (SKIP_EMPTY only)
     metadata_pending: int = 0  # exported JPEGs whose description or date is not current
+    can_load_and_scan: bool = False  # the setting is on and Load & scan may start now
+    load_scan_phase: Literal["idle", "loading", "waiting_ready", "scanning", "failed"] = "idle"
 
 
 EMPTY_STATE = AppState(
