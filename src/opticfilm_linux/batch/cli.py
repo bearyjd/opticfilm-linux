@@ -15,6 +15,7 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
     TrayStage,
 )
+from opticfilm_linux.batch.run_cli import add_run_commands, free_held, run
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.slots import (
     parse_slot_positions,
@@ -49,6 +50,7 @@ def add_batch_commands(commands: argparse._SubParsersAction) -> None:
     sub = batch.add_subparsers(dest="batch_command", required=True)
 
     _add_new_command(sub)
+    add_run_commands(sub)
 
     status = sub.add_parser("status", help="list the trays")
     status.add_argument("directory", type=Path)
@@ -269,6 +271,10 @@ def run_batch(args: argparse.Namespace) -> int:
         return _confirm_scanner(args)
     if command == "scan":
         return _scan(args)
+    if command == "run":
+        return run(args)
+    if command == "free-held":
+        return free_held(args)
     if command in ("eject", "load"):
         return _holder(args)
     if command == "status":
