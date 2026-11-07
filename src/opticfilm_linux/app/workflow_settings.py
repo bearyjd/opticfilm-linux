@@ -1,23 +1,41 @@
-"""Workflow switches that can be saved in the preferences (auto-eject, skip-empty).
+"""Workflow switches that can be saved in the preferences (auto-eject, skip-empty, Load & scan).
 
-An explicit environment variable (``OPTICFILM_AUTO_EJECT``, ``OPTICFILM_SKIP_EMPTY``) always
+An explicit environment variable (``OPTICFILM_AUTO_EJECT``, ``OPTICFILM_SKIP_EMPTY``,
+``OPTICFILM_LOAD_AND_SCAN``) always
 wins over the saved value and locks the switch in the app. Unset means "use the saved value",
 which is off on a fresh profile. ``OPTICFILM_SKIP_GAPS`` stays environment-only.
 """
 
 from __future__ import annotations
 
-from opticfilm_linux.app.prefs import AUTO_EJECT_KEY, SKIP_EMPTY_KEY, Prefs, read_switch
+from opticfilm_linux.app.prefs import (
+    AUTO_EJECT_KEY,
+    LOAD_AND_SCAN_KEY,
+    SKIP_EMPTY_KEY,
+    Prefs,
+    read_switch,
+)
 from opticfilm_linux.app.state import Banner
 from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.scanner.select import (
     AUTO_EJECT_ENV,
+    LOAD_AND_SCAN_ENV,
     SKIP_EMPTY_ENV,
     env_switch,
+    env_switch_fail_off,
     skip_gaps_enabled,
 )
 
-ENV_NAMES = {"auto_eject": AUTO_EJECT_ENV, "skip_empty": SKIP_EMPTY_ENV}
+ENV_NAMES = {
+    "auto_eject": AUTO_EJECT_ENV,
+    "skip_empty": SKIP_EMPTY_ENV,
+    "load_and_scan": LOAD_AND_SCAN_ENV,
+}
+SAVED_KEYS = {
+    "auto_eject": AUTO_EJECT_KEY,
+    "skip_empty": SKIP_EMPTY_KEY,
+    "load_and_scan": LOAD_AND_SCAN_KEY,
+}
 
 
 OPENINGS_DROPPED = "The chosen openings were cleared: the next scan covers all four."
@@ -30,9 +48,12 @@ def resolve_switch(env: bool | None, pref: bool) -> bool:
 
 def startup_switches(prefs: Prefs) -> dict:
     """``Controller`` keyword arguments for the saved switches and the environment."""
-    envs = {"auto_eject": env_switch(AUTO_EJECT_ENV), "skip_empty": env_switch(SKIP_EMPTY_ENV)}
-    saved = {"auto_eject": AUTO_EJECT_KEY, "skip_empty": SKIP_EMPTY_KEY}
-    values = {name: resolve_switch(envs[name], read_switch(prefs, saved[name])) for name in envs}
+    envs = {name: env_switch(env) for name, env in ENV_NAMES.items()}
+    envs["load_and_scan"] = env_switch_fail_off(LOAD_AND_SCAN_ENV)  # moves the motor: fail safe
+    values = {
+        name: resolve_switch(env, read_switch(prefs, SAVED_KEYS[name]))
+        for name, env in envs.items()
+    }
     return {
         **values,
         "skip_gaps": skip_gaps_enabled(),

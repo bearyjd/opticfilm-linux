@@ -19,7 +19,7 @@ from opticfilm_linux.app.auto import AutoPipeline as AutoPipeline
 from opticfilm_linux.app.commands import ReviewCommands
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
 from opticfilm_linux.app.first_load import FirstLoadCommands
-from opticfilm_linux.app.holder import HolderCommands
+from opticfilm_linux.app.holder import WAIT_HOLDER, HolderCommands
 from opticfilm_linux.app.jobs import (
     free_space_candidates as free_space_candidates,
 )
@@ -205,7 +205,7 @@ class Controller(
         if not poller.take_eject_press() or not self._eject_button:
             return
         with self._lock:
-            refusal = self._holder_refusal()
+            refusal = self._holder_refusal() or (WAIT_HOLDER if self._load_scan_moving() else None)
         if refusal is not None:
             self._set(_banner=Banner(refusal))
             return
@@ -232,7 +232,7 @@ class Controller(
         with self._lock:
             if self._holder_busy and self._load_phase in ("jogging", "await_reinsert", "loading"):
                 return "first_load_running"
-            if self._load_scan_phase in ("loading", "waiting_ready"):
+            if self._load_scan_moving():
                 return "scan_running"  # Load & scan is the start of a scan
             session = self._session
         if session is not None and session.runner is not None and session.runner.scan_pending():
@@ -528,6 +528,7 @@ class Controller(
         with self._lock:
             selected = self._selected
         tokens = self._preview_tokens(session, manifest)
+        marker = self._load_scan_marker()  # storage: read outside the lock
         raw_pending = self._raw_pending(session, manifest)
         raw_recoverable = self._recovery_checks.poll(
             session, manifest, raw_pending, self._raw_recoverable
@@ -547,7 +548,7 @@ class Controller(
                 raw_recoverable=raw_recoverable,
             )
             self._state = dataclasses.replace(
-                self._state, **self._load_scan_fields(session, status, sequence)
+                self._state, **self._load_scan_fields(session, status, sequence, marker)
             )
 
     def _publish_state(
@@ -561,6 +562,7 @@ class Controller(
                 scanner=status,
                 scan_pending=bool(
                     self._scans_queued
+                    or self._load_scan_moving()  # Load & scan is the start of a scan
                     or (session and session.runner and session.runner.scan_pending())
                 ),
                 readonly=bool(session and session.runner is None),

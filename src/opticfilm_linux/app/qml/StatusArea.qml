@@ -70,7 +70,7 @@ QQC2.ScrollView {
     }
     function reflowScannerActions() {
         const target = compact ? scannerActions : scannerRow;
-        const actions = [loadHelpLink, confirmScannerButton, scanOpeningsHost, ejectButton, loadNextHost];
+        const actions = [loadHelpLink, confirmScannerButton, scanOpeningsHost, ejectButton, loadNextHost, loadAndScanButton];
         actions.forEach(action => action.parent = null);
         actions.forEach(action => action.parent = target);
     }
@@ -256,9 +256,26 @@ QQC2.ScrollView {
                 text: qsTr("More below ↓")
             }
         }
+        QQC2.Label {
+            objectName: "loadScanPhaseText"
+            // what the Load & scan chain is doing; a stop also has its own message above
+            readonly property var phaseTexts: ({
+                loading: qsTr("Load & scan: loading the holder…"),
+                waiting_ready: qsTr("Load & scan: waiting for the scanner to get ready…"),
+                scanning: qsTr("Load & scan: scanning the holder…"),
+                failed: qsTr("Load & scan stopped, so nothing was scanned. Check the holder by hand, then use the manual buttons.")
+            })
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spacing
+            Layout.rightMargin: Theme.spacing
+            visible: bridge.loadAndScanEnabled && !bridge.readonly && text !== ""
+            wrapMode: Text.Wrap
+            color: bridge.loadScanPhase === "failed" ? Theme.warn : Theme.text
+            text: phaseTexts[bridge.loadScanPhase] || ""
+        }
         GridLayout {
             id: scannerRow
-            columns: area.compact ? 1 : 6
+            columns: area.compact ? 1 : 7
             // the scanner's status and the holder controls: own row, so the text is never cut off
             Layout.fillWidth: true
             Layout.margins: Theme.spacingSmall / 2
@@ -339,6 +356,21 @@ QQC2.ScrollView {
                     enabled: bridge.canLoadNext
                     onClicked: bridge.loadNextHolder()
                 }
+            }
+            QQC2.Button {
+                id: loadAndScanButton
+                objectName: "loadAndScanButton"
+                // only with the Load & scan setting on (off by default); pressing it is the
+                // owner's statement that the holder is seated and latched
+                visible: bridge.loadAndScanEnabled && !bridge.readonly
+                implicitHeight: Math.round(Theme.gu * 40 / 18)
+                text: qsTr("Holder latched – Load & scan")
+                icon.name: "media-playback-start"
+                enabled: bridge.canLoadAndScan
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                QQC2.ToolTip.text: qsTr("Only when the holder is seated and latched: loads it once, waits for the scanner, then scans it. Key: Enter.")
+                onClicked: bridge.loadAndScan()
             }
         }
 
