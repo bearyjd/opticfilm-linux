@@ -332,6 +332,10 @@ class HolderCommands:
         if refused:
             self._set(_banner=Banner(WAIT_HOLDER))
             return
+        self._submit_reserved_scan(job, message)
+
+    def _submit_reserved_scan(self, job: Callable[[BatchRunner], None], message: str) -> None:
+        """Submit a scan already counted in ``_scans_queued`` (by the caller, under the lock)."""
 
         def sequenced_job(runner):
             with self._lock:
@@ -352,7 +356,9 @@ class HolderCommands:
             self._scans_queued -= 1
 
     def _cancel_queued_holder(self) -> None:
-        """A movement that has not started never runs once the batch is closing."""
+        """A movement that has not started never runs once the batch is closing, and a Load &
+        scan waiting for READY stops without scanning."""
+        self._load_scan_cancel.set()
         with self._lock:
             future = self._holder_future
         if future is not None:

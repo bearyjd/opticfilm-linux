@@ -33,6 +33,7 @@ from opticfilm_linux.app.lifecycle_commands import LifecycleCommands
 from opticfilm_linux.app.lifecycle_commands import (
     _check_export_directory as _check_export_directory,
 )
+from opticfilm_linux.app.load_and_scan import LOAD_READY_TIMEOUT_S, LoadAndScanCommands
 from opticfilm_linux.app.messages import failure_text
 from opticfilm_linux.app.preview_tokens import PreviewTokens
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
@@ -89,6 +90,7 @@ class Controller(
     FirstLoadCommands,
     HolderCommands,
     LifecycleCommands,
+    LoadAndScanCommands,
     ReviewCommands,
     ScanOpeningsCommands,
     SelectionCommands,
@@ -105,6 +107,9 @@ class Controller(
         skip_gaps: bool | None = None,  # None: read OPTICFILM_SKIP_GAPS
         auto_eject: bool | None = None,  # None: read OPTICFILM_AUTO_EJECT
         env_locked: frozenset[str] = frozenset(),  # switches an environment variable decides
+        load_and_scan: bool = False,  # Load & scan stays off until the hardware check passes
+        load_ready_timeout_s: float = LOAD_READY_TIMEOUT_S,
+        load_clock: Callable[[], float] = time.monotonic,  # the READY wait's own clock
     ) -> None:
         self._factory = scanner_factory
         self._watch_poller: StatusPoller | None = None  # the last session's, for the idle check
@@ -115,6 +120,7 @@ class Controller(
         self._init_scan_openings(skip_empty, skip_gaps)
         self._init_workflow_settings(env_locked)
         self._init_holder_workers()
+        self._init_load_and_scan(load_and_scan, load_ready_timeout_s, load_clock)
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
         self._long_jobs = 0  # exports and free-space jobs on their way to the jobs worker
         self._clock = clock
@@ -373,6 +379,7 @@ class Controller(
             self._batch_session += 1
             self._forget_scan_openings()
             self._reset_load_phase()
+            self._reset_load_scan()
             self._holder_latch = HolderLatch.UNKNOWN
             self._latch_address = None
             self._latch_loss = None
@@ -536,6 +543,9 @@ class Controller(
                 tokens=tokens,
                 raw_pending=raw_pending,
                 raw_recoverable=raw_recoverable,
+            )
+            self._state = dataclasses.replace(
+                self._state, **self._load_scan_fields(session, status, sequence)
             )
 
     def _publish_state(

@@ -120,6 +120,7 @@ class LifecycleCommands:
         with self._lock:
             session, self._session = self._session, None
             self._reset_load_phase()
+            self._reset_load_scan()
             self._forget_scan_openings()
         if session is not None:
             if session.poller is not None:
