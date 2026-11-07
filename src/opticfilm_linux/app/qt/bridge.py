@@ -279,6 +279,8 @@ class Bridge(WorkflowBridge):
         str, changed, lambda s, _: "" if s.load_exit_code is None else str(s.load_exit_code)
     )  # noqa: N815
     canLoadNext = _p(bool, changed, lambda s, _: s.can_load_next)  # noqa: N815
+    canLoadAndScan = _p(bool, changed, lambda s, _: s.can_load_and_scan)  # noqa: N815
+    loadScanPhase = _p(str, changed, lambda s, _: s.load_scan_phase)  # noqa: N815
     holderBusy = _p(bool, changed, lambda s, _: s.holder_busy)  # noqa: N815
     canConfirmScanner = _p(bool, changed, lambda s, _: s.can_confirm_scanner)  # noqa: N815
     scannerStatus = _p(str, changed, lambda s, _: s.scanner.value)  # noqa: N815
@@ -423,6 +425,12 @@ class Bridge(WorkflowBridge):
     @Slot()
     def loadNextHolder(self) -> None:  # noqa: N802
         self._controller.load_next_holder()
+
+    @Slot()
+    def loadAndScan(self) -> None:  # noqa: N802
+        """The owner's "holder seated and latched": load it, wait for READY, scan it."""
+        self._flush_now()
+        self._controller.load_and_scan()
 
     @Slot()
     def confirmScannerReset(self) -> None:  # noqa: N802

@@ -84,10 +84,14 @@ class LoadAndScanCommands:
     def load_and_scan_enabled(self) -> bool:
         return self._load_and_scan
 
-    def set_load_and_scan(self, on: bool) -> None:
-        """Applies to the next click; one already running carries on."""
+    def set_load_and_scan(self, on: bool) -> bool:
+        """Applies to the next click; one already running carries on. False: refused (an
+        environment variable decides)."""
         with self._lock:
+            if self._refuse_locked("load_and_scan"):
+                return False
             self._load_and_scan = on
+            return True
 
     def load_and_scan(self) -> None:
         session = self._session
@@ -143,16 +147,28 @@ class LoadAndScanCommands:
         elif self._release_mark is None or self._release_mark[0] != self._latch_applied:
             self._release_mark = (self._latch_applied, self._latch_sequence)
 
-    def _load_scan_fields(self, session, status: ScannerStatus, sequence: int) -> dict:
-        """Under the lock, on every refresh: the two ``AppState`` fields."""
+    def _load_scan_marker(self) -> bool:
+        """Outside the lock, before a refresh: the interrupted marker, read only when it matters."""
+        return self._load_and_scan and interrupted.is_pending()
+
+    def _load_scan_fields(
+        self, session, status: ScannerStatus, sequence: int, marker: bool
+    ) -> dict:
+        """Under the lock, on every refresh: the two ``AppState`` fields. ``marker``: the
+        interrupted marker is pending, so the click would be refused."""
         runner = session.runner if session is not None else None
         scanning = self._scans_queued or (runner is not None and runner.scan_pending())
         if self._load_scan_phase == "scanning" and not scanning:
             self._load_scan_phase = "idle"
         return {
-            "can_load_and_scan": self._load_scan_refusal(session, status, sequence) is None,
+            "can_load_and_scan": not marker
+            and self._load_scan_refusal(session, status, sequence) is None,
             "load_scan_phase": self._load_scan_phase,
         }
+
+    def _load_scan_moving(self) -> bool:
+        """Under the lock: the chain is loading or waiting for READY (the start of a scan)."""
+        return self._load_scan_phase in ("loading", "waiting_ready")
 
     def _reset_load_scan(self) -> None:
         """Under the lock, when a batch is attached or detached."""

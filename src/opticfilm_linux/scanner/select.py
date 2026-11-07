@@ -20,6 +20,7 @@ SKIP_EMPTY_ENV = "OPTICFILM_SKIP_EMPTY"  # on: offer "Slides in this holder" (sc
 SKIP_GAPS_ENV = "OPTICFILM_SKIP_GAPS"  # on, with SKIP_EMPTY: any set of openings, e.g. 1,3,4
 # The app's own eject after a good tray (plan rungs H5/H7/H8, untested on hardware): off.
 AUTO_EJECT_ENV = "OPTICFILM_AUTO_EJECT"
+LOAD_AND_SCAN_ENV = "OPTICFILM_LOAD_AND_SCAN"  # on/off decides over the saved setting
 
 
 EJECT_BUTTON_OFF = ("0", "false", "no", "off")

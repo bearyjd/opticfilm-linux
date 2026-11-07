@@ -1,4 +1,5 @@
-"""Saved workflow switches for QML: auto-eject, skip-empty, and the new-batch auto-export default.
+"""Saved workflow switches for QML: auto-eject, skip-empty, Load & scan, and the new-batch
+auto-export default.
 
 A switch an environment variable decides is shown as locked and refuses changes; the others
 are saved in the preferences and applied to the running controller at once.
@@ -11,6 +12,7 @@ from PySide6.QtCore import Property, Signal, Slot
 from opticfilm_linux.app.prefs import (
     AUTO_EJECT_KEY,
     AUTO_EXPORT_KEY,
+    LOAD_AND_SCAN_KEY,
     SKIP_EMPTY_KEY,
     read_switch,
     remember_switch,
@@ -40,6 +42,12 @@ class WorkflowBridge(StartBridge):
     skipGapsEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.skip_gaps_enabled, notify=workflowSettingsChanged
     )
+    loadAndScanEnabled = Property(  # noqa: N815
+        bool, lambda self: self._controller.load_and_scan_enabled, notify=workflowSettingsChanged
+    )
+    loadAndScanLockedBy = Property(  # noqa: N815
+        str, lambda self: self._env_name("load_and_scan"), notify=workflowSettingsChanged
+    )
     autoExportDefault = Property(  # noqa: N815
         bool,
         lambda self: read_switch(self._prefs, AUTO_EXPORT_KEY),
@@ -56,6 +64,12 @@ class WorkflowBridge(StartBridge):
     def setSkipEmpty(self, on: bool) -> None:  # noqa: N802
         if self._controller.set_skip_empty(on):
             remember_switch(self._prefs, SKIP_EMPTY_KEY, on)
+        self.workflowSettingsChanged.emit()
+
+    @Slot(bool)
+    def setLoadAndScan(self, on: bool) -> None:  # noqa: N802
+        if self._controller.set_load_and_scan(on):
+            remember_switch(self._prefs, LOAD_AND_SCAN_KEY, on)
         self.workflowSettingsChanged.emit()
 
     @Slot(bool)

@@ -272,11 +272,19 @@ def test_eject_and_front_panel_press_during_the_wait_do_not_move_the_holder(buil
     wait_phase(controller, "waiting_ready")
 
     controller.eject_holder()  # the E key
+    settle(controller, 0.3)
+    assert banner_text(controller) is None  # E is ignored silently
     scanner.pressed = True  # the front-panel button
     settle(controller, 0.5)
 
     assert scanner.calls == ["load"]
     assert controller.state().holder_busy
+    assert banner_text(controller) == WAIT_HOLDER  # the press is answered, not replayed later
+    scanner.pressed = False
+    scanner.current_status = ScannerStatus.READY
+    wait_until(controller, lambda: scanner.scans == 1)
+    wait_phase(controller, "idle")
+    assert scanner.calls == ["load"]  # no eject after the hand-over either
 
 
 # -- refusals: each starts nothing ------------------------------------------------------------
@@ -350,6 +358,28 @@ def test_refused_while_the_interrupted_marker_is_pending(build, tmp_path, monkey
     settle(controller)
     assert scanner.load_calls == 0
     assert "Confirm scanner reset" in banner_text(controller)
+
+
+def test_the_interrupted_marker_shows_the_control_disabled(build, tmp_path, monkeypatch):
+    """Read outside the lock on each refresh, so the button is not enabled and then refused."""
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+    monkeypatch.setattr(load_and_scan_module.interrupted, "is_pending", lambda: True)
+    wait_until(controller, lambda: not controller.state().can_load_and_scan, SHORT)
+    monkeypatch.setattr(load_and_scan_module.interrupted, "is_pending", lambda: False)
+    wait_until(controller, lambda: controller.state().can_load_and_scan, SHORT)
+
+
+def test_the_marker_is_not_read_while_the_setting_is_off(build, tmp_path, monkeypatch):
+    controller, scanner = build(load_and_scan=False)
+    released(controller, scanner, tmp_path)
+    reads = []
+    monkeypatch.setattr(
+        load_and_scan_module.interrupted, "is_pending", lambda: reads.append(1) or False
+    )
+    settle(controller, 0.3)
+    assert reads == []
+    assert not controller.state().can_load_and_scan
 
 
 def test_refused_while_a_cut_off_is_reported(build, tmp_path):
@@ -536,6 +566,38 @@ def test_closing_the_window_during_the_wait_counts_as_a_running_scan(build, tmp_
     controller.load_and_scan()
     wait_phase(controller, "waiting_ready")
     assert controller.shutdown_decision() == "scan_running"
+
+
+@pytest.mark.parametrize("phase", ["loading", "waiting_ready"])
+def test_the_load_and_wait_count_as_a_pending_scan(build, tmp_path, phase):
+    """The window's "Wait, then close" waits on scan_pending: it must not close early."""
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+    gate = threading.Event()
+    if phase == "loading":
+        scanner.during_load = lambda: gate.wait(SHORT)
+    else:
+        scanner.after_load = ScannerStatus.NOT_READY
+    controller.load_and_scan()
+    wait_phase(controller, phase)
+    state = controller.state()
+    assert state.scan_pending
+    assert not state.can_scan
+    gate.set()
+    scanner.current_status = ScannerStatus.READY
+    wait_until(controller, lambda: scanner.scans == 1)
+    wait_phase(controller, "idle")
+    wait_until(controller, lambda: not controller.state().scan_pending, SHORT)
+
+
+def test_a_failed_chain_is_not_a_pending_scan(build, tmp_path):
+    controller, scanner = build()
+    released(controller, scanner, tmp_path)
+    scanner.load_error = ScanError("cassette not taken")
+    controller.load_and_scan()
+    wait_phase(controller, "failed")
+    assert not controller.state().scan_pending
+    assert controller.shutdown_decision() == "ok"
 
 
 def test_a_close_request_before_the_job_starts_sends_no_load(build, tmp_path):
