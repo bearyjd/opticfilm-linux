@@ -120,6 +120,24 @@ been run cold through the finished app. See section 7.
   The panel button works while the app window is idle, not during a scan or holder move.
 - Look at the holder. Confirm it is released before you pull it.
 
+### 2.4 Headless tray: `ofscan batch run`
+
+After the first load and latch are done by hand, one command scans, accepts, exports and frees:
+
+```
+ofscan batch run BATCH --out ALBUM --auto-export [--jpeg-size 3600] [--keep-raw]
+ofscan batch free-held BATCH 1 --yes     # after you checked tray 1's JPEGs
+```
+
+- The flags are saved into the batch before the scan, and each changed default is printed.
+  Without `--auto-export` the tray waits in review and export stays manual.
+- It never loads, ejects or confirms the latch. With the real scanner it refuses `--count` above 1,
+  a scanner that is not ready, a released latch, and a pending "scanner cut off" mark (exit 3).
+- Tray 1 keeps its raw scans until `free-held`. Exit codes: 0 ok, 2 tray or export failed
+  (raw kept), 3 refused before anything is written or scanned (`free-held`: 3 for any refusal,
+  including a missing `--yes`), 130 interrupted.
+- `--box` and `--section` only apply while the current section has no trays.
+
 ## 3. Review, export and swap trays
 
 Enhancement runs in the background while the next tray scans (README).

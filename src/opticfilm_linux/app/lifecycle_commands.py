@@ -6,13 +6,11 @@ on the command worker without the state lock held.
 """
 
 import logging
-import os
-import stat
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 from opticfilm_linux.app.auto import MISSING_DESTINATION
+from opticfilm_linux.app.batch_rules import check_export_directory as _check_export_directory
 from opticfilm_linux.app.selection import Selection
 from opticfilm_linux.app.state import EMPTY_STATE, Banner
 from opticfilm_linux.batch.metadata import checked_meta
@@ -145,39 +143,3 @@ class LifecycleCommands:
             self._selection_order = ()
             self._manifest = None
             self._state = EMPTY_STATE if self._banner is None else self._banner_only()
-
-
-def _check_export_directory(batch: Path, directory: Path) -> None:
-    try:
-        resolved = directory.resolve()
-        batch = batch.resolve()
-        for component in (directory, *directory.parents):
-            if component.is_symlink() and not component.exists():
-                raise BatchError(f"export folder {directory} contains a broken symbolic link")
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
-    if resolved.is_relative_to(batch):
-        raise BatchError(f"export to a folder outside the batch folder, not {directory}")
-
-    # Validate the closest existing parent without creating the user's destination.
-    parent = resolved
-    while True:
-        try:
-            mode = parent.stat().st_mode
-            break
-        except FileNotFoundError:
-            parent = parent.parent
-        except NotADirectoryError as exc:
-            raise BatchError(f"export folder {directory} is not a directory") from exc
-        except (OSError, ValueError) as exc:
-            raise BatchError(f"cannot use export folder {directory}: {exc}") from exc
-    if not stat.S_ISDIR(mode):
-        raise BatchError(f"export folder {parent} is not a directory")
-    if not mode & 0o222 or not os.access(parent, os.W_OK | os.X_OK):
-        raise BatchError(f"export folder {parent} is not writable")
-    try:
-        with tempfile.TemporaryFile(dir=parent) as probe:
-            probe.write(b"\0")
-            probe.flush()
-    except OSError as exc:
-        raise BatchError(f"export folder {parent} is not writable: {exc}") from exc
