@@ -68,8 +68,9 @@ Not verified, or known problems:
   this repository, and the cases that must do nothing (a press during a scan, a held press) are
   covered by fake-scanner tests only.
 - **Load & scan** (one press loads the next holder and scans it) is **off by default and has never
-  been run on the scanner**. The supervised hardware check has not been done, and the setting
-  stays off until it passes twice. It has been tested on the fake scanner only. The same holds for
+  been run on the scanner**. The supervised hardware check has not been done; the project keeps
+  it off by default until that check has passed twice. Nothing in the app prevents switching it
+  on, so do not enable it before then. It has been tested on the fake scanner only. The same holds for
   the automatic eject and automatic export settings.
 
 Do not treat the word "ejected" in any output as proof that the holder was released; check the
@@ -198,8 +199,10 @@ is ready, keep loading trays, and review the results as they arrive or all at th
 
 ### Keyboard and workflow settings
 
-Plain letter keys run the tray controls, behind the same gates as the buttons (a key does nothing
-when its button is disabled). Any modifier key, a held (auto-repeating) key, a read-only batch or
+Plain letter keys run the tray controls, behind the same gates as the buttons: `S`, `E` and `L`
+do nothing when their button is disabled, `X` needs at least one tray in the list, `F` needs a box
+(collection) that can be finished, and `Enter` is also ignored while a button has keyboard focus
+(for example Eject reached by Tab). Any modifier key, a held (auto-repeating) key, a read-only batch or
 typing in a text field turns them off. **Keyboard shortcuts…** in the overflow menu lists them.
 
 | Key | Action |
@@ -216,17 +219,23 @@ fresh profile: export automatically in new batches (only the starting choice for
 existing batches keep theirs), eject the holder after each good scan, choose which holder openings
 to scan, and **Load & scan with one press**. The environment variables `OPTICFILM_AUTO_EJECT`,
 `OPTICFILM_SKIP_EMPTY` and `OPTICFILM_LOAD_AND_SCAN` override the saved value in either direction
-and lock the switch in the dialog, which names the variable (see [ENV](docs/ENV.md)). Auto-eject
+and lock the switch in the dialog, which names the variable (see [ENV](docs/ENV.md)). For
+`OPTICFILM_AUTO_EJECT` and `OPTICFILM_SKIP_EMPTY` a value that is not on/off is logged and defers
+to the saved setting; only `OPTICFILM_LOAD_AND_SCAN` treats such a value as off and locks the
+switch. Auto-eject
 applies to a scan only if it was on when that scan started and is still on when it ends.
 
-**Load & scan** is for the moment after the app ejected a holder: you swap the holder, seat it
+**Load & scan** is for the moment after an eject this app saw finish (a manual Eject or an
+automatic eject):  you swap the holder, seat it
 and check that it is latched, then press **Holder latched – Load & scan** (or Enter). That press
 is your confirmation. The app loads the holder once, waits up to 30 s for the scanner to report
 ready, then scans; it never retries a load. If the load fails or the scanner is not ready in
-time, nothing is scanned and the window says so; power-cycle and load by hand as in the section
-above. The front-panel Eject button never starts it. The 30 s limit is unmeasured. Load & scan
-has not been run on the scanner: the supervised hardware check has not been done, and the setting
-stays off until it passes twice. `OPTICFILM_LOAD_AND_SCAN` set to anything that is not an on/off
+time, nothing is scanned and the window says so ("Check the holder by hand, then use the manual
+buttons"). A power-cycle is not always needed: a load refused before the driver moved leaves the
+holder state as it was. The front-panel Eject button never starts it. The 30 s limit is unmeasured. Load & scan
+has not been run on the scanner: the supervised hardware check has not been done. The project
+keeps it off by default until that check has passed twice; nothing in the app prevents switching
+it on, so do not enable it before then. `OPTICFILM_LOAD_AND_SCAN` set to anything that is not an on/off
 value counts as off and locks the switch.
 
 ```sh
