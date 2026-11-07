@@ -178,6 +178,9 @@ Kirigami.Page {
     LoadHelpDialog {
         id: loadHelpDialog
     }
+    WorkflowSettingsDialog {
+        id: workflowSettingsDialog
+    }
     TrayMetaDialog {
         id: trayMetaDialog
         onClosed: page.focusReview()
@@ -357,6 +360,13 @@ Kirigami.Page {
                         icon.name: "input-keyboard"
                         displayHint: Kirigami.DisplayHint.AlwaysHide
                         onTriggered: shortcutsPopup.open()
+                    },
+                    Kirigami.Action {
+                        objectName: "workflowSettingsAction"
+                        text: qsTr("Workflow settings…")
+                        icon.name: "configure"
+                        displayHint: Kirigami.DisplayHint.AlwaysHide
+                        onTriggered: workflowSettingsDialog.open()
                     }
                 ]
             }

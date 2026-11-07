@@ -222,7 +222,7 @@ Kirigami.ScrollablePage {
                     objectName: "newBatchAutoExport"
                     Kirigami.FormData.label: qsTr("Automatic export:")
                     text: qsTr("Export JPEGs after each tray")
-                    checked: false
+                    checked: bridge.autoExportDefault
                 }
                 QQC2.Label {
                     color: Theme.text
