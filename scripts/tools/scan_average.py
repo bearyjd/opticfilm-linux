@@ -9,6 +9,8 @@ downsampled luminance), the residual and any scale/rotation are reported, and th
 refused when the residual is large or no reliable match is found.  Images are Fourier-shifted,
 averaged in float32, cropped to the common valid area and written as 16-bit TIFF with the
 reference's resolution and descriptive tags (including an ICC profile when present).
+The reference frame is not resampled while the others are (Lanczos at their fractional shift),
+so the average has a slightly mixed MTF and marginally uneven per-frame noise.
 
 Prints numbers only.  With 3 or more inputs it also prints the repeat noise on flat tiles:
 per-frame sigma (from pair differences), the measured sigma of an n-frame average against a
@@ -213,7 +215,9 @@ def common_area(
 def _taps(frac: float) -> npt.NDArray[np.float32]:
     """Normalised Lanczos taps w_j, j = -(A-1)..A, for out(i) = sum_j w_j in(i + j) at i + frac."""
     j = np.arange(-(LANCZOS_A - 1), LANCZOS_A + 1)
-    w = np.sinc(j - frac) * np.sinc((j - frac) / LANCZOS_A)
+    x = j - frac
+    # Zero outside the window: |x| >= A would otherwise pick up the sinc(x / A) side lobe.
+    w = np.where(np.abs(x) < LANCZOS_A, np.sinc(x) * np.sinc(x / LANCZOS_A), 0.0)
     return (w / w.sum()).astype(np.float32)
 
 
@@ -238,6 +242,11 @@ def warp_crop(
     img: npt.NDArray[np.uint16], reg: Registration, area: tuple[int, int, int, int]
 ) -> Array:
     """Resample ``img`` onto reference coordinates ``area`` in blocks (local Fourier shifts).
+
+    Note: the reference frame (identity shift) is copied unfiltered, while frames 2..N pass
+    through the Lanczos kernel at their fractional shifts, which very slightly lowers their
+    highest frequencies and noise.  The average therefore has a mixed MTF and marginally uneven
+    per-frame noise; it is not filtered to match because the identity kernel is a delta.
 
     Each block uses the shift at its centre; across a block the true shift differs by at most
     |G| * BLOCK / 2 (0.13 px at the MAX_SCALE_DEV limit, 0.03 px for a typical 5e-4 error).
@@ -346,6 +355,9 @@ def write_tiff(path: Path, data: npt.NDArray[np.uint16], meta: dict[str, object]
     os.close(fd)
     try:
         tifffile.imwrite(tmp, data, **kwargs)  # type: ignore[arg-type]
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp, 0o666 & ~umask)  # mkstemp creates 0600
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
@@ -356,6 +368,11 @@ def check_paths(output: Path, inputs: Sequence[Path], force: bool = False) -> No
     """Refuse an unsafe OUT (would clobber an input or an existing file) or repeated inputs."""
     if output.is_symlink():
         raise ValueError(f"{output} is a symlink; refusing to write through it")
+    parent = output.parent
+    if not parent.is_dir():
+        raise ValueError(f"output directory {parent} does not exist")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise ValueError(f"output directory {parent} is not writable")
     resolved = [p.resolve() for p in inputs]
     if output.resolve() in resolved:
         raise ValueError(f"output {output} is also an input; refusing to overwrite a scan")
@@ -451,7 +468,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (RegistrationError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
-    write_tiff(args.output, out, meta)
+    try:
+        write_tiff(args.output, out, meta)
+    except OSError as exc:
+        print(f"error: could not write {args.output}: {exc}", file=sys.stderr)
+        return 2
     print("\n".join(lines))
     print(f"wrote {args.output.name} shape={out.shape[0]}x{out.shape[1]}")
     return 0

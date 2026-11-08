@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 
@@ -392,7 +394,7 @@ def test_duplicate_input_is_refused(tmp_path, ok_average, capsys):
     assert not (tmp_path / "o.tiff").exists()
 
 
-def test_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
+def test_failed_write_leaves_no_partial_file(tmp_path, monkeypatch, capsys):
     a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
     out = tmp_path / "out.tiff"
     out.write_bytes(b"precious")
@@ -404,8 +406,8 @@ def test_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
     result = np.zeros((8, 8, 3), np.uint16)
     monkeypatch.setattr(sa, "average", lambda paths, residual: (result, {}, []))
     monkeypatch.setattr(sa.tifffile, "imwrite", boom)
-    with pytest.raises(OSError):
-        sa.main([str(out), str(a), str(b), "--force"])
+    assert sa.main([str(out), str(a), str(b), "--force"]) == 2
+    assert "could not write" in capsys.readouterr().err
     assert out.read_bytes() == b"precious"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.tiff", "b.tiff", "out.tiff"]
 
@@ -435,3 +437,58 @@ def test_metadata_is_preserved_and_description_dropped(tmp_path):
         assert page.tags["ResolutionUnit"].value == 2
         assert bytes(page.tags[34675].value) == icc
         assert "ImageDescription" not in page.tags
+
+
+def test_symlink_alias_of_output_among_inputs_is_refused(tmp_path, ok_average, capsys):
+    out = _tiny(tmp_path / "real.tiff")
+    other = _tiny(tmp_path / "other.tiff", 2000)
+    alias = tmp_path / "alias.tiff"
+    alias.symlink_to(out)
+    before = out.read_bytes()
+    assert sa.main([str(out), str(other), str(alias), "--force"]) == 2
+    assert "also an input" in capsys.readouterr().err
+    assert out.read_bytes() == before
+
+
+def test_missing_output_directory_is_refused_before_any_work(tmp_path, monkeypatch, capsys):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+
+    def never(*args, **kwargs):
+        raise AssertionError("average() must not run")
+
+    monkeypatch.setattr(sa, "average", never)
+    assert sa.main([str(tmp_path / "nodir" / "o.tiff"), str(a), str(b)]) == 2
+    assert "does not exist" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unwritable_output_directory_is_refused(tmp_path, ok_average, capsys):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        assert sa.main([str(ro / "o.tiff"), str(a), str(b)]) == 2
+        assert "not writable" in capsys.readouterr().err
+    finally:
+        ro.chmod(0o700)
+
+
+def test_output_mode_follows_umask(tmp_path, ok_average):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+    out = tmp_path / "o.tiff"
+    old = os.umask(0o022)
+    try:
+        assert sa.main([str(out), str(a), str(b)]) == 0
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(out.stat().st_mode) == 0o644
+
+
+def test_lanczos_taps_are_zero_outside_the_window():
+    for frac in (-0.5, 0.0, 0.3, 0.5):
+        taps = sa._taps(frac)
+        assert taps.sum() == pytest.approx(1.0, abs=1e-6)
+    assert sa._taps(-0.5)[-1] == 0.0  # j = A sits 12.5 px from the sample point
+    assert sa._taps(0.5)[0] != 0.0
+    assert np.allclose(sa._taps(0.0), np.eye(1, 2 * sa.LANCZOS_A, sa.LANCZOS_A - 1)[0], atol=1e-6)
