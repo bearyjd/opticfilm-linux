@@ -254,9 +254,9 @@ def test_context_manager_releases_the_lock(tmp_path):
     BatchStore.open(tmp_path / "batch").close()
 
 
-@pytest.mark.parametrize("dpi", [7200, 600])
+@pytest.mark.parametrize("dpi", [3600, 600, 7200])
 def test_create_reopen_preserves_new_and_explicit_dpi(tmp_path, dpi):
-    defaults = None if dpi == 7200 else BatchDefaults(dpi=dpi)
+    defaults = None if dpi == 3600 else BatchDefaults(dpi=dpi)
     directory = tmp_path / "batch"
     store = BatchStore.create(directory, name="Trips", defaults=defaults)
     assert store.snapshot().defaults.dpi == dpi
