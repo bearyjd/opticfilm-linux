@@ -114,6 +114,24 @@ def _store_receipt(store: BatchStore, key: SlideKey, old: ExportRecord, new: Exp
         raise BatchError("the slide was exported again meanwhile; its receipt was left as it is")
 
 
+def _finish_interrupted(
+    store: BatchStore, key: SlideKey, old: ExportRecord, path: Path
+) -> ExportRecord | None:
+    """If an earlier rewrite replaced the file but its receipt was never finished, finish it
+    now (so planning the next rewrite cannot lose the hash the file has) and return it."""
+    if not old.pending_sha256 or fingerprint(path) != (old.pending_sha256, old.pending_size):
+        return None
+    finished = dataclasses.replace(
+        old,
+        sha256=old.pending_sha256,
+        size_bytes=old.pending_size,
+        pending_sha256="",
+        pending_size=0,
+    )
+    _store_receipt(store, key, old, finished)
+    return finished
+
+
 def _update_one(store: BatchStore, key: SlideKey) -> bool:
     """Rewrite one file from one snapshot; False when there was nothing (left) to do.
 
@@ -129,20 +147,11 @@ def _update_one(store: BatchStore, key: SlideKey) -> bool:
     estimate = _estimate_fields(manifest, tray, slide)
     old = slide.exports[-1]
     clean_stale_temporaries(path)
-    current = old
-    if old.pending_sha256 and fingerprint(path) == (old.pending_sha256, old.pending_size):
-        # An earlier rewrite replaced the file but its receipt was never finished. Finish it
-        # first, so that planning the next rewrite cannot lose the hash the file has now.
-        finished = dataclasses.replace(
-            old,
-            sha256=old.pending_sha256,
-            size_bytes=old.pending_size,
-            pending_sha256="",
-            pending_size=0,
-        )
-        _store_receipt(store, key, old, finished)
-        old = current = finished
+    finished = _finish_interrupted(store, key, old, path)
+    if finished is not None:
+        old = finished
         digest, size = finished.sha256, finished.size_bytes
+    current = old
 
     def record_plan(new_digest: str, new_size: int) -> None:
         nonlocal current

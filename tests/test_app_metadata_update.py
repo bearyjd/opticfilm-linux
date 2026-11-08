@@ -509,43 +509,47 @@ def test_after_a_crash_a_foreign_edit_is_still_refused(exported, monkeypatch, tm
     assert victim.read_bytes() == edited and c.state().metadata_pending == 1
 
 
-def test_a_failed_second_rewrite_after_a_crash_keeps_the_file_updatable(
-    exported, monkeypatch, tmp_path
-):
+def _update_with(c, monkeypatch, name, replacement, detail):
+    """One manual update pass with ``meta_sync.<name>`` replaced; waits for its failure detail."""
     from opticfilm_linux.batch import meta_sync
 
-    c = exported
-    c.apply_meta_edit("batch", "description", "Crash")
-    wait_until(c, lambda: c.state().metadata_pending == 4)
-    real_store = meta_sync._store_receipt
-    monkeypatch.setattr(
-        meta_sync,
-        "_store_receipt",
-        lambda store, key, old, new: (
-            real_store(store, key, old, new)
-            if new.pending_sha256
-            else (_ for _ in ()).throw(OSError("power cut"))
-        ),
-    )
-    c.update_exported_metadata()  # every file is replaced, no receipt is finished
-    wait_until(c, lambda: c.state().banner is not None and "power cut" in c.state().banner.detail)
-    monkeypatch.setattr(meta_sync, "_store_receipt", real_store)
+    real = getattr(meta_sync, name)
+    monkeypatch.setattr(meta_sync, name, replacement(real))
+    c.update_exported_metadata()
+    wait_until(c, lambda: c.state().banner is not None and detail in c.state().banner.detail)
+    monkeypatch.setattr(meta_sync, name, real)
 
-    c.apply_meta_edit("batch", "description", "Second")  # the owner edits again
-    wait_until(c, lambda: c.state().undo_label == "Edit metadata")
-    real_rewrite = meta_sync.rewrite_xmp_file
 
-    def fails_before_the_rename(*args, before_replace=None, **kwargs):
+def _dies_after_the_rename(real):
+    def store_receipt(store, key, old, new):
+        if not new.pending_sha256:  # the final receipt, after the file was replaced
+            raise OSError("power cut")
+        return real(store, key, old, new)
+
+    return store_receipt
+
+
+def _fails_before_the_rename(real):
+    def rewrite(*args, before_replace=None, **kwargs):
         def plan_then_fail(digest, size):
             before_replace(digest, size)
             raise OSError("disk full")
 
-        return real_rewrite(*args, before_replace=plan_then_fail, **kwargs)
+        return real(*args, before_replace=plan_then_fail, **kwargs)
 
-    monkeypatch.setattr(meta_sync, "rewrite_xmp_file", fails_before_the_rename)
-    c.update_exported_metadata()
-    wait_until(c, lambda: c.state().banner is not None and "disk full" in c.state().banner.detail)
-    monkeypatch.setattr(meta_sync, "rewrite_xmp_file", real_rewrite)
+    return rewrite
+
+
+def test_a_failed_second_rewrite_after_a_crash_keeps_the_file_updatable(
+    exported, monkeypatch, tmp_path
+):
+    c = exported
+    c.apply_meta_edit("batch", "description", "Crash")
+    wait_until(c, lambda: c.state().metadata_pending == 4)
+    _update_with(c, monkeypatch, "_store_receipt", _dies_after_the_rename, "power cut")
+    c.apply_meta_edit("batch", "description", "Second")  # the owner edits again
+    wait_until(c, lambda: c.state().undo_label == "Edit metadata")
+    _update_with(c, monkeypatch, "rewrite_xmp_file", _fails_before_the_rename, "disk full")
 
     victim = sorted(_jpegs(tmp_path))[0]
     victim.write_bytes(victim.read_bytes() + b"edited by another program")
