@@ -69,6 +69,7 @@ class TrayRow:
 class Banner:
     message: str
     detail: str = ""
+    key_refusal: bool = False  # a tray key was refused: low priority, replaceable, self-clearing
 
 
 @dataclass(frozen=True)

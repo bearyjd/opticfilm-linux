@@ -21,6 +21,7 @@ from opticfilm_linux.app.prefs import MemoryPrefs  # noqa: E402
 from opticfilm_linux.app.qt.app import create_engine  # noqa: E402
 from opticfilm_linux.app.qt.bridge import Bridge  # noqa: E402
 from opticfilm_linux.app.qt.images import PreviewProvider  # noqa: E402
+from opticfilm_linux.app.state import Banner  # noqa: E402
 from opticfilm_linux.scanner.base import ScannerStatus  # noqa: E402
 from opticfilm_linux.scanner.fake import FakeScanner  # noqa: E402
 
@@ -412,3 +413,89 @@ def test_a_held_or_readonly_key_shows_no_banner(tray, monkeypatch):
     _force(bridge, can_scan=False, readonly=True)
     _press(root, "scan")
     assert bridge._controller._banner is None
+
+
+def _refuse_all(bridge):
+    _force(
+        bridge,
+        can_scan=False,
+        can_eject=False,
+        can_load_next=False,
+        can_finish_box=False,
+        readonly=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        lambda c: c._scanner_problem("The scanner reported a problem", "detail"),
+        lambda c: c._set(
+            _banner=Banner("The Eject button watcher was left stopped: run systemctl")
+        ),
+        lambda c: c._set(_banner=Banner("This batch is open in another window", "locked")),
+    ],
+    ids=["scanner-problem", "eject-watcher", "locked-batch"],
+)
+def test_a_key_refusal_never_replaces_an_important_banner(tray, setup):
+    bridge, root, _calls, _warnings = tray
+    controller = bridge._controller
+    _refuse_all(bridge)
+    setup(controller)
+    before = controller._banner
+    _press(root, "scan")
+    assert controller._banner is before
+    assert not before.key_refusal
+
+
+def test_a_key_refusal_replaces_a_key_refusal_and_cannot_hide_a_later_message(tray):
+    bridge, root, _calls, _warnings = tray
+    controller = bridge._controller
+    _refuse_all(bridge)
+    _press(root, "scan")
+    first = controller._banner
+    assert first.key_refusal
+    _press(root, "eject")
+    assert controller._banner.key_refusal and controller._banner is not first
+    controller._set(_banner=Banner("Export failed"))
+    bridge._key_banner_timer.timeout.emit()
+    assert controller._banner.message == "Export failed"
+
+
+def test_a_key_refusal_clears_on_a_timeout_and_on_the_next_good_key(tray, monkeypatch):
+    bridge, root, _calls, _warnings = tray
+    controller = bridge._controller
+    log = _record(bridge, monkeypatch)
+    _refuse_all(bridge)
+    _press(root, "scan")
+    assert controller._banner.key_refusal and bridge._key_banner_timer.isActive()
+    bridge._key_banner_timer.timeout.emit()  # the few seconds are up
+    assert controller._banner is None
+    _press(root, "scan")
+    assert controller._banner.key_refusal
+    _force(bridge, can_eject=True)
+    _press(root, "eject")
+    assert log == ["eject"] and controller._banner is None
+
+
+def test_cancel_has_focus_the_moment_the_finish_dialog_opens(tray):
+    bridge, root, _calls, _warnings = tray
+    _force(bridge, can_finish_box=True, readonly=False)
+    finish = _dialog(root, "finishBoxDialog")
+    finish.open()
+    cancel = finish.findChild(QQuickItem, "confirmCancel")
+    assert cancel.property("activeFocus")  # no event-loop turn in between
+
+
+def test_a_second_scan_while_one_is_queued_is_refused(tray, monkeypatch):
+    bridge, _root, _calls, _warnings = tray
+    controller = bridge._controller
+    submitted: list[str] = []
+    monkeypatch.setattr(controller, "_reserved_scan", lambda job, msg: submitted.append(msg))
+    controller.scan()
+    assert len(submitted) == 1
+    controller._scans_queued = 1
+    controller.scan()
+    assert len(submitted) == 1
+    assert "Wait" in controller._banner.message
+    controller._scans_queued = 0

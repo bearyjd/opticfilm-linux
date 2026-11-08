@@ -235,8 +235,17 @@ class Controller(
         path = session.store.preview_path(number, position, kind)
         return path if path.is_file() else None
 
-    def show_banner(self, message: str) -> None:
-        self._set(_banner=Banner(message))
+    def show_key_refusal(self, message: str) -> None:
+        """Say why a key did nothing, but never over a banner that is not itself a key refusal."""
+        with self._lock:
+            if self._banner is None or self._banner.key_refusal:
+                self._banner = Banner(message, key_refusal=True)
+
+    def clear_key_refusal(self) -> None:
+        """Drop the banner only if it is still a key refusal (never a newer message)."""
+        with self._lock:
+            if self._banner is not None and self._banner.key_refusal:
+                self._banner = None
 
     def dismiss_banner(self) -> None:
         self._set(_banner=None)
