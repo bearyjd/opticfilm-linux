@@ -207,6 +207,40 @@ verification." Turn **Keep raw scans after export** on if you want to keep every
 - When you finish for the day: close the app (it restores the Eject watcher), then eject and
   take out the holder.
 
+## Before a session
+
+Run the pre-flight check with the app closed and the Eject watcher stopped:
+
+```sh
+python3 scripts/hardware/preflight.py --driver-dir <driver-dir> --dest <batch-folder> \
+  [--min-free-gb 50] [--min-tmp-free-gb 8] [--min-scratch-free-gb 9] [--skip-scanner]
+```
+
+It prints one PASS/WARN/FAIL line per check and ends with GO (exit 0) or NO-GO (exit 1, any
+FAIL). Checks:
+
+- Free space plus a real small write and fsync on the batch folder, the temp dir (a full `/tmp`
+  quota breaks every command) and the app's scratch dir (`$XDG_CACHE_HOME/opticfilm-linux/work`,
+  default `~/.cache/opticfilm-linux/work`).
+- The batch folder is a writable directory, not a symlink leaving its parent.
+- The Eject watcher is inactive. If `systemctl --user` is unreachable (no user bus, for example
+  inside distrobox) this is a WARN with the host command to run by hand; the script never runs it.
+- The driver imports from `--driver-dir`.
+- Scanner state from the driver's read-only `doctor`: idle-homed with the holder loaded is PASS.
+  Holder not loaded, or a ready-looking report with a failing exit code, is WARN. Cold, not
+  connected, failed, timed out or unparsable is FAIL (never guessed).
+- No other process holds the scanner: the lock files `$XDG_STATE_HOME/opticfilm-linux/scanner.lock`
+  (the app's, default `~/.local/state/...`) and `$OF135I_LOCK_FILE` (the driver's, default
+  `/tmp/of135i-07b3-1436.lock`) are tested with a non-blocking flock without creating them; and
+  no `of135i`, `ofscan` or `opticfilm` (app) process is running.
+- No held `batch.lock` in the batch folder.
+
+It runs only `systemctl --user is-active opticfilm-eject-watch.service` and, with the same
+Python that runs the script (`sys.executable`), `-c "import of135i"` and `-m of135i doctor`,
+never scan, load or eject. With `--skip-scanner` the `doctor` call is omitted and a GO ends with
+the line `GO (scanner state NOT verified)`.
+
+
 ## 5. Troubleshooting
 
 | Symptom | Likely cause | Do | Do NOT |
