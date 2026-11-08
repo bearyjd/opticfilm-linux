@@ -29,7 +29,10 @@ WATCH_UNIT = "opticfilm-eject-watch.service"
 CMD_TIMEOUT_S = 60
 GB = 1024**3
 PROBE_BYTES = 4096
-LOCK_NAMES = ("batch.lock", ".tray_log.lock")
+LOCK_NAMES = ("batch.lock",)
+SCANNER_NAMES = ("of135i", "ofscan", "opticfilm")
+DRIVER_LOCK_DEFAULT = "/tmp/of135i-07b3-1436.lock"
+HOST_HINT = "flatpak-spawn --host systemctl --user is-active " + "opticfilm-eject-watch.service"
 IDLE_HOMED = 0x22
 LOADED_HIGH_BYTE = 0xDC
 
@@ -62,14 +65,31 @@ def run_allowed(argv: Sequence[str], cwd: Path | None) -> subprocess.CompletedPr
     )
 
 
+def app_scratch_dir(env: Mapping[str, str]) -> Path:
+    """Where the app assembles scans (same rule as scanner/driver.py: a disk, not /tmp)."""
+    cache = env.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(cache) / "opticfilm-linux" / "work"
+
+
+def scanner_lock_paths(env: Mapping[str, str]) -> tuple[Path, ...]:
+    """The app's scanner.lock (scanner/interrupted.state_dir) and the driver's own lock file."""
+    state = env.get("XDG_STATE_HOME", "")
+    base = Path(state) if os.path.isabs(state) else Path.home() / ".local" / "state"
+    driver = env.get("OF135I_LOCK_FILE") or DRIVER_LOCK_DEFAULT
+    return (base / "opticfilm-linux" / "scanner.lock", Path(driver))
+
+
 @dataclass
 class Context:
     driver_dir: Path
     dest: Path
     min_free_gb: float = 50.0
     min_tmp_free_gb: float = 8.0
+    min_scratch_free_gb: float = 9.0
     skip_scanner: bool = False
     tmp_dir: Path = field(default_factory=lambda: Path(tempfile.gettempdir()))
+    scratch_dir: Path = field(default_factory=lambda: app_scratch_dir(os.environ))
+    scanner_locks: tuple[Path, ...] = field(default_factory=lambda: scanner_lock_paths(os.environ))
     proc_root: Path = Path("/proc")
     run: Runner = run_allowed
     self_pid: int = field(default_factory=os.getpid)
@@ -114,6 +134,22 @@ def check_disk_tmp(ctx: Context) -> Result:
     return disk_result("temp", ctx.tmp_dir, ctx.min_tmp_free_gb)
 
 
+def nearest_existing_dir(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        if candidate.is_dir():
+            return candidate
+    return path
+
+
+def check_disk_scratch(ctx: Context) -> Result:
+    """The app's scratch dir may not exist yet: test the nearest existing parent instead."""
+    where = nearest_existing_dir(ctx.scratch_dir)
+    res = disk_result("app scratch", where, ctx.min_scratch_free_gb)
+    if where != ctx.scratch_dir and res.status == PASS:
+        return Result(PASS, f"{res.detail} (scratch {ctx.scratch_dir} not created yet)")
+    return res
+
+
 def check_dest(ctx: Context) -> Result:
     dest = Path(os.path.abspath(ctx.dest))
     if not dest.exists():
@@ -131,13 +167,22 @@ def check_watcher(ctx: Context) -> Result:
     try:
         proc = ctx.run(("systemctl", "--user", "is-active", WATCH_UNIT), None)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return Result(WARN, f"systemctl unavailable ({exc}); cannot tell if {WATCH_UNIT} runs")
+        return Result(
+            WARN,
+            f"systemctl unavailable ({exc}); cannot tell if {WATCH_UNIT} runs. "
+            f"Check by hand from the host: {HOST_HINT}",
+        )
     state = proc.stdout.strip()
     if state in ("active", "activating", "reloading"):
         return Result(FAIL, f"{WATCH_UNIT} is {state}; it grabs the scanner (stop it)")
     if state in ("inactive", "failed", "deactivating"):
         return Result(PASS, f"{WATCH_UNIT} is {state}")
-    return Result(WARN, f"{WATCH_UNIT}: unrecognised state {state or proc.stderr.strip()!r}")
+    return Result(
+        WARN,
+        f"cannot tell if {WATCH_UNIT} runs: systemctl --user unreachable "
+        f"({state or proc.stderr.strip() or 'no output'}; no user bus, e.g. inside distrobox?). "
+        f"Check by hand from the host: {HOST_HINT}",
+    )
 
 
 def check_driver(ctx: Context) -> Result:
@@ -154,12 +199,15 @@ def check_driver(ctx: Context) -> Result:
 
 
 def interpret_doctor(returncode: int, out: str) -> Result:
-    """Map the read-only doctor report to a result. Anything unclear is UNKNOWN (WARN)."""
+    """Map the read-only doctor report to a result, like the app's parse_doctor / status().
+
+    No parsable state is a FAIL (never guessed); a failing exit code never gives a PASS.
+    """
     state = re.search(r"reg 0x01 = 0x([0-9a-fA-F]{2})", out)
     if state is None:
-        if returncode != 0 and re.search(r"no device|not found|not connected", out, re.I):
+        if re.search(r"no device|not found|not connected", out, re.I):
             return Result(FAIL, "scanner not connected (powered off or USB unplugged)")
-        return Result(WARN, "scanner state UNKNOWN: doctor output unparsable")
+        return Result(FAIL, "scanner state UNKNOWN: doctor output unparsable")
     code = int(state.group(1), 16)
     if code == 0x00:
         return Result(FAIL, "scanner freshly powered, holder not loaded: do the cold start")
@@ -170,6 +218,8 @@ def interpret_doctor(returncode: int, out: str) -> Result:
     if not (present and word):
         return Result(WARN, "scanner idle-homed, holder state UNKNOWN: report incomplete")
     if present.group(1) == "True" and int(word.group(1), 16) >> 8 == LOADED_HIGH_BYTE:
+        if returncode != 0:
+            return Result(WARN, f"doctor exited {returncode} although the report looks ready")
         return Result(PASS, "scanner idle-homed, holder loaded")
     return Result(WARN, "scanner idle-homed, holder not loaded")
 
@@ -180,18 +230,31 @@ def check_scanner(ctx: Context) -> Result:
     try:
         proc = ctx.run((sys.executable, "-m", "of135i", "doctor"), ctx.driver_dir)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return Result(WARN, f"scanner state UNKNOWN: doctor could not run ({exc})")
+        return Result(FAIL, f"scanner state UNKNOWN: doctor could not run ({exc})")
     return interpret_doctor(proc.returncode, proc.stdout + proc.stderr)
 
 
 def is_scanner_user(args: Sequence[str]) -> bool:
-    """True for an of135i driver process, the ofscan CLI or the OpticFilm app."""
-    for i, arg in enumerate(args):
-        name = os.path.basename(arg)
-        if name in ("of135i", "ofscan") or "opticfilm_linux.app" in arg:
-            return True
-        if arg == "-m" and args[i + 1 : i + 2] == ["of135i"]:
-            return True
+    """True for of135i / ofscan / opticfilm run as the program, a script, `-m` or app `-c` code.
+
+    Only argv[0] and the interpreter's script / -m / -c position count, never other arguments
+    (so `less .../of135i` or `grep opticfilm_linux.app` do not match).
+    """
+    if not args:
+        return False
+    if os.path.basename(args[0]) in SCANNER_NAMES:
+        return True
+    if not os.path.basename(args[0]).startswith("python"):
+        return False
+    rest = list(args[1:])
+    for i, arg in enumerate(rest):
+        following = rest[i + 1] if i + 1 < len(rest) else ""
+        if arg == "-m":
+            return following == "of135i" or following.startswith("opticfilm_linux.app")
+        if arg == "-c":
+            return "opticfilm_linux.app" in following
+        if not arg.startswith("-"):
+            return os.path.basename(arg) in SCANNER_NAMES
     return False
 
 
@@ -242,9 +305,47 @@ def check_locks(ctx: Context) -> Result:
     return Result(PASS, f"no held lock in {ctx.dest}")
 
 
+def probe_lock_held(path: Path) -> bool | None:
+    """True if another process holds the flock on path; False if free or absent.
+
+    Opens read-only without creating, following no symlink; takes a shared non-blocking flock
+    (it conflicts with an exclusive holder) and drops it at once. None if it cannot be tested.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return None
+    finally:
+        os.close(fd)  # closing drops any lock we took
+    return False
+
+
+def check_scanner_lock(ctx: Context) -> Result:
+    probes = [(str(p), probe_lock_held(p)) for p in ctx.scanner_locks]
+    held = [name for name, state in probes if state is True]
+    if held:
+        return Result(
+            FAIL, "scanner is held by another process (lock held: " + ", ".join(held) + ")"
+        )
+    untested = [name for name, state in probes if state is None]
+    if untested:
+        return Result(WARN, "cannot test scanner lock " + ", ".join(untested))
+    return Result(PASS, "scanner locks are free")
+
+
 CHECKS: dict[str, Check] = {
     "disk-dest": check_disk_dest,
     "disk-tmp": check_disk_tmp,
+    "disk-scratch": check_disk_scratch,
+    "scanner-lock": check_scanner_lock,
     "dest": check_dest,
     "eject-watcher": check_watcher,
     "driver": check_driver,
@@ -275,6 +376,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--dest", type=Path, required=True)
     p.add_argument("--min-free-gb", type=float, default=50.0)
     p.add_argument("--min-tmp-free-gb", type=float, default=8.0)
+    p.add_argument("--min-scratch-free-gb", type=float, default=9.0)
     p.add_argument("--skip-scanner", action="store_true", help="do not query the scanner")
     return p.parse_args(argv)
 
@@ -286,13 +388,14 @@ def main(argv: Sequence[str] | None = None, checks: Mapping[str, Check] | None =
         dest=args.dest,
         min_free_gb=args.min_free_gb,
         min_tmp_free_gb=args.min_tmp_free_gb,
+        min_scratch_free_gb=args.min_scratch_free_gb,
         skip_scanner=args.skip_scanner,
     )
     results = run_checks(ctx, CHECKS if checks is None else checks)
     for name, result in results:
         print(f"{result.status:4}  {name}: {result.detail}")
     final = verdict(results)
-    print(final)
+    print(f"{final} (scanner state NOT verified)" if final == "GO" and args.skip_scanner else final)
     return 0 if final == "GO" else 1
 
 

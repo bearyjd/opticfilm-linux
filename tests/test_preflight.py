@@ -51,6 +51,9 @@ def ctx(tmp_path: Path):
         proc_root=tmp_path / "proc",
         min_free_gb=0.0,
         min_tmp_free_gb=0.0,
+        min_scratch_free_gb=0.0,
+        scratch_dir=tmp_path / "scratch",
+        scanner_locks=(tmp_path / "scanner.lock",),
         run=FakeRun({}),
     )
 
@@ -129,12 +132,15 @@ def test_driver(ctx):
     [
         (0, LOADED, pf.PASS, "holder loaded"),
         (0, UNLOADED, pf.WARN, "not loaded"),
+        (0, "reg 0x01 = 0x22\npresent: True\nstatus word: 0x2200\n", pf.WARN, "not loaded"),
+        (1, LOADED, pf.WARN, "exited 1"),
+        (1, UNLOADED, pf.WARN, "not loaded"),
         (0, "reg 0x01 = 0x22\n", pf.WARN, "UNKNOWN"),
         (0, "reg 0x01 = 0x00\n", pf.FAIL, "cold start"),
         (0, "reg 0x01 = 0x40\n", pf.FAIL, "not idle-homed"),
         (1, "error: No device found", pf.FAIL, "not connected"),
-        (0, "garbage", pf.WARN, "UNKNOWN"),
-        (1, "", pf.WARN, "UNKNOWN"),
+        (0, "garbage", pf.FAIL, "UNKNOWN"),
+        (1, "", pf.FAIL, "UNKNOWN"),
     ],
 )
 def test_doctor_interpretation(rc, out, status, word):
@@ -149,9 +155,117 @@ def test_scanner_skip_and_run_errors(ctx):
     assert res.status == pf.WARN and ctx.run.calls == []
     ctx.skip_scanner = False
     ctx.run = FakeRun({"doctor": subprocess.TimeoutExpired("x", 1)})
-    assert "UNKNOWN" in pf.check_scanner(ctx).detail
+    res = pf.check_scanner(ctx)
+    assert res.status == pf.FAIL and "UNKNOWN" in res.detail
+    ctx.run = FakeRun({"doctor": OSError("boom")})
+    assert pf.check_scanner(ctx).status == pf.FAIL
     ctx.run = FakeRun({"doctor": cp(LOADED)})
     assert pf.check_scanner(ctx).status == pf.PASS
+
+
+def test_watcher_unreachable_bus_hint(ctx):
+    ctx.run = FakeRun({pf.WATCH_UNIT: cp("", 1, "Failed to connect to bus")})
+    res = pf.check_watcher(ctx)
+    assert res.status == pf.WARN
+    assert "Failed to connect to bus" in res.detail and "flatpak-spawn --host" in res.detail
+    ctx.run = FakeRun({pf.WATCH_UNIT: FileNotFoundError("systemctl")})
+    assert "flatpak-spawn --host" in pf.check_watcher(ctx).detail
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["python3", "/usr/bin/opticfilm"], True),
+        (["/usr/bin/python3.12", "-u", "/home/u/.local/bin/opticfilm", "--x"], True),
+        (["/usr/bin/opticfilm"], True),
+        (["python3", "-m", "of135i", "watch"], True),
+        (["python3", "-m", "opticfilm_linux.app.qt.app"], True),
+        (["python3", "-c", "from opticfilm_linux.app.qt.app import main"], True),
+        (["python3", "/x/ofscan", "batch", "run"], True),
+        (["less", "/x/of135i"], False),
+        (["grep", "opticfilm_linux.app", "log"], False),
+        (["python3", "-m", "pytest", "tests/of135i"], False),
+        (["python3", "script.py", "opticfilm"], False),
+        (["python3", "-c", "print('of135i')"], False),
+        (["vim", "opticfilm"], False),
+        ([], False),
+    ],
+)
+def test_is_scanner_user(argv, expected):
+    assert pf.is_scanner_user(argv) is expected
+
+
+def test_process_opticfilm_script(ctx):
+    add_proc(ctx, "300", "/usr/bin/python3", "/home/u/.local/bin/opticfilm")
+    res = pf.check_processes(ctx)
+    assert res.status == pf.FAIL and "300" in res.detail
+
+
+def test_scanner_lock_probe(tmp_path):
+    lock = tmp_path / "scanner.lock"
+    assert pf.probe_lock_held(lock) is False  # absent: not created
+    assert not lock.exists()
+    lock.write_text("pid 1\n")
+    before = lock.stat()
+    assert pf.probe_lock_held(lock) is False
+    with open(lock) as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        assert pf.probe_lock_held(lock) is True
+    assert pf.probe_lock_held(lock) is False  # our probe left no lock behind
+    assert lock.read_text() == "pid 1\n" and lock.stat().st_mtime_ns == before.st_mtime_ns
+
+
+def test_scanner_lock_check(ctx, tmp_path):
+    a, b = tmp_path / "a.lock", tmp_path / "b.lock"
+    ctx.scanner_locks = (a, b)
+    assert pf.check_scanner_lock(ctx).status == pf.PASS
+    b.write_text("")
+    with open(b) as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        res = pf.check_scanner_lock(ctx)
+    assert res.status == pf.FAIL and "held by another process" in res.detail
+    link = tmp_path / "link.lock"
+    link.symlink_to(b)  # never followed, so it cannot be tested
+    ctx.scanner_locks = (link,)
+    assert pf.check_scanner_lock(ctx).status == pf.WARN
+
+
+def test_lock_paths_follow_environment(tmp_path):
+    env = {"XDG_STATE_HOME": str(tmp_path), "OF135I_LOCK_FILE": str(tmp_path / "d.lock")}
+    assert pf.scanner_lock_paths(env) == (
+        tmp_path / "opticfilm-linux" / "scanner.lock",
+        tmp_path / "d.lock",
+    )
+    default = pf.scanner_lock_paths({"XDG_STATE_HOME": "relative"})
+    assert default[0].parts[-3:] == ("state", "opticfilm-linux", "scanner.lock")
+    assert str(default[1]) == pf.DRIVER_LOCK_DEFAULT
+
+
+def test_scratch_dir_resolution_and_check(ctx, tmp_path):
+    assert pf.app_scratch_dir({"XDG_CACHE_HOME": str(tmp_path)}) == (
+        tmp_path / "opticfilm-linux" / "work"
+    )
+    assert pf.app_scratch_dir({}).parts[-3:] == (".cache", "opticfilm-linux", "work")
+    ctx.min_scratch_free_gb = 0.0
+    ctx.scratch_dir = tmp_path / "nope" / "work"  # not created: nearest parent is tested
+    res = pf.check_disk_scratch(ctx)
+    assert res.status == pf.PASS and "not created yet" in res.detail
+    ctx.min_scratch_free_gb = 10**9
+    assert pf.check_disk_scratch(ctx).status == pf.FAIL
+
+
+def test_scratch_write_failure(ctx, monkeypatch):
+    ctx.min_scratch_free_gb = 0.0
+    monkeypatch.setattr(pf, "write_probe", lambda d: "cannot write+fsync a small file (quota)")
+    assert pf.check_disk_scratch(ctx).status == pf.FAIL
+
+
+def test_skip_scanner_final_line(tmp_path, capsys):
+    argv = ["--driver-dir", str(tmp_path), "--dest", str(tmp_path), "--skip-scanner"]
+    assert pf.main(argv, fake_checks(pf.PASS)) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "GO (scanner state NOT verified)"
+    assert pf.main(argv, fake_checks(pf.FAIL)) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == "NO-GO"
 
 
 def add_proc(ctx, pid: str, *args: str):
@@ -232,6 +346,17 @@ def test_only_allow_listed_commands(ctx):
         ("-c", "import of135i"),
         ("-m", "of135i", "doctor"),
     ]
+
+
+def test_held_scanner_lock_gives_no_go_end_to_end(ctx):
+    lock = ctx.scanner_locks[0]
+    lock.write_text("")
+    ctx.run = FakeRun({pf.WATCH_UNIT: cp("inactive"), "import of135i": cp(), "doctor": cp(LOADED)})
+    with open(lock) as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        results = dict(pf.run_checks(ctx, pf.CHECKS))
+    assert results["scanner-lock"].status == pf.FAIL
+    assert "disk-scratch" in results and "locks" in results
 
 
 def test_run_allowed_refuses_other_commands():
