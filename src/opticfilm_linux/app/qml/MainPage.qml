@@ -81,10 +81,12 @@ Kirigami.Page {
         const modified = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier);
         if (modified || keys.indexOf(event.key) < 0) return false;
         if (event.isAutoRepeat) return true;
-        if (event.key === Qt.Key_S) { if (bridge.canScan) bridge.scan(); }
-        else if (event.key === Qt.Key_E) { if (bridge.canEject) bridge.ejectHolder(); }
-        else if (event.key === Qt.Key_L) { if (bridge.canLoadNext) bridge.loadNextHolder(); }
-        else if (event.key === Qt.Key_X) { if (bridge.trays.rowCount() > 0) exportDialog.open(); }
+        // handleKey has already left text fields alone; a refused letter shows its banner
+        const letter = String.fromCharCode(event.key);
+        if (event.key === Qt.Key_S) { if (bridge.keyAllowed(letter, false, false)) bridge.scan(); }
+        else if (event.key === Qt.Key_E) { if (bridge.keyAllowed(letter, false, false)) bridge.ejectHolder(); }
+        else if (event.key === Qt.Key_L) { if (bridge.keyAllowed(letter, false, false)) bridge.loadNextHolder(); }
+        else if (event.key === Qt.Key_X) { if (bridge.keyAllowed(letter, false, false)) exportDialog.open(); }
         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             // Enter on a focused button (Eject reached by Tab) is about that button
             const active = page.Window.window ? page.Window.window.activeFocusItem : null;
@@ -92,7 +94,7 @@ Kirigami.Page {
                 return true;  // an AbstractButton (autoExclusive and toggle() are its own)
             if (bridge.loadAndScanEnabled && bridge.canLoadAndScan) bridge.loadAndScan();
         }
-        else if (bridge.collection !== "" && bridge.canFinishBox) finishBoxDialog.open();
+        else if (bridge.keyAllowed(letter, false, false)) finishBoxDialog.open();
         return true;
     }
 

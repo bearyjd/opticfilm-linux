@@ -180,6 +180,21 @@ hands-free tray with these defaults has not been run on the scanner.
   The panel button works while the app window is idle, not during a scan or holder move.
 - Look at the holder. Confirm it is released before you pull it.
 
+**Keys** (plain letters, same gates as the buttons; none is run by a held key, while you type in a
+text field or in a read-only batch; a key the button would refuse shows the reason as a banner;
+nobody has used them on the scanner yet):
+
+| Key | Action |
+|---|---|
+| `S` | Scan |
+| `E` | Eject holder |
+| `L` | Load next holder |
+| `X` | Open Export (it never exports by itself) |
+| `F` | Ask to finish the box (confirm dialog, **Cancel** focused) |
+
+They never skip the latch confirmation, the raw-free approval, the empty-frame confirmation or any
+confirm dialog, and do not switch on automatic eject or Load & scan.
+
 ### 2.4 Headless tray: `ofscan batch run`
 
 After the first load and latch are done by hand, one command scans, accepts, exports and frees:

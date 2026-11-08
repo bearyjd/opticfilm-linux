@@ -10,6 +10,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
+from opticfilm_linux.app import keys
 from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
 from opticfilm_linux.app.messages import bytes_text, load_command
 from opticfilm_linux.app.prefs import (
@@ -586,6 +587,23 @@ class Bridge(WorkflowBridge):
     @Slot()
     def dismissFreeSpace(self) -> None:  # noqa: N802
         self._controller.dismiss_free_space()
+
+    @Slot(str, bool, bool, result=bool)
+    def keyAllowed(self, letter: str, autoRepeat: bool, textFocus: bool) -> bool:  # noqa: N802
+        """May this tray key act now? The same gates as the buttons; a refusal shows its banner."""
+        action = keys.action_for(letter)
+        if action is None:
+            return False
+        verdict = keys.decide(
+            action,
+            self._state,
+            self._trays.rowCount(),
+            text_focus=textFocus,
+            auto_repeat=autoRepeat,
+        )
+        if verdict.reason:
+            self._controller.show_banner(verdict.reason)
+        return verdict.allowed
 
     @Slot()
     def dismissBanner(self) -> None:  # noqa: N802

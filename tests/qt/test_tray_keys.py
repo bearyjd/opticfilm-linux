@@ -382,3 +382,33 @@ def test_a_whole_tray_runs_from_the_keyboard(tray):
     _wait(bridge, lambda: calls == ["eject", "load"] and bridge.canScan)
     _press(root, "scan")
     _wait(bridge, lambda: bridge.trays.rowCount() == 2 and not bridge.scanPending)
+
+
+@pytest.mark.parametrize("name", ["scan", "eject", "load", "finish", "export"])
+def test_a_refused_key_shows_a_banner_and_runs_nothing(tray, monkeypatch, name):
+    bridge, root, _calls, _warnings = tray
+    log = _record(bridge, monkeypatch)
+    _force(
+        bridge,
+        can_scan=False,
+        can_eject=False,
+        can_load_next=False,
+        can_finish_box=False,
+        readonly=False,
+    )
+    bridge._trays.set_rows([])
+    _press(root, name)
+    _wait(bridge, lambda: bridge._controller._banner is not None, label="refusal banner")
+    assert log == []
+    assert bridge._controller._banner.message
+
+
+def test_a_held_or_readonly_key_shows_no_banner(tray, monkeypatch):
+    bridge, root, _calls, _warnings = tray
+    _record(bridge, monkeypatch)
+    _force(bridge, can_scan=False, readonly=False)
+    _press(root, "scan", repeat=True)
+    assert bridge._controller._banner is None
+    _force(bridge, can_scan=False, readonly=True)
+    _press(root, "scan")
+    assert bridge._controller._banner is None

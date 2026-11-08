@@ -235,6 +235,9 @@ class Controller(
         path = session.store.preview_path(number, position, kind)
         return path if path.is_file() else None
 
+    def show_banner(self, message: str) -> None:
+        self._set(_banner=Banner(message))
+
     def dismiss_banner(self) -> None:
         self._set(_banner=None)
 
