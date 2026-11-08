@@ -21,9 +21,10 @@ Kirigami.ScrollablePage {
     // The date Use suggestion would apply: the default, or the chip the owner picked
     property string pendingDate: ""
     // The date of the previous guess: editing the text keeps a picked chip while the parsed date is unchanged
+    // and the chip is still offered (a rewrite can keep the date but drop its alternatives)
     property string guessDate: ""
     onGuessChanged: {
-        if (guess.date !== guessDate) {
+        if (guess.date !== guessDate || (pendingDate !== "" && pendingDate !== guess.date && guess.alternatives.indexOf(pendingDate) < 0)) {
             guessDate = guess.date;
             pendingDate = guess.date;
         }
