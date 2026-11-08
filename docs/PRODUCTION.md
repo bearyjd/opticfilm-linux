@@ -110,7 +110,7 @@ been run cold through the finished app. See section 7.
 |---|---|
 | 7200 dpi, driver run with `--no-clean` | about 14 min |
 | 7200 dpi, driver's own IR clean | about 22 min |
-| 3600 dpi (the new default) | about 6 min, an **estimate**: the 2026-10-31 run was a 3600 dpi tray scan at about 5 min; the app's `--slides` path at 3600 dpi has not been measured |
+| 3600 dpi (the new default) | about 6 min, an **estimate**: the 2026-10-31 run was a 3600 dpi tray scan at about 5 min; the app's `--slides` path at 3600 dpi was measured once on 2026-11-07 for 3 slides (openings 1 to 3, the app's exact command): scan pass 43.8 s per opening, position and park 5 to 18 s growing with the opening, calibration about 5.2 s on **every** opening (dual/IR scans recalibrate each time, so there is no once-per-tray saving), and 218 s wall for the command, about 73 s per slide. That is about 5 min for a full tray of 4 before the app's enhance and export, which a profile put at roughly 1 to 2 min per tray and overlaps the next scan. One unit, one tray |
 
 - The app passes `--no-clean` to the driver by default (PR #95), so a 4-slide 7200 dpi tray
   should take about 14 min. Set `OPTICFILM_DRIVER_CLEAN=1` to restore the driver's own IR
