@@ -1,6 +1,6 @@
 # Production runbook: scanning many slides
 
-For the owner scanning boxes of slides at 7200 dpi on one OpticFilm 135i. Short steps, expected
+For the owner scanning boxes of slides at 3600 dpi (the default for new batches; never lower) on one OpticFilm 135i. Short steps, expected
 times, and what to do when something goes wrong. Facts come from the owner's and maintainer's
 sessions of 2026-11-04/05, the README, the docs and the team learnings. Anything not checked is
 marked **unverified**.
@@ -31,8 +31,10 @@ This is not the developer or host-ops guide. For that see [RUNBOOK.md](RUNBOOK.m
 Tick each item.
 
 - [ ] Disk: the batch folder is **outside the repo**, on disk, not in RAM-backed `/tmp`. Allow
-      about 3.5 GB of raw data per 7200 dpi tray, and about 9 GB free for a first tray (README,
-      RUNBOOK.md, performance.md). More if you keep raw scans for many trays.
+      about 3.5 GB of raw data per 7200 dpi tray (3600 dpi is about a quarter of that, an estimate
+      from the pixel count, not measured) and about 9 GB free for a first tray at 7200 dpi
+      (README, RUNBOOK.md, performance.md). Raw scans are **kept by default**, so plan disk for every
+      tray of the box until you turn that off (see the settings table below).
 - [ ] Nothing heavy is running. The app runs the driver with `--no-clean` by default, so there
       is little post-processing per frame. With `OPTICFILM_DRIVER_CLEAN=1` the driver's own IR
       clean adds about 2 min of single-core work per frame.
@@ -41,9 +43,23 @@ Tick each item.
       For terminal driver commands you must stop it yourself (section 6).
 - [ ] Scanner has power and USB. After a power cycle, follow the cold start in step 2.1.
 - [ ] Holder is clean and loaded with up to four slides.
-- [ ] Decide the batch settings: 7200 dpi is the default for new batches. **Export JPEGs after
-      each tray** is off by default. **Keep raw scans after export** keeps the raw scans (they are already driver-cleaned when the
-      driver clean ran).
+- [ ] Check the batch settings. The defaults for a new batch are in the table below; the Start
+      page shows them and you can change them per batch.
+
+| Setting | Default for a new batch | Where to change it |
+|---|---|---|
+| dpi | **3600** (choices 600 to 7200; 7200 is too slow for a big job, owner decision 2026-11-07) | Start page. Existing batches keep the dpi stored in their `batch.json`. |
+| Export JPEGs after each tray | **on** (needs an export folder; the Start page asks for one) | Start page, and the starting choice in **Workflow settings…** |
+| JPEG size | **3600 dpi size**: the same as full size at 3600 dpi; it caps a 7200 dpi scan at 3600 dpi | Start page |
+| Skip empty openings | **on** | **Workflow settings…**, or `OPTICFILM_SKIP_EMPTY` (the variable wins and locks the switch) |
+| Keep raw scans after export | **on**, for now. This is the one switch for the raw scans: untick it on the Start page (or set `DEFAULT_KEEP_RAW` in `app/prefs.py` to change the default of new batches) and the app frees each tray's raw scans after its export is verified. The owner turns it off after two supervised trays. That freeing path has **never run on hardware**. | Start page, per batch |
+| Automatic eject | **off**, never run on hardware | **Workflow settings…**, or `OPTICFILM_AUTO_EJECT` |
+| Load & scan | **off**, never run on hardware | **Workflow settings…**, or `OPTICFILM_LOAD_AND_SCAN` |
+
+A switch you already saved in **Workflow settings…** keeps its saved value; the new defaults
+only apply to a profile that never saved it and to new batches. An environment variable still
+overrides the saved value.
+
 - [ ] Start the app with the production command:
 
 ```sh
@@ -57,7 +73,7 @@ Replace `<repo>` with the repo path. Create or open the batch **outside** the re
 
 ## 2. Scan one tray
 
-Times are for one 4-slide tray at 7200 dpi.
+Times are for one 4-slide tray. The measured figures are at 7200 dpi; the 3600 dpi figures are estimates.
 
 ### 2.1 Cold start (after any power-on or power cycle)
 
@@ -94,7 +110,7 @@ been run cold through the finished app. See section 7.
 |---|---|
 | 7200 dpi, driver run with `--no-clean` | about 14 min |
 | 7200 dpi, driver's own IR clean | about 22 min |
-| 3600 dpi | about 6 min |
+| 3600 dpi (the new default) | about 6 min, an **estimate**: the 2026-10-31 run was a 3600 dpi tray scan at about 5 min; the app's `--slides` path at 3600 dpi was measured once on 2026-11-07 for 3 slides (openings 1 to 3, the app's exact command): scan pass 43.8 s per opening, position and park 5 to 18 s growing with the opening, calibration about 5.2 s on **every** opening (dual/IR scans recalibrate each time, so there is no once-per-tray saving), and 218 s wall for the command, about 73 s per slide. That is about 5 min for a full tray of 4 before the app's enhance and export, which a profile put at roughly 1 to 2 min per tray and overlaps the next scan. One unit, one tray |
 
 - The app passes `--no-clean` to the driver by default (PR #95), so a 4-slide 7200 dpi tray
   should take about 14 min. Set `OPTICFILM_DRIVER_CLEAN=1` to restore the driver's own IR
@@ -109,6 +125,11 @@ been run cold through the finished app. See section 7.
   why they are close to the 14 min figure.
 
 ### 2.3 After the scan
+
+With the defaults, the steady-state loop per tray is: eject, swap the holder, **Load next holder**,
+**Scan**. Enhancement and export then run by themselves while the next tray scans (export is
+automatic; raw scans are kept). You only open a tray for slides that were flagged. The first
+hands-free tray with these defaults has not been run on the scanner.
 
 - The holder **stays latched** after a scan. Automatic eject exists but is **off by default**: switch it on in
   **Workflow settings…** (saved between runs) or set `OPTICFILM_AUTO_EJECT=1` (also `true`, `yes`,
@@ -164,13 +185,13 @@ Enhancement runs in the background while the next tray scans (README).
       five-swap series on one unit, with no jog and no prompt.
    4. Press **Scan**.
 
-Prefer not to export while a tray scans: the driver needs a core for post-processing. One
+Automatic export now runs while the next tray scans, which the driver's post-processing also needs a core for. One
 7200 tray was clean while a 7200 export ran (learnings, 2026-11-01), so it is allowed, but
 that is one observation.
 
 Free disk space only with the app's **Free disk space** dialog. It says what it removes before
 it does. Raw scans are removed only by that dialog, or by the batch setting below: with
-**Export JPEGs after each tray** on and **Keep raw scans after export** off, the app says
+**Export JPEGs after each tray** on and **Keep raw scans after export** turned off (it is on by default), the app says
 "Raw data is kept until you check and free the first tray. Later trays are freed after
 verification." Turn **Keep raw scans after export** on if you want to keep every raw scan.
 
@@ -305,8 +326,11 @@ runner is **unverified**; the form above matches the load command the app prints
 
 - **Cold first load through the finished app.** A prototype passed twice on 2026-11-02. The
   finished in-app flow still needs a run after a real power cycle (STATE.md: needs the owner).
-- **First hands-free tray with auto export.** Auto export is off by default. A supervised tray
-  with auto export on and keep raw on has not been run.
+- **First hands-free tray with auto export.** Auto export is now on by default for new batches. A
+  supervised tray with auto export on and keep raw on has not been run, and neither has the 3600 dpi
+  `--slides` path timing.
+- **Freeing raw scans after a verified export** (keep raw off) has never run on hardware. Keep raw
+  is on by default until the owner has watched two trays.
 - **Flatpak.** The manifest is a draft and not buildable. The sandbox integration merged as
   PR #113: sandbox detection, a host-terminal load command, watcher stop/restore via
   `flatpak-spawn --host`, and a refusal to open the scanner when the host cannot be asked. Nothing
@@ -317,8 +341,8 @@ runner is **unverified**; the form above matches the load command the app prints
 - **Light colour.** "Steady blue" is an owner observation, not in the repo.
 - **Exact `doctor` invocation on the host runner** (section 6).
 - **Speed figures** are from one unit: 14 min (`--no-clean`), 22 min (driver clean), 6 min
-  (3600 dpi). Treat them as estimates.
+  (3600 dpi, the new default; not measured through the app). Treat them as estimates.
 - **Reliability.** Passing series so far are one unit, one operator. They are not a
   reliability figure.
-- **Auto-eject** is implemented but off by default and never run on hardware, so every tray still
-  needs an eject action unless you opt in.
+- **Auto-eject** (PR #108) is merged, off by default, gated by `OPTICFILM_AUTO_EJECT` or the
+  saved switch, and never run on hardware, so every tray still needs an eject action unless you opt in.

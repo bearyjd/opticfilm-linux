@@ -3,7 +3,9 @@
 An explicit environment variable (``OPTICFILM_AUTO_EJECT``, ``OPTICFILM_SKIP_EMPTY``,
 ``OPTICFILM_LOAD_AND_SCAN``) always
 wins over the saved value and locks the switch in the app. Unset means "use the saved value",
-which is off on a fresh profile. ``OPTICFILM_SKIP_GAPS`` stays environment-only.
+which on a fresh profile is on for skip-empty and the automatic-export default and off for
+auto-eject and Load & scan (``prefs.SWITCH_DEFAULTS``).
+``OPTICFILM_SKIP_GAPS`` stays environment-only.
 """
 
 from __future__ import annotations

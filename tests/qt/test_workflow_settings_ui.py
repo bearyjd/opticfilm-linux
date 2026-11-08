@@ -92,13 +92,18 @@ def _wait_for(condition, timeout=10.0):
     raise AssertionError("timed out")
 
 
-def test_fresh_profile_shows_everything_off(window):
+def test_fresh_profile_shows_the_automatic_flow_defaults(window):
     bridge, _controller, root, _prefs = window()
-    assert not bridge.autoEjectEnabled and not bridge.skipEmptyEnabled
-    assert not bridge.autoExportDefault
-    for name in ("autoExportDefaultSwitch", "autoEjectSwitch", "skipEmptySwitch"):
+    assert not bridge.autoEjectEnabled and not bridge.loadAndScanEnabled
+    assert bridge.skipEmptyEnabled and bridge.autoExportDefault
+    expected = {
+        "autoExportDefaultSwitch": True,
+        "skipEmptySwitch": True,
+        "autoEjectSwitch": False,
+    }
+    for name, checked in expected.items():
         switch = _find(root, name)
-        assert switch.property("checked") is False
+        assert switch.property("checked") is checked
         assert switch.property("enabled") is True
 
 
@@ -117,8 +122,9 @@ def test_toggles_save_and_apply_live(window):
     assert controller.auto_eject_enabled is True
     assert preferences.read_switch(prefs, preferences.AUTO_EJECT_KEY) is True
     _toggle(root, "skipEmptySwitch")
-    assert controller.skip_empty_enabled is True
-    assert bridge.skipEmptyEnabled is True
+    assert controller.skip_empty_enabled is False
+    assert bridge.skipEmptyEnabled is False
+    assert preferences.read_switch(prefs, preferences.SKIP_EMPTY_KEY) is False
     _toggle(root, "autoEjectSwitch")
     assert controller.auto_eject_enabled is False
     assert preferences.read_switch(prefs, preferences.AUTO_EJECT_KEY) is False
@@ -127,18 +133,18 @@ def test_toggles_save_and_apply_live(window):
 def test_auto_export_default_leaves_the_open_batch_alone(window):
     bridge, controller, root, prefs = window()
     _toggle(root, "autoExportDefaultSwitch")
-    assert preferences.read_switch(prefs, preferences.AUTO_EXPORT_KEY) is True
-    assert bridge.autoExportDefault is True
+    assert preferences.read_switch(prefs, preferences.AUTO_EXPORT_KEY) is False
+    assert bridge.autoExportDefault is False
     assert controller.state().auto_export is False  # the open batch keeps its own value
 
 
 def test_new_batch_form_starts_from_the_saved_default(window):
     prefs = MemoryPrefs()
     _bridge, _controller, root, _ = window(prefs, open_batch=False)
-    assert _find(root, "newBatchAutoExport").property("checked") is False
-    preferences.remember_switch(prefs, preferences.AUTO_EXPORT_KEY, True)
-    _bridge, _controller, root, _ = window(prefs, open_batch=False)
     assert _find(root, "newBatchAutoExport").property("checked") is True
+    preferences.remember_switch(prefs, preferences.AUTO_EXPORT_KEY, False)
+    _bridge, _controller, root, _ = window(prefs, open_batch=False)
+    assert _find(root, "newBatchAutoExport").property("checked") is False
 
 
 def test_saved_values_load_at_startup(window):
@@ -187,6 +193,6 @@ def test_a_locked_change_shows_the_banner_and_is_not_saved(window):
     bridge, controller, _root, _ = window(prefs, OPTICFILM_SKIP_EMPTY="0")
     bridge.setSkipEmpty(True)
     assert controller.skip_empty_enabled is False
-    assert preferences.read_switch(prefs, preferences.SKIP_EMPTY_KEY) is False
+    assert prefs.get(preferences.SKIP_EMPTY_KEY) is None  # nothing was saved
     _wait_for(lambda: bridge.poll() or bridge.hasBanner)
     assert "OPTICFILM_SKIP_EMPTY" in bridge.bannerMessage
