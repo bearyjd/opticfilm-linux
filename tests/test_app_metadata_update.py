@@ -2,8 +2,11 @@
 on request, or by themselves when the automatic update setting is on."""
 
 import dataclasses
+import hashlib
+import os
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -244,12 +247,12 @@ def gated(monkeypatch):
         calls=[], entered=threading.Event(), gate=threading.Event(), stop_at=2
     )
 
-    def slow(path, *args):
+    def slow(path, *args, **kwargs):
         state.calls.append(path)
         if len(state.calls) == state.stop_at:
             state.entered.set()
             state.gate.wait(20)
-        return real(path, *args)
+        return real(path, *args, **kwargs)
 
     monkeypatch.setattr(meta_sync, "rewrite_xmp_file", slow)
     return state
@@ -344,3 +347,163 @@ def test_the_manual_button_can_be_stopped(exported, gated):
         c, lambda: c.state().banner is not None and "updated in 2" in c.state().banner.message
     )
     assert c.state().metadata_pending == 2
+
+
+# --- review round 2: no start can slip past a stop-and-wait, export blocks the start, recovery ---
+
+
+def test_a_stop_and_wait_cannot_miss_an_update_that_is_just_starting(auto_exported, monkeypatch):
+    c = auto_exported
+    submitted, release = threading.Event(), threading.Event()
+    real_run = c._run
+
+    def held_run(*args, **kwargs):
+        if kwargs.get("pool") is c._meta_pool:
+            submitted.set()  # the update is marked active; its job is not yet on the worker
+            release.wait(20)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(c, "_run", held_run)
+    c.apply_meta_edit("batch", "description", "Barrier")
+    wait_until(c, lambda: submitted.is_set())
+    finished = threading.Event()
+
+    def export_hand_over():
+        c._pause_metadata_update(wait=True)  # what an export does before it starts
+        finished.set()
+
+    thread = threading.Thread(target=export_hand_over)
+    thread.start()
+    assert not finished.wait(0.5)  # it waits: the update is active although its job is unborn
+    release.set()
+    thread.join(20)
+    assert finished.is_set() and not c._meta_update_active
+    assert c._meta_idle.is_set()
+
+
+def test_an_export_that_is_running_keeps_the_automatic_update_from_starting(
+    auto_exported, tmp_path, monkeypatch
+):
+    from opticfilm_linux.app import controller
+
+    c = auto_exported
+    inside, release = threading.Event(), threading.Event()
+    real_export = controller.run_export
+
+    def held_export(*args, **kwargs):
+        inside.set()
+        release.wait(30)
+        return real_export(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "run_export", held_export)
+    c.export(tmp_path / "out2", "jpeg")
+    wait_until(c, lambda: inside.is_set())
+    c.apply_meta_edit("batch", "description", "After the export")
+    wait_until(c, lambda: c.state().metadata_pending > 0)
+    for _ in range(30):
+        c.tick()
+    assert not c._meta_update_active and c._meta_update_due  # waiting for the export
+    release.set()
+    wait_until(c, lambda: c.state().metadata_pending == 0)
+
+
+def test_the_owner_stop_says_it_is_stopped_and_the_stop_button_follows_the_state(
+    auto_exported, gated
+):
+    c = auto_exported
+    assert c.state().metadata_updating is False
+    _caught_midway(c, gated)
+    wait_until(c, lambda: c.state().metadata_updating)
+    c.cancel_metadata_update()
+    gated.gate.set()
+    wait_until(c, lambda: not c.state().metadata_updating)
+    wait_until(c, lambda: c.state().banner is not None and "stopped" in c.state().banner.message)
+    assert "press Update JPEGs" in c.state().banner.message
+
+
+def test_a_stop_pressed_while_the_manual_update_is_still_queued_is_not_lost(exported):
+    c = exported
+    c.apply_meta_edit("batch", "description", "Queued")
+    wait_until(c, lambda: c.state().metadata_pending == 4)
+    c.update_exported_metadata()
+    c.cancel_metadata_update()  # the job has not started: the stop must still count
+    wait_until(
+        c, lambda: c.state().banner is not None and "updated in 0" in c.state().banner.message
+    )
+    assert c.state().metadata_pending == 4
+
+
+def _receipts_match_files(c):
+    manifest = c._session.store.snapshot()
+    records = [r for t in manifest.trays for s in t.slides for r in s.exports[-1:]]
+    return records and all(
+        hashlib.sha256(Path(r.export_path).read_bytes()).hexdigest() == r.sha256
+        and not r.pending_sha256
+        for r in records
+    )
+
+
+def test_a_crash_after_the_rename_is_recovered_and_the_receipt_finished(exported, monkeypatch):
+    from opticfilm_linux.batch import meta_sync
+
+    c = exported
+    c.apply_meta_edit("batch", "description", "Crash")
+    wait_until(c, lambda: c.state().metadata_pending == 4)
+    real = meta_sync._store_receipt
+
+    def dies_after_the_rename(store, key, old, new):
+        if not new.pending_sha256:  # the final receipt, after the file was replaced
+            raise OSError("power cut")
+        return real(store, key, old, new)
+
+    monkeypatch.setattr(meta_sync, "_store_receipt", dies_after_the_rename)
+    c.update_exported_metadata()
+    wait_until(
+        c, lambda: c.state().banner is not None and "not changed" in c.state().banner.message
+    )
+    monkeypatch.setattr(meta_sync, "_store_receipt", real)
+    records = [t.slides[0].exports[-1] for t in c._session.store.snapshot().trays]
+    assert records[0].pending_sha256  # the plan was written before the file was replaced
+    assert not _receipts_match_files(c)  # the files are new, the receipts are not finished
+    leftover = Path(records[0].export_path)
+    leftover = leftover.with_name(f".{leftover.name}.0123456789ab.tmp")
+    leftover.write_bytes(b"killed between creating and renaming")
+    os.utime(leftover, (1, 1))
+    c.update_exported_metadata()  # recovery: the file is the planned one
+    wait_until(c, lambda: c.state().metadata_pending == 0)
+    assert _receipts_match_files(c)
+    assert not leftover.exists()  # the stale temporary file of an interrupted rewrite is gone
+
+
+def test_after_a_crash_a_foreign_edit_is_still_refused(exported, monkeypatch, tmp_path):
+    from opticfilm_linux.batch import meta_sync
+
+    c = exported
+    c.apply_meta_edit("batch", "description", "Foreign")
+    wait_until(c, lambda: c.state().metadata_pending == 4)
+    real = meta_sync._store_receipt
+    monkeypatch.setattr(
+        meta_sync,
+        "_store_receipt",
+        lambda store, key, old, new: (
+            real(store, key, old, new)
+            if new.pending_sha256
+            else (_ for _ in ()).throw(OSError("power cut"))
+        ),
+    )
+    c.update_exported_metadata()
+    wait_until(
+        c, lambda: c.state().banner is not None and "not changed" in c.state().banner.message
+    )
+    monkeypatch.setattr(meta_sync, "_store_receipt", real)
+    victim = sorted(_jpegs(tmp_path))[0]
+    victim.write_bytes(victim.read_bytes() + b"edited by another program")
+    edited = victim.read_bytes()
+    c.update_exported_metadata()
+    wait_until(
+        c,
+        lambda: (
+            c.state().banner is not None and c.state().banner.message.endswith("1 not changed.")
+        ),
+    )
+    assert victim.read_bytes() == edited and c.state().metadata_pending == 1

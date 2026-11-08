@@ -197,9 +197,9 @@ def test_an_edit_during_the_update_leaves_the_slide_out_of_date(delivery, monkey
     review.edit_tray_meta(store, 1, {"date": "1980"})
     original = meta_sync.rewrite_xmp_file
 
-    def edit_meanwhile(*args):
+    def edit_meanwhile(*args, **kwargs):
         review.edit_tray_meta(store, 1, {"date": "1982"})
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(meta_sync, "rewrite_xmp_file", edit_meanwhile)
     assert update_exported_metadata(store).updated == ((1, 1),)

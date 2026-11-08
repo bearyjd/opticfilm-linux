@@ -35,7 +35,7 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
-from opticfilm_linux.jpeg_rewrite import rewrite_xmp_file
+from opticfilm_linux.jpeg_rewrite import clean_stale_temporaries, rewrite_xmp_file
 from opticfilm_linux.provenance import _estimate_fields, estimate_signature
 
 JPEG_SUFFIXES = (".jpg", ".jpeg")
@@ -111,7 +111,11 @@ def _store_receipt(store: BatchStore, key: SlideKey, old: ExportRecord, new: Exp
 
 
 def _update_one(store: BatchStore, key: SlideKey) -> bool:
-    """Rewrite one file from one snapshot; False when there was nothing (left) to do."""
+    """Rewrite one file from one snapshot; False when there was nothing (left) to do.
+
+    The planned hash goes into the receipt before the file is replaced, so a crash after the
+    rename leaves a receipt that names both the old and the planned file: the next pass accepts
+    either, and finishes the receipt."""
     manifest = store.snapshot()
     found = _find(manifest, key)
     if found is None or not metadata_out_of_date(manifest, *found):
@@ -119,12 +123,33 @@ def _update_one(store: BatchStore, key: SlideKey) -> bool:
     tray, slide = found
     path, _, digest, size = _export_receipt(slide)
     estimate = _estimate_fields(manifest, tray, slide)
-    new_digest, new_size = rewrite_xmp_file(path, digest, size or 0, estimate)
     old = slide.exports[-1]
-    new = dataclasses.replace(
-        old, sha256=new_digest, size_bytes=new_size, meta_signature=estimate_signature(estimate)
+    clean_stale_temporaries(path)
+    current = old
+
+    def record_plan(new_digest: str, new_size: int) -> None:
+        nonlocal current
+        planned = dataclasses.replace(old, pending_sha256=new_digest, pending_size=new_size)
+        _store_receipt(store, key, current, planned)
+        current = planned
+
+    new_digest, new_size = rewrite_xmp_file(
+        path,
+        digest,
+        size or 0,
+        estimate,
+        pending=(old.pending_sha256, old.pending_size),
+        before_replace=record_plan,
     )
-    _store_receipt(store, key, old, new)
+    new = dataclasses.replace(
+        old,
+        sha256=new_digest,
+        size_bytes=new_size,
+        meta_signature=estimate_signature(estimate),
+        pending_sha256="",
+        pending_size=0,
+    )
+    _store_receipt(store, key, current, new)
     return True
 
 

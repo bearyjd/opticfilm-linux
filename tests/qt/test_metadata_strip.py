@@ -512,3 +512,28 @@ def test_the_tray_range_stops_at_the_highest_tray_number(strip):
     bridge._controller._rebuild()
     bridge.clearSelection()
     _wait(bridge, lambda: find(root, "metadataStrip").property("trayTotal") == 5)
+
+
+def test_a_refused_edit_follows_the_apply_to_box_when_it_is_changed(strip):
+    bridge, root, store = strip
+    bridge.clearSelection()
+    _wait(bridge, lambda: find(root, "metaDescription").property("enabled"))
+    pick_scope(bridge, root, "tray_range")
+    find(root, "metaRangeFrom").setProperty("value", 2)
+    find(root, "metaRangeTo").setProperty("value", 1)
+    type_into(root, "metaDescription", "Moved", enter=True)
+    _wait(bridge, lambda: "first not after the last" in find(root, "metaError").property("text"))
+    pick_scope(bridge, root, "batch")  # the owner gives up on the range
+    find(root, "metaDescription").forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(root, Qt.Key.Key_Return)
+    _wait(bridge, lambda: store.snapshot().description == "Moved")
+    assert all(t.meta.description is None for t in store.snapshot().trays)
+
+
+def test_the_stop_button_shows_while_an_update_is_running(strip):
+    bridge, root, _store = strip
+    stop = find(root, "metaStopUpdate")
+    assert not stop.property("visible")
+    bridge._controller._set(_manual_meta_running=True)  # what the manual update job sets
+    bridge._controller._rebuild()
+    _wait(bridge, lambda: stop.property("visible"))

@@ -192,7 +192,7 @@ the fields says first how many slides or trays it will change. Each edit is one 
 | Selected slides / This tray | As before: the selected slides, or the one selected tray. |
 | Tray range | Sets the tray's own value on each existing tray from the first to the last number. |
 | Only slides with no value | Fills slides that have no description (or date) at any level. Never overwrites a value. A blank you set on purpose counts as a value. |
-| Add to description | Adds `; text` to what each slide's description is now (selected slides, the selected tray, or every slide if nothing is selected), saved on the slide. Refused whole if any slide would pass 500 characters, and it skips slides that already end with the text. Description only. |
+| Add to description | Adds `; text` to what each slide's description is now (selected slides, the selected tray, or every slide if nothing is selected), saved on the slide. Refused whole if any slide would pass 500 characters, and it skips slides whose description already is, or ends with `; text`, the text. Description only. |
 
 Add to description saves the combined text on each slide, so a later Entire batch or tray edit
 no longer reaches those slides (they now have their own value); use it for details that belong to
@@ -204,18 +204,30 @@ slides, the selected tray, or the batch), whatever **Apply to** says. Edits are 
 on a batch opened read-only.
 
 Exported JPEGs carry the description and date only in the `ofscan` XMP fields. An edit that
-makes exported JPEGs out of date updates them by itself (setting **Update exported JPEGs after a
-description or date edit**, on by default; `OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY`
-overrides it). It rewrites only that metadata, without encoding the picture again, as a background job that never
-makes you wait: it starts only when no scan, eject, load, export or disk-space job is running,
-and any of those (a scan, Eject, Load next holder, Load & scan, an export) stops it after the file
-it is on. It then continues by itself when they are done, and only files not yet rewritten are
-done. The banner reads "Updating metadata in exported JPEGs: 120 of 3000". Several edits in a row
-cost at most one more pass. It never touches a read-only batch or raw scans, and a file that no
-longer matches what was exported (changed by another program) is left alone and listed in the
-banner. With the setting off,
-or to retry, press **Update JPEGs**: that one runs like an export (scanning waits for it) and
-the banner has a Stop button.
+makes exported JPEGs out of date updates them by itself (setting **Update exported JPEGs after
+a description or date edit**, on by default;
+`OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY` overrides it).
+
+- It rewrites only that metadata, without encoding the picture again, as a background job that
+  never makes you wait.
+- It starts only when no scan, eject, load, export or disk-space job is running. A scan, Eject,
+  Load next holder, Load & scan or an export stops it after the file it is on, and an export
+  also waits until it has stopped. It then continues by itself, doing only the files not yet
+  rewritten.
+- The banner reads "Updating metadata in exported JPEGs: 120 of 3000" and has a **Stop
+  updating** button. After Stop it stays stopped ("press Update JPEGs to continue") until your
+  next description or date edit.
+- Several edits in a row cost at most one more pass. It never touches a read-only batch or raw
+  scans.
+- A file that no longer matches what was exported (changed by another program) is left alone
+  and listed in the banner.
+- Before each file is replaced, the app writes the new file's hash into the batch. If the app
+  or computer dies at that moment, the next pass recognises the file as its own work and
+  finishes the record. Temporary files such as `.001.jpg.0123456789ab.tmp` that a kill left in
+  the output folder are removed at the start of a pass when they are older than a minute.
+
+With the setting off, or to retry, press **Update JPEGs**: that one runs like an export
+(scanning waits for it) and also has the Stop button.
 
 ## 4. End of box or next section
 

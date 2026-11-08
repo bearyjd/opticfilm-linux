@@ -170,7 +170,9 @@ class Controller(
         self._manual_meta_cancel = threading.Event()
         self._meta_update_active = False
         self._meta_owner_stop = False
-        self._meta_future: Future | None = None
+        self._meta_idle = threading.Event()  # no automatic update is starting or running
+        self._meta_idle.set()
+        self._manual_meta_running = False
 
     def _init_holder_workers(self) -> None:
         self._init_first_load()
@@ -597,6 +599,7 @@ class Controller(
                 holder_busy=self._holder_busy,
                 next_strip=self._next_strip,
                 jobs_running=bool(self._long_jobs or self._job_futures),
+                metadata_updating=self._meta_update_active or self._manual_meta_running,
                 batch_session=self._batch_session if session else 0,
                 runner_busy=bool(
                     self._lifecycle_pending

@@ -251,6 +251,7 @@ class AppState:
     undo_label: str = ""
     scan_openings: tuple[int, ...] = ALL_POSITIONS  # what the next scan covers (SKIP_EMPTY only)
     metadata_pending: int = 0  # exported JPEGs whose description or date is not current
+    metadata_updating: bool = False  # an update of exported JPEGs is running now
     can_load_and_scan: bool = False  # the setting is on and Load & scan may start now
     load_scan_phase: Literal["idle", "loading", "waiting_ready", "scanning", "failed"] = "idle"
 
@@ -473,6 +474,7 @@ def build_state(
     holder_busy: bool = False,
     next_strip: bool | None = None,
     jobs_running: bool = False,
+    metadata_updating: bool = False,
     batch_session: int = 0,
     runner_busy: bool = False,
     holder_latch: HolderLatch = HolderLatch.UNKNOWN,
@@ -490,6 +492,7 @@ def build_state(
         **_auto_fields(manifest, readonly, preview_tokens, raw_pending),
         **_scanner_fields(*scanner_state, *holder_state),
         batch_session=batch_session,
+        metadata_updating=metadata_updating,
         readonly=readonly,
         trays=_sheet_trays(manifest, rows, preview_tokens, updating, pending),
         banner=banner,

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import threading
 from collections.abc import Callable, Mapping
-from concurrent.futures import wait as wait_futures
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,6 +24,8 @@ from opticfilm_linux.batch.model import Mode, SlideSettings, SlideStatus
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.output import Format, JpegSize
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from opticfilm_linux.app.controller import _Session
@@ -337,15 +339,23 @@ class ReviewCommands:
             self._set(_banner=Banner(f"Updating JPEGs: {update.done} of {update.total}"))
             self._rebuild()
 
+        # made now, not when the job starts: a Stop pressed while it still waits is not lost
+        cancel = self._manual_meta_cancel = threading.Event()
+
         def job(_runner: BatchRunner) -> None:
-            cancel = self._manual_meta_cancel = threading.Event()
             if self._closing.is_set():
                 cancel.set()
-            self._set(_banner=Banner("Updating the description and date in exported JPEGs"))
-            self._rebuild()
-            result = update_exported_metadata(
-                self._open_store(), on_progress=progress, cancel=cancel
+            self._set(
+                _banner=Banner("Updating the description and date in exported JPEGs"),
+                _manual_meta_running=True,
             )
+            self._rebuild()
+            try:
+                result = update_exported_metadata(
+                    self._open_store(), on_progress=progress, cancel=cancel
+                )
+            finally:
+                self._set(_manual_meta_running=False)
             self._set(_banner=Banner(*meta_update_text(result)))
             self._rebuild()
 
@@ -399,13 +409,14 @@ class ReviewCommands:
                 return  # stays due; the next drain asks again
             self._meta_update_due = False
             self._meta_update_active = True
+            self._meta_idle.clear()  # before the job exists: a waiter can never miss it
             cancel = self._meta_cancel = threading.Event()
-        self._meta_future = self._run(
+        future = self._run(
             lambda: self._run_automatic_metadata_update(session, cancel),
             "Could not update the exported JPEGs",
             pool=self._meta_pool,
         )
-        if self._meta_future is None:  # shut down meanwhile
+        if future is None:  # shut down meanwhile
             self._finish_metadata_update(cancel)
 
     def _run_automatic_metadata_update(self, session, cancel: threading.Event) -> None:
@@ -421,7 +432,11 @@ class ReviewCommands:
 
             self._meta_banner("Updating metadata in exported JPEGs")
             result = update_exported_metadata(store, on_progress=progress, cancel=cancel)
-            if cancel.is_set() and not result.failed:
+            with self._lock:
+                stopped_by_owner = self._meta_owner_stop
+            if cancel.is_set() and stopped_by_owner and not result.failed:
+                self._meta_banner("Metadata update stopped; press Update JPEGs to continue")
+            elif cancel.is_set() and not result.failed:
                 self._meta_banner(
                     "Metadata update paused; it continues when the scanner and exports are free"
                 )
@@ -434,6 +449,7 @@ class ReviewCommands:
     def _finish_metadata_update(self, cancel: threading.Event) -> None:
         with self._lock:
             self._meta_update_active = False
+            self._meta_idle.set()
             if cancel.is_set() and not self._meta_owner_stop and not self._closing.is_set():
                 self._meta_update_due = True  # stopped for something else: resume later
         self._rebuild()
@@ -457,9 +473,11 @@ class ReviewCommands:
             if not self._meta_update_active:
                 return
             self._meta_cancel.set()
-            future = self._meta_future
-        if wait and future is not None:
-            wait_futures([future], timeout=30)
+        # Wait until it has really ended, however long its current file takes: an export or a
+        # holder move must never run beside a rewrite. (``_meta_idle`` is cleared under the
+        # lock together with ``_meta_update_active``, so no start can slip past this wait.)
+        while wait and not self._meta_idle.wait(30):
+            log.warning("still waiting for the metadata update to stop after its file")
 
     def cancel_export(self) -> None:
         self._cancel_export.set()

@@ -17,8 +17,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import secrets
 import stat
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -161,20 +163,66 @@ def _replace(path: Path, data: bytes, mode: int) -> None:
         log.warning("directory sync after rewriting %s failed: %s", path, exc)
 
 
+TEMPORARY_MAX_AGE_S = 60.0
+
+
+def clean_stale_temporaries(path: Path, now: float | None = None) -> int:
+    """Remove the temporary files an interrupted rewrite of ``path`` left beside it: exactly
+    ``.<name>.<12 hex digits>.tmp``, older than a minute. Returns how many were removed."""
+    pattern = re.compile(r"\." + re.escape(path.name) + r"\.[0-9a-f]{12}\.tmp")
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        names = os.listdir(path.parent)
+    except OSError:
+        return 0
+    for name in names:
+        if not pattern.fullmatch(name):
+            continue
+        candidate = path.parent / name
+        try:
+            status = candidate.lstat()
+            if stat.S_ISREG(status.st_mode) and now - status.st_mtime > TEMPORARY_MAX_AGE_S:
+                candidate.unlink()
+                removed += 1
+        except OSError as exc:
+            log.warning("could not remove the stale temporary file %s: %s", candidate, exc)
+    return removed
+
+
 def rewrite_xmp_file(
-    path: Path, sha256: str, size_bytes: int, estimate: Mapping[str, str]
+    path: Path,
+    sha256: str,
+    size_bytes: int,
+    estimate: Mapping[str, str],
+    *,
+    pending: tuple[str, int] = ("", 0),
+    before_replace: Callable[[str, int], None] | None = None,
 ) -> tuple[str, int]:
     """Rewrite the description and date fields of the JPEG at ``path``, which must still be
-    exactly the file the export wrote; returns the new ``(sha256, size_bytes)``."""
+    exactly the file the export wrote (``sha256``, ``size_bytes``), or the file an earlier
+    rewrite was about to put there (``pending``, recorded by ``before_replace`` just before
+    its rename); returns the new ``(sha256, size_bytes)``.
+
+    ``before_replace(new_sha256, new_size)`` is called after every check and before the
+    rename, so the caller can record what the file will become: if the process dies between
+    the rename and saving the new receipt, the next pass recognises the file as its own work.
+    """
     data, mode = _read_exactly(path)
+    digest = hashlib.sha256(data).hexdigest()
+    ours = (digest, len(data)) == (sha256, size_bytes)
+    ours_pending = bool(pending[0]) and (digest, len(data)) == pending
     # the receipt is checked first, also when the fields are already current: a file that
     # another program changed must never have its receipt renewed to match it
-    if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:
+    if not (ours or ours_pending):
         raise RewriteRefused("the file changed since it was exported; it was left untouched")
     new = replace_xmp(data, lambda old: updated_packet(old, estimate))
-    if new == data:  # nothing to write; the caller renews only the signature
-        return sha256, len(data)
+    if new == data:  # nothing to write; the caller renews the receipt
+        return digest, len(data)
     if not mode & stat.S_IWUSR:
         raise RewriteRefused("the export is read-only; it was left untouched")
+    new_digest = hashlib.sha256(new).hexdigest()
+    if before_replace is not None:
+        before_replace(new_digest, len(new))
     _replace(path, new, mode)
-    return hashlib.sha256(new).hexdigest(), len(new)
+    return new_digest, len(new)

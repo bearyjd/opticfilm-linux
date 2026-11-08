@@ -123,6 +123,7 @@ Rectangle {
                 index = i;
         }
         scopeBox.currentIndex = index;
+        refreshPreview();
     }
 
     // The fields show the selection's values unless the owner is in the middle of changing them.
@@ -433,6 +434,11 @@ Rectangle {
                 onActivated: {
                     strip.keptScope = currentValue === "slides" || currentValue === "tray" ? "" : currentValue;
                     strip.error = "";
+                    // a refused edit still waiting to be corrected follows the box
+                    if (strip.target !== null)
+                        strip.target = Object.assign({}, strip.target, {
+                            mode: currentValue
+                        });
                     strip.refreshPreview();
                 }
                 onCurrentValueChanged: {
@@ -513,7 +519,7 @@ Rectangle {
         PillButton {
             objectName: "metaStopUpdate"
             Layout.columnSpan: content.columns
-            visible: bridge.hasBanner && bridge.bannerMessage.indexOf("Updating") === 0 && bridge.bannerMessage.indexOf("JPEG") >= 0
+            visible: bridge.metadataUpdating
             text: qsTr("Stop updating")
             Accessible.name: qsTr("Stop updating the exported JPEGs after the file it is on")
             onClicked: bridge.cancelMetadataUpdate()
