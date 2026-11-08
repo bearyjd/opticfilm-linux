@@ -153,6 +153,7 @@ class HolderCommands:
 
     def _reserve_holder(self, refused: Callable[[str], str] | None) -> bool:
         """Claim the holder worker; False after showing why not (a pending move, unworded)."""
+        self._pause_metadata_update()  # an eject or load needs the scanner side free
         cut_off = self._scanner_cut_off()  # read outside the lock: the poller may report
         with self._lock:
             busy = self._holder_busy
@@ -318,6 +319,7 @@ class HolderCommands:
     def _reserved_scan(self, job: Callable[[BatchRunner], None], message: str) -> None:
         """Submit a scan, unless the holder is moving; the scan counts as queued until the
         runner has it."""
+        self._pause_metadata_update()
         with self._lock:
             refused = self._holder_busy
             released = self._holder_latch is holder_latch.HolderLatch.RELEASED

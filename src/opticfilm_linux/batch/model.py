@@ -107,6 +107,10 @@ class ExportRecord:
     sha256: str = ""
     render_signature: str = ""
     meta_signature: str = ""  # what the JPEG says about description and date; "" = nothing
+    # Written before a metadata rewrite replaces the file: the hash and size the file will have,
+    # so a crash between the rename and saving the new receipt can be told from a foreign edit.
+    pending_sha256: str = ""
+    pending_size: int = 0
 
 
 @dataclass(frozen=True)

@@ -108,6 +108,7 @@ class Controller(
         auto_eject: bool | None = None,  # None: read OPTICFILM_AUTO_EJECT
         env_locked: frozenset[str] = frozenset(),  # switches an environment variable decides
         load_and_scan: bool = False,  # Load & scan stays off until the hardware check passes
+        update_exported_metadata_automatically: bool = True,  # JPEGs follow description/date edits
         load_ready_timeout_s: float = LOAD_READY_TIMEOUT_S,
         load_clock: Callable[[], float] = time.monotonic,  # the READY wait's own clock
     ) -> None:
@@ -119,6 +120,7 @@ class Controller(
         self._auto_eject = auto_eject_enabled() if auto_eject is None else auto_eject
         self._init_scan_openings(skip_empty, skip_gaps)
         self._init_workflow_settings(env_locked)
+        self._update_metadata = update_exported_metadata_automatically
         self._init_holder_workers()
         self._init_load_and_scan(load_and_scan, load_ready_timeout_s, load_clock)
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
@@ -159,6 +161,18 @@ class Controller(
         self._jobs = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
         )
+        # The automatic update of exported JPEGs: its own low-priority worker, so it never
+        # counts as an export (see ReviewCommands._resume_metadata_update).
+        self._meta_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="app-meta", initializer=lower_worker_priority
+        )
+        self._meta_cancel = threading.Event()
+        self._manual_meta_cancel = threading.Event()
+        self._meta_update_active = False
+        self._meta_owner_stop = False
+        self._meta_idle = threading.Event()  # no automatic update is starting or running
+        self._meta_idle.set()
+        self._manual_meta_running = False
 
     def _init_holder_workers(self) -> None:
         self._init_first_load()
@@ -246,6 +260,9 @@ class Controller(
         self._cancel_export.set()
         self._cancel_free.set()
         self._cancel_auto.set()
+        self._meta_cancel.set()
+        self._manual_meta_cancel.set()
+        self._meta_pool.shutdown(wait=True, cancel_futures=True)
         self._holder_pool.shutdown(wait=True, cancel_futures=True)  # a running move completes
         self._jobs.shutdown(wait=True, cancel_futures=True)
         self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
@@ -411,6 +428,8 @@ class Controller(
         self._cancel_export.set()
         self._cancel_free.set()
         self._cancel_auto.set()
+        self._manual_meta_cancel.set()
+        self._pause_metadata_update(wait=True)
         with self._jobs_idle:
             self._jobs_idle.wait_for(lambda: not self._job_futures)
 
@@ -478,6 +497,7 @@ class Controller(
             self._submit_auto_due()
             for event in finished:
                 self._auto_eject_after(event)
+            self._resume_metadata_update()  # also after a failed scan, which ends without a finish
 
     def _apply_event(self, event) -> None:
         if isinstance(event, TrayStageChanged):
@@ -579,6 +599,7 @@ class Controller(
                 holder_busy=self._holder_busy,
                 next_strip=self._next_strip,
                 jobs_running=bool(self._long_jobs or self._job_futures),
+                metadata_updating=self._meta_update_active or self._manual_meta_running,
                 batch_session=self._batch_session if session else 0,
                 runner_busy=bool(
                     self._lifecycle_pending

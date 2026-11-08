@@ -7,7 +7,7 @@ from pathlib import Path
 
 from opticfilm_linux.app import selection
 from opticfilm_linux.app.state import Banner, selection_fields
-from opticfilm_linux.batch import review
+from opticfilm_linux.batch import meta_bulk, review
 from opticfilm_linux.batch.export import clear_exported
 from opticfilm_linux.batch.metadata import checked_override
 from opticfilm_linux.batch.model import SlideSettings, SlideStatus, TrayStage
@@ -239,6 +239,7 @@ class SelectionCommands:
             self._undo, _ = selection.pop_undo(self._undo)
         self._bulk_result(result)
         self._requeue_verified(runner, result.before)
+        self._queue_metadata_update_if_due()
         self._kick_refresh()
 
     def _requeue_verified(self, runner, before) -> None:
@@ -300,9 +301,9 @@ class SelectionCommands:
         self._check_meta_target(number)
         self._run_meta_edit(lambda store: review.edit_tray_meta(store, number, change))
 
-    def set_batch_meta(self, field: str, value: str | None, scope: str = "from_now_on") -> None:
-        """Change the batch default; ``from_now_on`` (the default) keeps existing trays as
-        they are, ``inheriting`` changes every slide that still inherits it."""
+    def set_batch_meta(self, field: str, value: str | None, scope: str = "inheriting") -> None:
+        """Change the batch default; ``inheriting`` (the default, "Entire batch") changes every
+        slide that still inherits it, ``from_now_on`` keeps existing trays as they are."""
         if scope not in review.META_SCOPES:
             raise ValueError(f"scope must be one of {', '.join(review.META_SCOPES)}")
         checked_override(field, value)
@@ -320,9 +321,47 @@ class SelectionCommands:
                     self._undo = selection.push_undo(self._undo, entry)
             self._bulk_result(result)
             self._requeue_verified(runner, result.before)
+            if not result.before.empty:
+                self._queue_metadata_update_if_due()
             self._kick_refresh()
 
         self._run_selection_writer(job, "Could not change the description or date")
+
+    def _bulk_meta(self, scope, field, value, keys, tray, first, last) -> meta_bulk.BulkMetaEdit:
+        return meta_bulk.BulkMetaEdit(
+            scope,
+            field,
+            value,
+            keys=frozenset((int(t), int(p)) for t, p in keys),
+            tray=None if tray is None else int(tray),
+            first=None if first is None else int(first),
+            last=None if last is None else int(last),
+        )
+
+    def preview_meta_edit(
+        self, scope, field, value, keys=(), tray=None, first=None, last=None
+    ) -> str:
+        """What a bulk description/date edit would change, e.g. "Changes 148 slides", before it
+        is applied. Raises ValueError with the reason when it would be refused."""
+        edit = self._bulk_meta(scope, field, value, keys, tray, first, last)
+        with self._lock:
+            manifest = self._manifest
+        if manifest is None:
+            raise ValueError("Open a batch first")
+        try:
+            return meta_bulk.plan(manifest, edit).summary()
+        except LookupError as exc:  # a tray or slide that is not in the batch
+            raise ValueError(str(exc)) from exc
+
+    def apply_meta_edit(
+        self, scope, field, value, keys=(), tray=None, first=None, last=None
+    ) -> None:
+        """A bulk description/date edit (see ``batch.meta_bulk`` for the scopes) as one write and
+        one undo step. Refused at once, before anything is queued, when it cannot apply."""
+        edit = self._bulk_meta(scope, field, value, keys, tray, first, last)
+        self._check_meta_target(edit.tray)
+        self.preview_meta_edit(scope, field, value, keys, tray, first, last)
+        self._run_meta_edit(lambda store: meta_bulk.apply(store, edit)[0])
 
     def reexport_selection(self) -> None:
         from opticfilm_linux.app import controller

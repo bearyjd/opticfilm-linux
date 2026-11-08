@@ -4,8 +4,10 @@ import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 
 // Description and estimated date of what is selected: slides, one tray (only trays selected), or
-// the batch default for trays scanned next (nothing selected). Edits apply on Enter or leaving
-// a field; the review shortcuts never see keys typed here (MainPage skips them).
+// the whole batch (nothing selected). The "Apply to" box picks what an edit reaches (the batch
+// scopes are in batch/meta_bulk.py) and a line under the fields counts what it will change.
+// Edits apply on Enter or leaving a field (Add to description: on Enter only); the review
+// shortcuts never see keys typed here (MainPage skips them).
 Rectangle {
     id: strip
     objectName: "metadataStrip"
@@ -32,6 +34,49 @@ Rectangle {
     property string shownDescription: ""
     property string shownDate: ""
     property bool pendingBatchFocus: false
+    // What an edit reaches, from the "Apply to" box; the first entry is the selection's own scope.
+    readonly property var scopeOptions: {
+        const bulk = [
+            {
+                key: "batch",
+                label: qsTr("Entire batch")
+            },
+            {
+                key: "from_now_on",
+                label: qsTr("Only trays scanned from now on")
+            },
+            {
+                key: "tray_range",
+                label: qsTr("Tray range")
+            },
+            {
+                key: "empty_only",
+                label: qsTr("Only slides with no value")
+            },
+            {
+                key: "append",
+                label: qsTr("Add to description")
+            }
+        ];
+        if (scope === "slides")
+            return [{
+                    key: "slides",
+                    label: qsTr("Selected slides")
+                }].concat(bulk);
+        if (scope === "tray" && singleTray > 0)
+            return [{
+                    key: "tray",
+                    label: qsTr("This tray")
+                }].concat(bulk);
+        return bulk;
+    }
+    readonly property string chosenScope: scopeBox.currentValue || (scope === "batch" ? "batch" : scope)
+    readonly property bool appendMode: chosenScope === "append"
+    property int trayTotal: 1
+    // the owner's batch-level choice in the Apply to box, kept while the selection changes
+    property string keptScope: ""
+    property string previewText: ""
+    property bool previewRefused: false
     // shown on request even where a short window would leave it out (see MainPage)
     property bool requested: false
     property string requestedScope: ""
@@ -51,6 +96,7 @@ Rectangle {
     onIdentityChanged: {
         error = "";
         commitPending();
+        Qt.callLater(restoreScope);  // after the box has its new entries
         if (requested && scope !== requestedScope)
             requested = false;
         sync();
@@ -68,9 +114,22 @@ Rectangle {
         }
     }
 
+    // A new selection starts at its own scope, unless the owner picked a batch-level scope
+    // (entire batch, from now on, tray range, ...) that still applies: that choice stays.
+    function restoreScope() {
+        let index = 0;
+        for (let i = 0; i < scopeOptions.length; i++) {
+            if (keptScope !== "" && scopeOptions[i].key === keptScope)
+                index = i;
+        }
+        scopeBox.currentIndex = index;
+        refreshPreview();
+    }
+
     // The fields show the selection's values unless the owner is in the middle of changing them.
     function sync() {
-        if (!descriptionDirty) {
+        trayTotal = Math.max(1, summary.trayMax || 1);
+        if (!descriptionDirty && !appendMode) {
             shownDescription = meta.description || "";
             descriptionField.text = shownDescription;
         }
@@ -84,7 +143,7 @@ Rectangle {
         }
     }
 
-    // Hands-free scanning: edit the batch default ("Next tray") without stopping.
+    // Hands-free scanning: edit the entire batch ("Batch: ...") without stopping.
     function focusBatch() {
         requested = true;
         requestedScope = "batch";
@@ -105,9 +164,41 @@ Rectangle {
     function currentTarget() {
         return {
             scope: scope,
+            mode: chosenScope,
             keys: JSON.parse(JSON.stringify(bridge.selection)),
             tray: singleTray
         };
+    }
+
+    // The slides, tray or tray range a bulk edit is aimed at (the backend ignores what its scope
+    // does not use).
+    function bulkTarget(t) {
+        const target = {
+            keys: t.keys
+        };
+        if (t.tray > 0)
+            target.tray = t.tray;
+        target.first = rangeFrom.value;
+        target.last = rangeTo.value;
+        return target;
+    }
+
+    // "Changes 148 slides" for what is typed and not yet applied, or why it would be refused.
+    function refreshPreview() {
+        const t = target || currentTarget();
+        const parts = [];
+        let refused = false;
+        const add = (field, value) => {
+            const r = bridge.previewMetaEdit(t.mode, field, value, bulkTarget(t));
+            parts.push(r.text);
+            refused = refused || !r.ok;
+        };
+        if (descriptionDirty)
+            add("description", descriptionField.text);
+        if (dateDirty && dateField.dateProblem === "")
+            add("date", dateField.dateText);
+        previewText = parts.join(" · ");
+        previewRefused = refused;
     }
 
     function beginEdit() {
@@ -126,8 +217,9 @@ Rectangle {
         descriptionDirty = false;
         dateDirty = false;
         target = null;
-        descriptionField.text = shownDescription;
+        descriptionField.text = appendMode ? "" : shownDescription;
         dateField.setDate(shownDate);
+        refreshPreview();
         reviewFocusRequested();
     }
 
@@ -156,38 +248,65 @@ Rectangle {
     // kind: "set" (value), "clear" ("" at this level) or "reset" (inherit again)
     function apply(field, kind, value, to) {
         if (!editable)
-            return;
+            return "";
         const t = to || currentTarget();
-        const batchScope = scopeBox.currentValue;
+        const batchScope = (t.mode || chosenScope) === "from_now_on" ? "from_now_on" : "inheriting";
         let refusal;
-        if (t.scope === "slides")
-            refusal = kind === "set" ? bridge.setSlidesMeta(t.keys, field, value) : kind === "clear" ? bridge.clearSlidesMeta(t.keys, field) : bridge.resetSlidesMeta(t.keys, field);
+        if (kind === "set")
+            refusal = bridge.applyMetaEdit(t.mode || t.scope, field, value, bulkTarget(t));
+        else if (t.scope === "slides")
+            refusal = kind === "clear" ? bridge.clearSlidesMeta(t.keys, field) : bridge.resetSlidesMeta(t.keys, field);
         else if (t.scope === "batch")
-            refusal = kind === "set" ? bridge.setBatchMeta(field, value, batchScope) : bridge.clearBatchMeta(field, batchScope);
+            refusal = bridge.clearBatchMeta(field, batchScope);
         else
-            refusal = kind === "set" ? bridge.setTrayMeta(t.tray, field, value) : kind === "clear" ? bridge.clearTrayMeta(t.tray, field) : bridge.resetTrayMeta(t.tray, field);
+            refusal = kind === "clear" ? bridge.clearTrayMeta(t.tray, field) : bridge.resetTrayMeta(t.tray, field);
         // Clear and Reset touch both fields: keep the first refusal of the pair
         if (refusal !== "" || kind === "set")
             error = refusal;
+        return kind === "set" ? refusal : "";
     }
 
     // Unchanged text is no change: a mixed field typed into and emptied again stays mixed.
-    function applyDescription() {
+    // explicit: true (Enter) or false (leaving the field) when the owner did it; undefined when
+    // the selection moved. A refused edit the owner asked for keeps the typed text and its
+    // target, so it can be corrected (for example a tray range) and applied again.
+    function applyDescription(explicit) {
         if (!descriptionDirty)
             return;
         descriptionDirty = false;
-        if (descriptionField.text !== shownDescription)
-            apply("description", "set", descriptionField.text, target);
+        let refusal = "";
+        // Add to description is never applied by leaving the field: only Enter adds the text.
+        if (appendMode) {
+            if (explicit && descriptionField.text.trim() !== "")
+                refusal = apply("description", "set", descriptionField.text, target);
+            if (refusal === "" || explicit === undefined)
+                descriptionField.text = "";
+        } else if (descriptionField.text !== shownDescription) {
+            refusal = apply("description", "set", descriptionField.text, target);
+        }
+        if (refusal !== "" && explicit !== undefined) {
+            descriptionDirty = true;
+            refreshPreview();
+            return;
+        }
         endEditIfDone();
+        refreshPreview();
     }
 
-    function applyDate() {
+    function applyDate(user) {
         if (!dateDirty || dateField.dateProblem !== "")
             return;  // the inline date message says why; nothing is sent
         dateDirty = false;
+        let refusal = "";
         if (dateField.dateText !== shownDate)
-            apply("date", "set", dateField.dateText, target);
+            refusal = apply("date", "set", dateField.dateText, target);
+        if (refusal !== "" && user === true) {
+            dateDirty = true;
+            refreshPreview();
+            return;
+        }
         endEditIfDone();
+        refreshPreview();
     }
 
     // before the selection changes (a click on the sheet) or after it changed
@@ -223,7 +342,7 @@ Rectangle {
                 objectName: "metaScopeLabel"
                 color: Theme.muted
                 font.pixelSize: Theme.fontSmall
-                text: strip.scope === "batch" ? qsTr("Next trays:") : strip.scope === "tray" ? (strip.singleTray > 0 ? qsTr("Tray %1:").arg(strip.singleTray) : qsTr("Select one tray")) : qsTr("%1 selected:").arg(strip.summary.count || 0)
+                text: strip.scope === "batch" ? qsTr("Entire batch:") : strip.scope === "tray" ? (strip.singleTray > 0 ? qsTr("Tray %1:").arg(strip.singleTray) : qsTr("Select one tray")) : qsTr("%1 selected:").arg(strip.summary.count || 0)
             }
             QQC2.TextField {
                 id: descriptionField
@@ -232,18 +351,24 @@ Rectangle {
                 Layout.minimumWidth: Theme.gu * 6
                 enabled: strip.editable
                 maximumLength: 500
-                placeholderText: strip.meta.description == null ? qsTr("(mixed)") : qsTr("Description")
+                placeholderText: strip.appendMode ? qsTr("Text to add to each description") : strip.meta.description == null ? qsTr("(mixed)") : qsTr("Description")
                 Accessible.name: qsTr("Description")
-                Accessible.description: strip.scope === "batch" ? qsTr("Press Enter to apply to trays scanned next") : qsTr("Press Enter to apply to the selection")
+                Accessible.description: qsTr("Press Enter to apply; the line below says what it will change")
                 onTextEdited: {
                     strip.beginEdit();
                     strip.descriptionDirty = true;
+                    strip.refreshPreview();
                 }
                 onAccepted: {
-                    strip.applyDescription();
-                    strip.reviewFocusRequested();
+                    strip.applyDescription(true);
+                    if (!strip.descriptionDirty)  // a refused edit stays here to be corrected
+                        strip.reviewFocusRequested();
                 }
-                onEditingFinished: strip.applyDescription()
+                // Qt emits editingFinished before accepted: Add to description waits for Enter
+                onEditingFinished: {
+                    if (!strip.appendMode)
+                        strip.applyDescription(false);
+                }
                 Keys.onEscapePressed: strip.leave()
             }
             LevelChip {
@@ -276,8 +401,9 @@ Rectangle {
                 onChanging: {
                     strip.beginEdit();
                     strip.dateDirty = true;
+                    Qt.callLater(strip.refreshPreview);
                 }
-                onEdited: strip.applyDate()
+                onEdited: strip.applyDate(true)
                 Keys.onEscapePressed: strip.leave()
             }
             LevelChip {
@@ -296,24 +422,54 @@ Rectangle {
             QQC2.ComboBox {
                 id: scopeBox
                 objectName: "metaBatchScope"
-                visible: strip.scope === "batch"
                 enabled: strip.editable
                 Layout.fillWidth: true
                 Layout.minimumWidth: Theme.gu * 6
                 Layout.maximumWidth: implicitWidth
-                model: [
-                    {
-                        key: "from_now_on",
-                        label: qsTr("Apply to: only trays scanned from now on")
-                    },
-                    {
-                        key: "inheriting",
-                        label: qsTr("Apply to: all slides still inheriting")
-                    }
-                ]
+                model: strip.scopeOptions
                 textRole: "label"
                 valueRole: "key"
-                Accessible.name: qsTr("Apply batch changes to")
+                displayText: qsTr("Apply to: %1").arg(currentText)
+                Accessible.name: qsTr("Apply the edit to")
+                onActivated: {
+                    strip.keptScope = currentValue === "slides" || currentValue === "tray" ? "" : currentValue;
+                    strip.error = "";
+                    // a refused edit still waiting to be corrected follows the box
+                    if (strip.target !== null)
+                        strip.target = Object.assign({}, strip.target, {
+                            mode: currentValue
+                        });
+                    strip.refreshPreview();
+                }
+                onCurrentValueChanged: {
+                    if (strip.appendMode)
+                        descriptionField.text = "";
+                    else
+                        strip.sync();
+                    strip.refreshPreview();
+                }
+                Keys.onEscapePressed: strip.leave()
+            }
+            QQC2.SpinBox {
+                id: rangeFrom
+                objectName: "metaRangeFrom"
+                visible: strip.chosenScope === "tray_range"
+                from: 1
+                to: strip.trayTotal
+                value: 1
+                Accessible.name: qsTr("First tray")
+                onValueModified: strip.refreshPreview()
+                Keys.onEscapePressed: strip.leave()
+            }
+            QQC2.SpinBox {
+                id: rangeTo
+                objectName: "metaRangeTo"
+                visible: strip.chosenScope === "tray_range"
+                from: 1
+                to: strip.trayTotal
+                value: strip.trayTotal
+                Accessible.name: qsTr("Last tray")
+                onValueModified: strip.refreshPreview()
                 Keys.onEscapePressed: strip.leave()
             }
             Item {
@@ -349,7 +505,8 @@ Rectangle {
             }
         }
         PillButton {
-            // Never automatic, also not in hands-free mode: only this button rewrites JPEGs.
+            // Shown while some exported JPEGs are out of date: with the automatic update setting on they
+            // are rewritten by themselves; this button does it on request (setting off, or a retry).
             objectName: "metaUpdateJpegs"
             Layout.columnSpan: content.columns
             visible: bridge.metadataPending > 0
@@ -358,6 +515,26 @@ Rectangle {
             Accessible.name: qsTr("Put the current description and date into %1 exported JPEGs").arg(bridge.metadataPending)
             Accessible.description: qsTr("Only the description and date change; the image is not encoded again")
             onClicked: bridge.updateExportedMetadata()
+        }
+        PillButton {
+            objectName: "metaStopUpdate"
+            Layout.columnSpan: content.columns
+            visible: bridge.metadataUpdating
+            text: qsTr("Stop updating")
+            Accessible.name: qsTr("Stop updating the exported JPEGs after the file it is on")
+            onClicked: bridge.cancelMetadataUpdate()
+        }
+        QQC2.Label {
+            objectName: "metaCount"
+            Layout.fillWidth: true
+            Layout.columnSpan: content.columns
+            visible: text !== ""
+            text: strip.previewText
+            Accessible.role: Accessible.StaticText
+            Accessible.name: text
+            color: strip.previewRefused ? Kirigami.Theme.negativeTextColor : Theme.muted
+            font.pixelSize: Theme.fontSmall
+            wrapMode: Text.WordWrap
         }
         QQC2.Label {
             objectName: "metaError"

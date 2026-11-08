@@ -15,8 +15,9 @@ def make_controller(
     sweep_dir: Path,
     statuses: Sequence[ScannerStatus] = (ScannerStatus.READY,),
     before_scan: Callable[[], None] | None = None,
+    **settings,
 ) -> Controller:
-    return Controller(lambda _dpi: FakeScanner(sweep_dir, statuses, before_scan))
+    return Controller(lambda _dpi: FakeScanner(sweep_dir, statuses, before_scan), **settings)
 
 
 def wait_until(controller: Controller, condition: Callable[[], bool], timeout=TIMEOUT) -> None:

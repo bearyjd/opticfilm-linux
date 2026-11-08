@@ -633,10 +633,27 @@ def _pinned(manifest: BatchManifest, fields: Iterable[str]) -> dict[int, MetaOve
     return pins
 
 
+def batch_meta_change(
+    manifest: BatchManifest, values: Mapping[str, str | None], scope: str
+) -> tuple[BatchManifest, BeforeMeta]:
+    """Pure: the manifest with the batch default changed (``values`` already checked by
+    ``_batch_value``), and what an undo needs. ``from_now_on`` first pins the current values on
+    trays that still inherit them."""
+    new = {f: v for f, v in values.items() if getattr(manifest, f) != v}
+    pins = _pinned(manifest, new) if new and scope == "from_now_on" else {}
+    before = BeforeMeta(
+        trays={t.number: t.meta for t in manifest.trays if t.number in pins},
+        batch=(manifest.description, manifest.date) if new else None,
+    )
+    changed = dataclasses.replace(_with_tray_metas(manifest, pins), **new) if new else manifest
+    return changed, before
+
+
 def edit_batch_meta(
-    store: BatchStore, change: Mapping[str, str | None], *, scope: str = "from_now_on"
+    store: BatchStore, change: Mapping[str, str | None], *, scope: str = "inheriting"
 ) -> MetaEditResult:
-    """Change the batch default. ``from_now_on`` first pins the current values on existing
+    """Change the batch default. ``inheriting`` (the default) changes every slide that still
+    inherits it, in every tray. ``from_now_on`` first pins the current values on existing
     trays that still inherit them, in the same update, so only later trays get the change.
     A field set to the value it already has changes nothing and pins nothing."""
     if scope not in META_SCOPES:
@@ -645,14 +662,9 @@ def edit_batch_meta(
     result: list[MetaEditResult] = []
 
     def update(manifest: BatchManifest) -> BatchManifest:
-        new = {f: v for f, v in values.items() if getattr(manifest, f) != v}
-        pins = _pinned(manifest, new) if new and scope == "from_now_on" else {}
-        before = BeforeMeta(
-            trays={t.number: t.meta for t in manifest.trays if t.number in pins},
-            batch=(manifest.description, manifest.date) if new else None,
-        )
+        changed, before = batch_meta_change(manifest, values, scope)
         result[:] = [MetaEditResult({}, before)]
-        return dataclasses.replace(_with_tray_metas(manifest, pins), **new) if new else manifest
+        return changed
 
     store.update(update)
     return result[0]
