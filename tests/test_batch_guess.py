@@ -574,11 +574,18 @@ def test_a_short_year_range_with_words_is_a_year_range(text):
 
 
 @pytest.mark.parametrize("text", ["'76 to '74", "'76-'74"])
-def test_a_reversed_short_year_range_is_read_ascending_with_a_note(text):
+def test_a_reversed_short_year_range_is_a_conflict_like_the_four_digit_form(text):
     result = guess(text)
-    assert result.date == E(1975)
-    assert result.alternatives == years(1974, 1975, 1976)
+    assert result.date is None
+    assert result.alternatives == years(1974, 1976)
     assert has_note(result, "ends before it starts")
+
+
+def test_a_capital_c_initial_is_not_taken_as_circa():
+    result = guess("Aunt C. 1975")
+    assert result.date == E(1975)
+    assert not has_note(result, "approximate")
+    assert has_note(guess("c. 1975"), "approximate")
 
 
 @pytest.mark.parametrize("text", ["rock'n 74", "rock'n'74", "rock'n 74 to 76"])

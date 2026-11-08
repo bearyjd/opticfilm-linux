@@ -102,7 +102,7 @@ _RE_NUM_MY = re.compile(r"(?<![\d/.-])(?P<m>\d{1,2})/(?P<y>\d{4})(?![\d/])", _F)
 _RE_SHORT_YEAR = re.compile(rf"(?<![\w'’]){_QUOTE}(?P<y>\d{{2}})(?!\d)", _F)
 # a year stands alone: not glued to letters or digits, not "v1.1974", not after "555-"
 _RE_APPROX = re.compile(
-    r"(?:(?<![A-Za-z])(?:circa|ca|c|about|approx(?:imately)?|around)\b\.?\s*|~\s*)"
+    r"(?:(?<![A-Za-z])(?:circa|ca|(?-i:c)|about|approx(?:imately)?|around)\b\.?\s*|~\s*)"
     rf"(?P<y>{_YEAR4})(?![A-Za-z\d])|(?<![A-Za-z\d])(?P<y2>{_YEAR4})ish\b",
     _F,
 )
@@ -247,10 +247,11 @@ def _take_short_range(found: _Found, hi: int, m: re.Match[str]) -> bool:
     if first is None or last is None or last == first:
         return False  # "'74-'76" only; bare pairs like "35-40" are slide numbers
     if last < first:
+        # Same policy as the four-digit path: two unrelated years are not swapped into a range
         found.notes.append(
-            f"{m.group(0)}: the range ends before it starts, so it was read as {last}-{first}"
+            f"{m.group(0)}: the range ends before it starts, so it was not read as a range"
         )
-        first, last = last, first
+        return False
     found.groups.append(("range", first, last))
     return True
 
