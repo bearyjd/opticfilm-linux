@@ -47,7 +47,7 @@ Kirigami.PromptDialog {
     onAccepted: confirmed()
 
     // Enter activates the accept button: it takes the focus when the dialog opens.
-    onAboutToShow: Qt.callLater(focusAccept)
+    onAboutToShow: focusAccept()
     function focusAccept() {
         for (let i = 0; i < buttonBox.count; ++i) {
             if (buttonBox.itemAt(i).rejecting === dialog.defaultReject) {

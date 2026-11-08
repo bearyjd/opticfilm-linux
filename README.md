@@ -203,7 +203,8 @@ Plain letter keys run the tray controls, behind the same gates as the buttons: `
 do nothing when their button is disabled, `X` needs at least one tray in the list, `F` needs a box
 (collection) that can be finished, and `Enter` is also ignored while a button has keyboard focus
 (for example Eject reached by Tab). Any modifier key, a held (auto-repeating) key, a read-only batch or
-typing in a text field turns them off. **Keyboard shortcuts…** in the overflow menu lists them.
+typing in a text field turns them off. A letter whose button is disabled shows the reason as a
+banner (not for a held key, a read-only batch or a text field). **Keyboard shortcuts…** in the overflow menu lists them.
 
 | Key | Action |
 |---|---|

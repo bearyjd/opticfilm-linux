@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 class ReviewCommands:
     def scan(self) -> None:
         with self._lock:
+            runner = self._session.runner if self._session is not None else None
+            if self._scans_queued or (runner is not None and runner.scan_pending()):
+                self._banner = Banner("Wait for the scan or section change to finish")
+                return  # a second press (a key, a double click) while one is queued or running
             skipped = self._take_scan_openings()  # fixed now: a later choice cannot change it
         self._reserved_scan(
             lambda runner: runner.scan_tray(skipped=skipped), "Could not start a scan"
