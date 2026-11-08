@@ -21,6 +21,8 @@ SKIP_GAPS_ENV = "OPTICFILM_SKIP_GAPS"  # on, with SKIP_EMPTY: any set of opening
 # The app's own eject after a good tray (plan rungs H5/H7/H8, untested on hardware): off.
 AUTO_EJECT_ENV = "OPTICFILM_AUTO_EJECT"
 LOAD_AND_SCAN_ENV = "OPTICFILM_LOAD_AND_SCAN"  # on/off decides over the saved setting
+# On by default: rewrite the description and date in exported JPEGs after an edit (no hardware).
+UPDATE_METADATA_ENV = "OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY"
 
 
 EJECT_BUTTON_OFF = ("0", "false", "no", "off")

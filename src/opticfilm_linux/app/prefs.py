@@ -25,7 +25,14 @@ AUTO_EJECT_KEY = "workflow/auto_eject"
 SKIP_EMPTY_KEY = "workflow/skip_empty"
 AUTO_EXPORT_KEY = "workflow/auto_export_default"
 LOAD_AND_SCAN_KEY = "workflow/load_and_scan"
-SWITCH_KEYS = (AUTO_EJECT_KEY, SKIP_EMPTY_KEY, AUTO_EXPORT_KEY, LOAD_AND_SCAN_KEY)
+UPDATE_METADATA_KEY = "workflow/update_exported_metadata_automatically"
+SWITCH_KEYS = (
+    AUTO_EJECT_KEY,
+    SKIP_EMPTY_KEY,
+    AUTO_EXPORT_KEY,
+    LOAD_AND_SCAN_KEY,
+    UPDATE_METADATA_KEY,
+)
 _SWITCH_ON = ("1", "true")
 
 
@@ -58,11 +65,14 @@ def remember_theme(prefs: Prefs, name: str) -> None:
     prefs.set(THEME_KEY, name)
 
 
-def read_switch(prefs: Prefs, key: str) -> bool:
-    """A saved workflow switch; absent, malformed or unknown values are off."""
+def read_switch(prefs: Prefs, key: str, default: bool = False) -> bool:
+    """A saved workflow switch. Absent means ``default``; malformed or unknown values are off."""
     if key not in SWITCH_KEYS:
         return False
-    return (prefs.get(key, "") or "").strip().lower() in _SWITCH_ON
+    raw = prefs.get(key, None)
+    if raw is None:
+        return default
+    return raw.strip().lower() in _SWITCH_ON
 
 
 def remember_switch(prefs: Prefs, key: str, value: bool) -> None:

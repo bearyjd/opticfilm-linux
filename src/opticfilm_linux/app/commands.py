@@ -14,7 +14,11 @@ from opticfilm_linux.app.raw import cleanup_pending
 from opticfilm_linux.app.state import Banner
 from opticfilm_linux.batch.export import clear_exported
 from opticfilm_linux.batch.layout import advance_section
-from opticfilm_linux.batch.meta_sync import MetaUpdateProgress, update_exported_metadata
+from opticfilm_linux.batch.meta_sync import (
+    MetaUpdateProgress,
+    out_of_date_keys,
+    update_exported_metadata,
+)
 from opticfilm_linux.batch.model import Mode, SlideSettings, SlideStatus
 from opticfilm_linux.batch.runner import BatchRunner
 from opticfilm_linux.batch.store import BatchError, BatchStore
@@ -324,23 +328,74 @@ class ReviewCommands:
         self._after_pending_commands(job, "Could not prepare re-export")
 
     def update_exported_metadata(self) -> None:
-        """On the owner's request only (never automatically): put the current description and
-        date into every exported JPEG that does not carry them yet, without re-encoding."""
+        """The owner's "Update JPEGs" button: put the current description and date into every
+        exported JPEG that does not carry them yet, without re-encoding."""
+        self._queue_metadata_update(automatic=False)
+
+    def _queue_metadata_update_if_due(self) -> None:
+        """Automatic update: only if the setting is on, the batch is writable and some JPEG is
+        out of date. A job already waiting covers any edit made before it starts."""
+        with self._lock:
+            session = self._session
+            if not self._update_metadata or session is None or session.runner is None:
+                return
+            if self._meta_update_queued:
+                return
+        if out_of_date_keys(session.store.snapshot()):
+            self._queue_metadata_update(automatic=True)
+
+    def _queue_metadata_update(self, automatic: bool) -> None:
+        if automatic:
+            with self._lock:
+                if self._meta_update_queued:
+                    return
+                self._meta_update_queued = True
 
         def progress(update: MetaUpdateProgress) -> None:
             self._set(_banner=Banner(f"Updating JPEGs: {update.done} of {update.total}"))
             self._rebuild()
 
-        def job(_runner: BatchRunner) -> None:
+        def job(runner: BatchRunner) -> None:
+            if automatic:
+                with self._lock:
+                    self._meta_update_queued = False
+                    if not self._update_metadata:
+                        return  # switched off while it waited
+                    held = runner.scan_pending() or self._scans_queued
+                    self._meta_update_due = bool(held)
+                if held:
+                    return  # a scan ends -> ``_drain_events`` asks again
+            store = self._open_store()
+            if automatic and not out_of_date_keys(store.snapshot()):
+                return  # an earlier update already did it
             self._set(_banner=Banner("Updating the description and date in exported JPEGs"))
             self._rebuild()
-            result = update_exported_metadata(
-                self._open_store(), on_progress=progress, cancel=self._closing
-            )
+            result = update_exported_metadata(store, on_progress=progress, cancel=self._closing)
             self._set(_banner=Banner(*meta_update_text(result)))
             self._rebuild()
 
-        self._after_pending_commands(job, "Could not update the exported JPEGs")
+        def not_queued() -> None:
+            if automatic:
+                with self._lock:
+                    self._meta_update_queued = False
+
+        # ``_after_pending_commands`` runs the job on the jobs worker, the one that exports and
+        # automatic exports use: an update never overlaps an export, whichever tray.
+        self._after_pending_commands(
+            job,
+            "Could not update the exported JPEGs",
+            on_finished=not_queued if automatic else None,
+        )
+
+    def _resume_metadata_update(self) -> None:
+        """No scan is running any more: run the automatic update one held back."""
+        with self._lock:
+            runner = self._session.runner if self._session else None
+            if self._scans_queued or (runner is not None and runner.scan_pending()):
+                return  # still scanning: stay due
+            due, self._meta_update_due = self._meta_update_due, False
+        if due:
+            self._queue_metadata_update_if_due()
 
     def cancel_export(self) -> None:
         self._cancel_export.set()

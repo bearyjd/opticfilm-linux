@@ -10,7 +10,8 @@ A receipt made before signatures existed has an empty one, which equals the sign
 fields: such a slide is out of date only if it now resolves to a description or a date.
 
 ``update_exported_metadata`` is the one way such files are brought up to date: on the owner's
-request only, never automatically. Each file is checked against its receipt first, so a file the
+request (the Update JPEGs button) or, with the app setting on, by the controller after an edit
+that made some out of date. Each file is checked against its receipt first, so a file the
 owner or another program changed is reported and left alone. The receipt then gets the new hash,
 size and signature, the signature taken from the same snapshot whose values were written, so an
 edit made during the update still shows as out of date afterwards.

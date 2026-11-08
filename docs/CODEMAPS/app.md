@@ -43,4 +43,6 @@ LoadHelp/EmptyFrames/Orientation dialogs, FirstLoadCard, StatusArea, Theme.
 Export: ExportDialog -> Bridge.startExport(folder_url, fmt) -> Controller.export -> jobs.run_export -> ExportView.
 Metadata: MetadataStrip -> Bridge slots -> setSlidesMeta(explicit keys) -> review.edit_meta_many; badge "not yet in JPEG"
  -> Update JPEGs -> meta_sync.update_exported_metadata.
+Bulk scopes: strip "Apply to" -> Bridge.applyMetaEdit/previewMetaEdit -> batch/meta_bulk.plan/apply (one write, one undo);
+automatic JPEG update: commands._queue_metadata_update_if_due after each edit (jobs worker, held while a scan runs).
 Load help: messages.load_command (OPTICFILM_DRIVER_RUNNER; OPTICFILM_LOAD_COMMAND overrides; "host terminal" in Flatpak).

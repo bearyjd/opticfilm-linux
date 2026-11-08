@@ -108,6 +108,7 @@ class Controller(
         auto_eject: bool | None = None,  # None: read OPTICFILM_AUTO_EJECT
         env_locked: frozenset[str] = frozenset(),  # switches an environment variable decides
         load_and_scan: bool = False,  # Load & scan stays off until the hardware check passes
+        update_exported_metadata_automatically: bool = True,  # JPEGs follow description/date edits
         load_ready_timeout_s: float = LOAD_READY_TIMEOUT_S,
         load_clock: Callable[[], float] = time.monotonic,  # the READY wait's own clock
     ) -> None:
@@ -119,6 +120,7 @@ class Controller(
         self._auto_eject = auto_eject_enabled() if auto_eject is None else auto_eject
         self._init_scan_openings(skip_empty, skip_gaps)
         self._init_workflow_settings(env_locked)
+        self._update_metadata = update_exported_metadata_automatically
         self._init_holder_workers()
         self._init_load_and_scan(load_and_scan, load_ready_timeout_s, load_clock)
         self._scans_queued = 0  # scan commands submitted but not yet handed to the runner
@@ -478,6 +480,7 @@ class Controller(
             self._submit_auto_due()
             for event in finished:
                 self._auto_eject_after(event)
+            self._resume_metadata_update()  # also after a failed scan, which ends without a finish
 
     def _apply_event(self, event) -> None:
         if isinstance(event, TrayStageChanged):

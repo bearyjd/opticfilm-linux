@@ -174,6 +174,43 @@ it does. Raw scans are removed only by that dialog, or by the batch setting belo
 "Raw data is kept until you check and free the first tray. Later trays are freed after
 verification." Turn **Keep raw scans after export** on if you want to keep every raw scan.
 
+### 3.1 Description and estimated date
+
+Add details as they become apparent, at any time, also after a tray is exported. The strip
+above the contact sheet edits what is selected; with nothing selected it edits the **Entire
+batch**. A slide's own value beats its tray's, which beats the batch's; an edit never touches
+rotation, brightness, accepted state or the rendered picture, and never re-renders anything. A
+date is an estimate: a year, or a year and month.
+
+The **Apply to** box picks what an edit reaches. Type the text (Enter applies it); the line under
+the fields says first how many slides or trays it will change. Each edit is one **Undo** step.
+
+| Apply to | Effect |
+|----------|--------|
+| Entire batch (default with nothing selected) | Sets the batch value: every slide that still inherits it changes, in every tray, scanned or not, exported or not. Slides and trays with their own value keep it. |
+| Only trays scanned from now on | Trays that inherit the old value keep it (it is saved on the tray); only trays scanned later get the new one. |
+| Selected slides / This tray | As before: the selected slides, or the one selected tray. |
+| Tray range | Sets the tray's own value on each existing tray from the first to the last number. |
+| Only slides with no value | Fills slides that have no description (or date) at any level. Never overwrites a value. A blank you set on purpose counts as a value. |
+| Add to description | Adds `; text` to what each slide's description is now (selected slides, the selected tray, or every slide if nothing is selected), saved on the slide. Refused whole if any slide would pass 500 characters, and it skips slides that already end with the text. Description only. |
+
+Add to description saves the combined text on each slide, so a later Entire batch or tray edit
+no longer reaches those slides (they now have their own value); use it for details that belong to
+those photos, and Entire batch for what applies to all. Only slides with no value and Tray range
+ignore the selection and look at the whole batch; Add to description follows the selection.
+
+Clear and **Reset to inherited** work as before on the selection's own level (the selected
+slides, the selected tray, or the batch), whatever **Apply to** says. Edits are refused
+on a batch opened read-only.
+
+Exported JPEGs carry the description and date only in the `ofscan` XMP fields. An edit that
+makes exported JPEGs out of date updates them by itself (setting **Update exported JPEGs after a
+description or date edit**, on by default; `OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY`
+overrides it). It rewrites only that metadata, without encoding the picture again, after a
+running export and never during one, waits while a scan is running, never touches a read-only
+batch or raw scans, and shows any file it could not change in the banner. With the setting off,
+or to retry, press **Update JPEGs**.
+
 ## 4. End of box or next section
 
 - The toolbar has **Next section** and **Finish box**. Finish box advances the box number and
@@ -286,5 +323,7 @@ runner is **unverified**; the form above matches the load command the app prints
   (3600 dpi). Treat them as estimates.
 - **Reliability.** Passing series so far are one unit, one operator. They are not a
   reliability figure.
+- **Bulk description/date scopes and the automatic JPEG update** (section 3.1) are tested only
+  with offscreen Qt and the fake scanner; nobody has used the strip by hand yet.
 - **Auto-eject** is implemented but off by default and never run on hardware, so every tray still
   needs an eject action unless you opt in.

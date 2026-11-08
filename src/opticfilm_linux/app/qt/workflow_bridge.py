@@ -14,6 +14,7 @@ from opticfilm_linux.app.prefs import (
     AUTO_EXPORT_KEY,
     LOAD_AND_SCAN_KEY,
     SKIP_EMPTY_KEY,
+    UPDATE_METADATA_KEY,
     read_switch,
     remember_switch,
 )
@@ -48,6 +49,16 @@ class WorkflowBridge(StartBridge):
     loadAndScanLockedBy = Property(  # noqa: N815
         str, lambda self: self._env_name("load_and_scan"), notify=workflowSettingsChanged
     )
+    updateMetadataEnabled = Property(  # noqa: N815
+        bool,
+        lambda self: self._controller.update_metadata_enabled,
+        notify=workflowSettingsChanged,
+    )
+    updateMetadataLockedBy = Property(  # noqa: N815
+        str,
+        lambda self: self._env_name("update_exported_metadata_automatically"),
+        notify=workflowSettingsChanged,
+    )
     autoExportDefault = Property(  # noqa: N815
         bool,
         lambda self: read_switch(self._prefs, AUTO_EXPORT_KEY),
@@ -70,6 +81,12 @@ class WorkflowBridge(StartBridge):
     def setLoadAndScan(self, on: bool) -> None:  # noqa: N802
         if self._controller.set_load_and_scan(on):
             remember_switch(self._prefs, LOAD_AND_SCAN_KEY, on)
+        self.workflowSettingsChanged.emit()
+
+    @Slot(bool)
+    def setUpdateMetadata(self, on: bool) -> None:  # noqa: N802
+        if self._controller.set_update_metadata(on):
+            remember_switch(self._prefs, UPDATE_METADATA_KEY, on)
         self.workflowSettingsChanged.emit()
 
     @Slot(bool)

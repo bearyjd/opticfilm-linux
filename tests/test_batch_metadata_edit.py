@@ -242,11 +242,14 @@ def test_no_op_edits_change_nothing_and_leave_nothing_to_undo():
 
 def test_pinning_skips_values_that_break_the_rules_and_keeps_them_inheriting():
     store = MemoryStore(_tray(1), _tray(2), description="x" * 600, date="1975-07-14")
-    edit_batch_meta(store, {"description": "New", "date": "1980"})
+    edit_batch_meta(store, {"description": "New", "date": "1980"}, scope="from_now_on")
     assert _tray_meta(store, 1) == _tray_meta(store, 2) == MetaOverride()
     store = MemoryStore(_tray(1), description="Trip", date="1975-07-14")
-    edit_batch_meta(store, {"description": "New", "date": "1980"})
+    edit_batch_meta(store, {"description": "New", "date": "1980"}, scope="from_now_on")
     assert _tray_meta(store, 1) == MetaOverride(description="Trip")
+    store = MemoryStore(_tray(1), description="Trip")  # the default, the entire batch, pins nothing
+    edit_batch_meta(store, {"description": "New"})
+    assert _tray_meta(store, 1) == MetaOverride() and store.snapshot().description == "New"
 
 
 def test_batch_value_of_the_wrong_type_is_a_value_error():

@@ -9,13 +9,19 @@ from opticfilm_linux.app.prefs import MemoryPrefs
 from opticfilm_linux.app.workflow_settings import resolve_switch, startup_switches
 from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.scanner.fake import FakeScanner
-from opticfilm_linux.scanner.select import AUTO_EJECT_ENV, LOAD_AND_SCAN_ENV, SKIP_EMPTY_ENV
+from opticfilm_linux.scanner.select import (
+    AUTO_EJECT_ENV,
+    LOAD_AND_SCAN_ENV,
+    SKIP_EMPTY_ENV,
+    UPDATE_METADATA_ENV,
+)
 
 ENVS = (
     "OPTICFILM_AUTO_EJECT",
     "OPTICFILM_SKIP_EMPTY",
     "OPTICFILM_SKIP_GAPS",
     "OPTICFILM_LOAD_AND_SCAN",
+    UPDATE_METADATA_ENV,
 )
 
 
@@ -243,5 +249,56 @@ def test_existing_batches_keep_their_stored_auto_export(sweep600_dir, tmp_path):
         c.new_batch(tmp_path / "on", "On", "", None, 600, export_dir=str(out), auto_export=True)
         wait_until(c, lambda: c.state().batch_name == "On")
         assert c.state().auto_export is True
+    finally:
+        c.shutdown()
+
+
+# --- automatic update of exported JPEGs: on by default ---------------------------------------
+
+UPDATE = "update_exported_metadata_automatically"
+
+
+def test_the_automatic_jpeg_update_is_on_on_a_fresh_profile():
+    result = startup_switches(MemoryPrefs())
+    assert result[UPDATE] is True
+    assert UPDATE not in result["env_locked"]
+
+
+@pytest.mark.parametrize(
+    ("env", "pref", "expected", "locked"),
+    [
+        (None, False, False, False),
+        (None, True, True, False),
+        ("1", False, True, True),
+        ("0", True, False, True),
+        ("junk", False, False, False),  # unreadable: defer to the saved value
+    ],
+)
+def test_the_automatic_jpeg_update_follows_the_saved_value_unless_the_env_decides(
+    monkeypatch, env, pref, expected, locked
+):
+    if env is not None:
+        monkeypatch.setenv(UPDATE_METADATA_ENV, env)
+    store = MemoryPrefs()
+    preferences.remember_switch(store, preferences.UPDATE_METADATA_KEY, pref)
+    result = startup_switches(store)
+    assert result[UPDATE] is expected
+    assert (UPDATE in result["env_locked"]) is locked
+
+
+def test_the_automatic_jpeg_update_toggles_live_and_its_env_lock_refuses(sweep600_dir, tmp_path):
+    c = _controller(sweep600_dir, tmp_path)
+    try:
+        assert c.update_metadata_enabled is True
+        assert c.set_update_metadata(False) is True
+        assert c.update_metadata_enabled is False
+    finally:
+        c.shutdown()
+    c = _controller(sweep600_dir, tmp_path / "x", env_locked=frozenset({UPDATE}))
+    try:
+        assert c.set_update_metadata(False) is False
+        assert c.update_metadata_enabled is True
+        wait_until(c, lambda: c.state().banner is not None)
+        assert UPDATE_METADATA_ENV in c.state().banner.message
     finally:
         c.shutdown()

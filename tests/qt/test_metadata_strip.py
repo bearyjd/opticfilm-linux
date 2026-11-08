@@ -214,28 +214,31 @@ def test_tray_dialog_sets_the_tray_meta(strip):
     _wait(bridge, lambda: not dialog.property("visible"))
 
 
-def test_batch_mode_from_now_on_pins_the_trays_that_still_inherit(strip):
+def test_the_from_now_on_scope_pins_the_trays_that_still_inherit(strip):
     bridge, root, store = strip
     store.update(lambda m: dataclasses.replace(m, description="Old", date="1978"))
     bridge._controller._rebuild()
     bridge.clearSelection()
     scope = find(root, "metaBatchScope")
     _wait(bridge, lambda: scope.property("visible"))
-    assert scope.property("currentValue") == "from_now_on"
+    assert scope.property("currentValue") == "batch"  # nothing selected: the entire batch
+    scope.setProperty("currentIndex", 1)
+    _wait(bridge, lambda: scope.property("currentValue") == "from_now_on")
     assert find(root, "metaLevelDescription").property("text") == "batch default"
     assert not find(root, "metaReset").property("visible")  # nothing above the batch
+    find(root, "metaDescription").setProperty("text", "")
     type_into(root, "metaDescription", "New event")
     _wait(bridge, lambda: store.snapshot().description == "New event")
     assert all(t.meta.description == "Old" for t in store.snapshot().trays)
     next_tray = find(root, "nextTrayMeta")
-    _wait(bridge, lambda: next_tray.property("text") == "Next tray: New event · ~1978")
+    _wait(bridge, lambda: next_tray.property("text") == "Batch: New event · ~1978")
 
 
 def test_the_next_tray_edit_link_focuses_the_batch_mode(strip):
     bridge, root, store = strip
     _tap(root, "slideThumb_1_1")
     _wait(bridge, lambda: bridge.selection == [[1, 1]])
-    assert find(root, "nextTrayMeta").property("text") == "Next tray: no description · no date"
+    assert find(root, "nextTrayMeta").property("text") == "Batch: no description · no date"
     click(root, "nextTrayMetaEdit")
     _wait(bridge, lambda: not bridge.selection)
     _wait(bridge, lambda: find(root, "metaDescription").property("activeFocus"))
@@ -257,10 +260,10 @@ def test_the_menu_key_on_a_tray_header_opens_the_tray_menu(strip):
 def test_a_refusal_from_the_slot_is_shown_inline(strip, monkeypatch):
     bridge, root, _store = strip
 
-    def refuse(*_args):
+    def refuse(*_args, **_named):
         raise ValueError("This batch is open read-only")
 
-    monkeypatch.setattr(bridge._controller, "set_slides_meta", refuse)
+    monkeypatch.setattr(bridge._controller, "apply_meta_edit", refuse)
     select_all(bridge, root)
     type_into(root, "metaDescription", "x")
     error = find(root, "metaError")
@@ -386,3 +389,55 @@ def test_an_out_of_date_export_shows_the_badge_and_the_update_button(strip):
     click(root, "metaUpdateJpegs")
     _wait(bridge, lambda: "not changed" in bridge.bannerMessage)  # no file: reported, not fatal
     assert bridge.metadataPending == 1
+
+
+def test_entire_batch_is_the_default_and_reaches_every_inheriting_slide(strip):
+    bridge, root, store = strip
+    store.update(lambda m: dataclasses.replace(m, description="Old"))
+    store.update_tray(2, meta=MetaOverride(description="Tray two"))
+    bridge._controller._rebuild()
+    bridge.clearSelection()
+    _wait(bridge, lambda: find(root, "metaDescription").property("enabled"))
+    assert find(root, "metaScopeLabel").property("text") == "Entire batch:"
+    assert find(root, "metaBatchScope").property("currentValue") == "batch"
+    type_into(root, "metaDescription", "New", enter=False)
+    count = find(root, "metaCount")
+    _wait(bridge, lambda: count.property("text") == "Changes 4 slides")  # tray 2 keeps its own
+    QTest.keyClick(root, Qt.Key.Key_Return)
+    _wait(bridge, lambda: store.snapshot().description == "New")
+    assert [t.meta.description for t in store.snapshot().trays] == [None, "Tray two"]
+
+
+def test_the_scope_box_offers_the_selection_scope_first_and_the_bulk_ones(strip):
+    bridge, root, store = strip
+    select_one(bridge, root, 1, 1)
+    scope = find(root, "metaBatchScope")
+    keys = lambda: [o["key"] for o in scope.property("model")]  # noqa: E731
+    assert keys() == ["slides", "batch", "from_now_on", "tray_range", "empty_only", "append"]
+    assert scope.property("currentValue") == "slides"
+    scope.setProperty("currentIndex", 4)  # only slides with no value
+    _wait(bridge, lambda: scope.property("currentValue") == "empty_only")
+    store.update_tray(2, meta=MetaOverride(description="Own"))
+    bridge._controller._rebuild()
+    type_into(root, "metaDescription", "Fill", enter=False)
+    _wait(bridge, lambda: find(root, "metaCount").property("text") == "Changes 4 slides")
+    QTest.keyClick(root, Qt.Key.Key_Return)
+    _wait(bridge, lambda: meta_of(store, 1, 2).description == "Fill")
+    assert meta_of(store, 2, 1).description is None  # tray two has its own value
+
+
+def test_add_to_description_applies_on_enter_only_and_shows_the_cap_refusal(strip):
+    bridge, root, store = strip
+    store.update_tray(1, meta=MetaOverride(description="x" * 498))
+    bridge._controller._rebuild()
+    select_all(bridge, root)
+    scope = find(root, "metaBatchScope")
+    scope.setProperty("currentIndex", scope.property("count") - 1)
+    _wait(bridge, lambda: find(root, "metadataStrip").property("appendMode"))
+    type_into(root, "metaDescription", "more", enter=False)
+    count = find(root, "metaCount")
+    _wait(bridge, lambda: "would pass 500 characters" in count.property("text"))
+    QTest.keyClick(root, Qt.Key.Key_Return)
+    error = find(root, "metaError")
+    _wait(bridge, lambda: "would pass 500 characters" in error.property("text"))
+    assert all(s.meta.description is None for s in slides(store))
