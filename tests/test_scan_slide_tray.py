@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import importlib.util
 import os
 import signal
@@ -34,6 +35,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CALL_LOG", str(log))
     monkeypatch.delenv("FAKE_MODE", raising=False)
     monkeypatch.delenv("FAKE_LOAD_FAIL", raising=False)
+    monkeypatch.delenv("FAKE_SCAN_DELAY", raising=False)
+    monkeypatch.delenv("FAKE_EJECT_FAIL", raising=False)
+    monkeypatch.delenv("FAKE_NEXT_STRIP_FAIL", raising=False)
+    monkeypatch.delenv("FAKE_SIGINT_FILE", raising=False)
     monkeypatch.setattr(sst.shutil, "disk_usage", lambda p: Usage(10**13, 0, 10**13))
     return out, log
 
@@ -68,6 +73,11 @@ def _clear_mode():
 
 
 def rows(out):
+    with (out / "tray_log.csv").open() as fh:
+        return [r for r in csv.DictReader(fh) if r["status"] != "PENDING"]
+
+
+def all_rows(out):
     with (out / "tray_log.csv").open() as fh:
         return list(csv.DictReader(fh))
 
@@ -283,21 +293,55 @@ def test_no_shell_used(env, monkeypatch):
     assert "shell=True" not in SCRIPT.read_text()
 
 
-def test_interrupt_waits_for_child(tmp_path, monkeypatch):
-    monkeypatch.setenv("FAKE_MODE", "sleep")
-    monkeypatch.setenv("FAKE_CALL_LOG", str(tmp_path / "c.log"))
-    timer = threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGINT))
+def _later(sig, delay=0.7):
+    timer = threading.Timer(delay, os.kill, (os.getpid(), sig))
     timer.start()
+    return timer
+
+
+def test_run_child_interrupt_waits_and_never_kills(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_SCAN_DELAY", "1.5")
+    monkeypatch.setenv("FAKE_CALL_LOG", str(tmp_path / "c.log"))
+    timer = _later(signal.SIGINT)
     try:
         with pytest.raises(sst.ChildInterrupted) as ei:
             sst.run_child(
                 [sys.executable, "-m", "fakedriver_tray", "scan", "-o", str(tmp_path / "x.tiff")],
                 TESTS,
-                grace=0.3,
             )
     finally:
         timer.cancel()
-    assert ei.value.returncode == 130  # child handled the single SIGINT, was not killed
+    assert ei.value.returncode == 0  # ran to completion, was not signalled
+    assert (tmp_path / "x-f4.diag.json").exists()
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+def test_main_interrupt_during_scan_lets_driver_finish(env, monkeypatch, caplog, sig):
+    out, log = env
+    monkeypatch.setenv("FAKE_SCAN_DELAY", "1.5")
+    timer = _later(sig)
+    try:
+        assert run(out) == 130
+    finally:
+        timer.cancel()
+    assert len(list((out / "tray0001").glob("*.diag.json"))) == 4  # scan completed
+    assert "eject" not in verbs(log)
+    assert "mid-move" in caplog.text and "keeps running" in caplog.text
+    assert "tray 1 was in flight during scan" in caplog.text
+    assert "power the scanner off" in caplog.text
+    assert [r["status"] for r in all_rows(out)] == ["PENDING"]
+
+
+def test_scan_and_eject_ignore_sigint_but_load_does_not(env, tmp_path, monkeypatch):
+    out, _ = env
+    f = tmp_path / "sig.log"
+    monkeypatch.setenv("FAKE_SIGINT_FILE", str(f))
+    run(out, "--max-trays", "1")
+    assert f.read_text().splitlines() == [
+        "load sigint_ignored=False",
+        "scan sigint_ignored=True",
+        "eject sigint_ignored=True",
+    ]
 
 
 def test_main_reports_tray_in_flight(env, monkeypatch, caplog):
@@ -311,7 +355,212 @@ def test_main_reports_tray_in_flight(env, monkeypatch, caplog):
     assert "tray 1 was in flight" in caplog.text
 
 
+@pytest.mark.parametrize("target", ["assess_opening", "append_rows"])
+def test_interrupt_outside_run_child_reports_tray(env, monkeypatch, caplog, target):
+    out, _ = env
+    real = getattr(sst, target)
+
+    def boom(*a, **k):
+        if target == "append_rows" and a[1] and a[1][0].status == "PENDING":
+            return real(*a, **k)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sst, target, boom)
+    assert run(out) == 130
+    assert "tray 1 was in flight" in caplog.text
+    assert "CSV row may be missing" in caplog.text
+    assert "no tray in flight" not in caplog.text
+
+
+def test_interrupt_at_prompt_has_no_tray_in_flight(env, caplog):
+    out, _ = env
+
+    def ctrl_c(_p):
+        raise KeyboardInterrupt
+
+    assert sst.main(_argv(out), input_fn=ctrl_c) == 130
+    assert "no tray in flight" in caplog.text
+
+
+def _argv(out, *extra):
+    return [
+        "--driver-dir", str(TESTS), "--out-root", str(out), "--python", sys.executable,
+        "--module", "fakedriver_tray", "--allow-no-tty", *extra,
+    ]  # fmt: skip
+
+
 def test_refuses_without_a_terminal(env, monkeypatch):
+    out, log = env
     monkeypatch.setattr(sst.sys.stdin, "isatty", lambda: False, raising=False)
-    argv = ["--driver-dir", str(TESTS), "--out-root", str(env), "--module", "fakedriver_tray"]
+    argv = [a for a in _argv(out) if a != "--allow-no-tty"]
     assert sst.main(argv, input_fn=lambda _p: "q") == 2
+    assert verbs(log) == []
+
+
+def test_pending_row_written_before_scan_and_resume_names_tray(env, caplog):
+    out, _ = env
+    run(out, mode="crash")
+    assert [r["status"] for r in all_rows(out)][0] == "PENDING"
+    assert all_rows(out)[0]["tray"] == "1"
+    os.environ.pop("FAKE_MODE")
+    assert run(out) == 2
+    assert "tray 1 was started before" in caplog.text and "tray0001" in caplog.text
+
+
+def test_second_instance_refused_by_lock(env):
+    out, log = env
+    with (out / sst.LOCK_NAME).open("a") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        assert run(out) == 2
+    assert verbs(log) == []
+    assert run(out, "--max-trays", "1") == 0  # lock released
+
+
+def test_header_written_to_zero_byte_csv(env):
+    out, _ = env
+    (out / "tray_log.csv").write_bytes(b"")
+    run(out, "--max-trays", "1")
+    assert tuple(rows(out)[0].keys()) == sst.CSV_COLUMNS
+
+
+def test_eject_failure_stops_with_rows_kept(env, monkeypatch):
+    out, _ = env
+    monkeypatch.setenv("FAKE_EJECT_FAIL", "3")
+    assert run(out, "--max-trays", "2", answers=("", "")) == 1
+    assert len(rows(out)) == 4 and (out / "tray0002").exists() is False
+
+
+def test_drop_skipped_when_visible_cropped_empty(tmp_path):
+    stem = tmp_path / "t"
+    paths = sst.frame_paths(stem, 1)
+    for k in ("ir", "ir_over", "vis_over"):
+        paths[k].write_bytes(b"x")
+    paths["vis"].write_bytes(b"")
+    op = sst.Opening(tray=1, opening=1, status="OK", exit_code=0, verified=True)
+    assert sst.drop_overscan_frames(op, stem).overscan_dropped is False
+    assert paths["vis_over"].exists() and paths["ir_over"].exists()
+
+
+def test_drop_never_follows_symlinks(tmp_path):
+    stem = tmp_path / "t"
+    paths = sst.frame_paths(stem, 1)
+    for k in ("vis", "ir", "ir_over"):
+        paths[k].write_bytes(b"x")
+    precious = tmp_path / "precious.tiff"
+    precious.write_bytes(b"keep")
+    paths["vis_over"].symlink_to(precious)
+    op = sst.Opening(tray=1, opening=1, status="OK", exit_code=0, verified=True)
+    sst.drop_overscan_frames(op, stem)
+    assert paths["vis_over"].is_symlink() and precious.exists()
+    assert not paths["ir_over"].exists()
+
+
+def test_disk_rechecked_before_each_tray(env, monkeypatch):
+    out, log = env
+    calls = []
+
+    def usage(_p):
+        calls.append(1)
+        free = 10**13 if len(calls) < 3 else 4 * 1024**3  # validate, tray 1 ok; tray 2 low
+        return Usage(10**13, 0, free)
+
+    monkeypatch.setattr(sst.shutil, "disk_usage", usage)
+    assert run(out, "--max-trays", "2", answers=("", "")) == 2
+    assert verbs(log).count("load") == 1
+
+
+def load_lines(log):
+    return [c for c in log.read_text().splitlines() if c.startswith("load")]
+
+
+def test_first_plain_later_trays_next_strip(env):
+    out, log = env
+    assert run(out, "--max-trays", "3", answers=("", "", "")) == 0
+    assert load_lines(log) == ["load", "load --next-strip", "load --next-strip"]
+
+
+def test_no_next_strip_forces_plain_load(env):
+    out, log = env
+    run(out, "--max-trays", "2", "--no-next-strip", answers=("", ""))
+    assert load_lines(log) == ["load", "load"]
+
+
+def test_first_load_next_strip_flag(env):
+    out, log = env
+    run(out, "--max-trays", "2", "--first-load-next-strip", answers=("", ""))
+    assert load_lines(log) == ["load --next-strip", "load --next-strip"]
+
+
+def test_contradictory_next_strip_flags_refused(env):
+    out, log = env
+    assert run(out, "--no-next-strip", "--first-load-next-strip") == 2
+    assert verbs(log) == []
+
+
+def test_next_strip_failure_stops_without_retry(env, monkeypatch, caplog):
+    out, log = env
+    monkeypatch.setenv("FAKE_NEXT_STRIP_FAIL", "5")
+    assert run(out, "--max-trays", "3", answers=("", "", "")) == 2
+    assert load_lines(log) == ["load", "load --next-strip"]  # no retry, no plain fallback
+    assert verbs(log).count("scan") == 1
+    assert "power-cycle" in caplog.text and "plain load" in caplog.text
+
+
+def test_swap_prompt_text_for_later_trays(env):
+    out, _ = env
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return "" if len(prompts) < 2 else "q"
+
+    argv = _argv(out, "--max-trays", "3")
+    assert sst.main(argv, input_fn=fake_input) == 0
+    assert prompts[0].startswith("Seat holder for tray 1")
+    assert prompts[1].startswith(
+        "Eject done. Swap and seat the holder at the stop in one motion, press Enter"
+    )
+
+
+def test_frames_flag_passed_and_recorded(env):
+    out, log = env
+    run(out, "--max-trays", "1", "--frames", "1-3")
+    assert "--frames 1-3 " in log.read_text().splitlines()[1] + " "
+    r = rows(out)
+    assert [x["opening"] for x in r] == ["1", "2", "3"]
+    assert {x["requested"] for x in r} == {"1-3"}
+    assert list(r[0].keys())[-1] == "requested"
+    assert all_rows(out)[0]["requested"] == "1-3"  # PENDING row too
+
+
+def test_prompt_openings_override_per_tray(env):
+    out, log = env
+    run(out, "--max-trays", "2", answers=("1-2", ""))
+    scans = [c for c in log.read_text().splitlines() if c.startswith("scan")]
+    assert "--frames 1-2 " in scans[0] + " " and "--frames 1-4 " in scans[1] + " "
+    assert sorted({(x["tray"], x["requested"]) for x in rows(out)}) == [("1", "1-2"), ("2", "1-4")]
+
+
+def test_prompt_rejects_invalid_openings_and_asks_again(env, caplog):
+    out, log = env
+    run(out, "--max-trays", "1", answers=("5", "0", "3-1", "abc", "1,3"))
+    assert (
+        "--frames 1,3 "
+        in [c for c in log.read_text().splitlines() if c.startswith("scan")][0] + " "
+    )
+    assert caplog.text.count("bad openings spec") == 4
+
+
+@pytest.mark.parametrize("spec", ["", "0", "5", "1-5", "3-1", "x", "1,,2", "1-"])
+def test_bad_frames_flag_refused(env, spec):
+    out, log = env
+    assert run(out, "--frames", spec) == 2
+    assert verbs(log) == []
+
+
+@pytest.mark.parametrize(
+    ("spec", "want"),
+    [("1-4", (1, 2, 3, 4)), ("1-3", (1, 2, 3)), ("1,3", (1, 3)), ("4,1-2", (1, 2, 4))],
+)
+def test_parse_frames(spec, want):
+    assert sst.parse_frames(spec) == want

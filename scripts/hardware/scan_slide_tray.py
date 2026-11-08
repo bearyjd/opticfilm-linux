@@ -14,8 +14,10 @@ Exit 4 (aperture coverage not verified, overscan frames kept) stops too, unless
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import dataclasses
+import fcntl
 import json
 import logging
 import os
@@ -25,7 +27,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,7 +41,7 @@ OPENINGS = (1, 2, 3, 4)
 MIN_FREE_BYTES = 5 * 1024**3
 VALID_DPI = (600, 1200, 2400, 3600, 7200)
 EXIT_COVERAGE_UNVERIFIED = 4
-INTERRUPT_GRACE_S = 3.0
+LOCK_NAME = ".tray_log.lock"
 CSV_NAME = "tray_log.csv"
 CSV_COLUMNS = (
     "utc",
@@ -55,9 +57,13 @@ CSV_COLUMNS = (
     "wall_seconds",
     "cropped_path",
     "overscan_dropped",
+    "requested",
 )
 # Statuses that mean "this tray is done"; resume numbering counts only these.
 DONE_STATUSES = ("OK", "UNVERIFIED")
+# Written (opening 0) once the tray dir exists, before the scan starts. It is
+# never a done status, so an interrupted tray is re-offered and then refused.
+PENDING_STATUS = "PENDING"
 FEEDL_RE = re.compile(r"slide (\d+) \(\d+ dpi\):.*?FEEDL=(\d+)")
 MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
@@ -94,6 +100,9 @@ class Config:
     python: str = "python3"
     module: str = "of135i"
     allow_no_tty: bool = False
+    frames: str = "1-4"
+    no_next_strip: bool = False
+    first_load_next_strip: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,7 +119,7 @@ class Opening:
     tray: int
     opening: int
     status: str
-    exit_code: int
+    exit_code: int | None
     verified: bool | None = None
     poll_timeouts: int | None = None
     feedl: int | None = None
@@ -119,6 +128,7 @@ class Opening:
     wall_seconds: float | None = None
     cropped_path: str = ""
     overscan_dropped: bool = False
+    requested: str = ""
 
 
 # ---------------------------------------------------------------- arguments
@@ -137,6 +147,24 @@ def parse_args(argv: Sequence[str] | None = None) -> Config:
     p.add_argument("--python", default="python3")
     p.add_argument("--module", default="of135i")
     p.add_argument(
+        "--frames",
+        default="1-4",
+        metavar="SPEC",
+        help="openings to scan on every tray, driver syntax (1-4, 1-3, 1,3); "
+        "can be overridden per tray at the prompt",
+    )
+    p.add_argument(
+        "--no-next-strip",
+        action="store_true",
+        help="use a plain `load` (jog + reinsert prompt) for every tray",
+    )
+    p.add_argument(
+        "--first-load-next-strip",
+        action="store_true",
+        help="first tray also uses `load --next-strip`: only when the scanner is "
+        "already powered on and the previous holder was just ejected",
+    )
+    p.add_argument(
         "--allow-no-tty",
         action="store_true",
         help="tests only: the real driver load needs a terminal on stdin",
@@ -154,6 +182,9 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError("--start-tray must be 1..9999")
     if cfg.max_trays is not None and cfg.max_trays < 1:
         raise ConfigError("--max-trays must be >= 1")
+    parse_frames(cfg.frames)
+    if cfg.no_next_strip and cfg.first_load_next_strip:
+        raise ConfigError("--no-next-strip and --first-load-next-strip contradict each other")
     if not MODULE_RE.match(cfg.module):
         raise ConfigError(f"--module is not a dotted module name: {cfg.module!r}")
     if not cfg.python or cfg.python.startswith("-"):
@@ -166,6 +197,21 @@ def validate_config(cfg: Config) -> None:
     if not cfg.driver_dir.is_dir():
         raise ConfigError(f"--driver-dir is not a directory: {cfg.driver_dir}")
     check_out_root(cfg.out_root)
+
+
+def parse_frames(spec: str) -> tuple[int, ...]:
+    """Validate a driver-style openings spec ("1-3", "1,3", "1-2,4"); sorted unique openings."""
+    found: set[int] = set()
+    for part in spec.strip().split(","):
+        lo, sep, hi = part.strip().partition("-")
+        try:
+            a, b = int(lo), int(hi) if sep else int(lo)
+        except ValueError:
+            raise ConfigError(f"bad openings spec {spec!r}: use e.g. 1-4, 1-3 or 1,3") from None
+        if a > b or not (OPENINGS[0] <= a and b <= OPENINGS[-1]):
+            raise ConfigError(f"bad openings spec {spec!r}: openings must be within 1-4")
+        found.update(range(a, b + 1))
+    return tuple(sorted(found))
 
 
 def check_out_root(out_root: Path) -> None:
@@ -212,7 +258,7 @@ def _cell(value: object) -> str:
 
 
 def append_rows(csv_path: Path, rows: Sequence[Opening]) -> None:
-    new_file = not csv_path.exists()
+    new_file = not csv_path.exists() or csv_path.stat().st_size == 0
     utc = datetime.now(UTC).isoformat(timespec="seconds")
     with csv_path.open("a", newline="") as fh:
         writer = csv.writer(fh)
@@ -236,6 +282,7 @@ def append_rows(csv_path: Path, rows: Sequence[Opening]) -> None:
                         r.wall_seconds,
                         r.cropped_path,
                         r.overscan_dropped,
+                        r.requested,
                     )
                 ]
             )
@@ -250,13 +297,13 @@ def driver_argv(cfg: Config, *args: str) -> list[str]:
     return [cfg.python, "-m", cfg.module, *args]
 
 
-def scan_args(cfg: Config, out_path: Path) -> list[str]:
+def scan_args(cfg: Config, out_path: Path, frames: str) -> list[str]:
     args = [
         "scan",
         "--holder",
         "slide",
         "--frames",
-        "1-4",
+        frames,
         "--dpi",
         str(cfg.dpi),
         "--ir",
@@ -267,18 +314,15 @@ def scan_args(cfg: Config, out_path: Path) -> list[str]:
     return args + ["-o", str(out_path)]
 
 
-def _drain_child(proc: subprocess.Popen, grace: float) -> None:
-    """After Ctrl-C: give the child its grace, SIGINT it once, then just wait."""
-    signalled = False
+def _ignore_sigint() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _wait_child(proc: subprocess.Popen) -> None:
+    """Wait for the child however many more Ctrl-Cs arrive; never signal it."""
     while proc.poll() is None:
         try:
-            if signalled:
-                proc.wait()
-            else:
-                proc.wait(timeout=grace)
-        except subprocess.TimeoutExpired:
-            proc.send_signal(signal.SIGINT)
-            signalled = True
+            proc.wait()
         except KeyboardInterrupt:
             LOG.warning("still waiting for the driver to finish; do not unplug anything")
 
@@ -287,24 +331,36 @@ def run_child(
     argv: Sequence[str],
     cwd: Path,
     stderr_path: Path | None = None,
-    grace: float = INTERRUPT_GRACE_S,
+    interruptible: bool = False,
 ) -> int:
     """Run argv (never via a shell). stdin/stdout are inherited; stderr to a file if given.
 
-    Ctrl-C never kills the child: warn, wait, SIGINT it once if it is still
-    running after `grace` (a terminal Ctrl-C already reached it), then wait.
+    A terminal Ctrl-C goes to the whole foreground process group, so the driver
+    would abort mid-move (its CLI treats KeyboardInterrupt as a failed session
+    needing a power cycle). Unless `interruptible` (the `load` prompt, where
+    Ctrl-C is legitimate), the child starts with SIGINT set to SIG_IGN via
+    preexec_fn: Python leaves an inherited SIG_IGN alone, so the driver never
+    sees KeyboardInterrupt. (start_new_session would also shield it but moves it
+    out of the foreground group, risking SIGTTIN/SIGTTOU on terminal use.)
+    On KeyboardInterrupt in this process we warn and wait; the child is never signalled.
     """
     err = stderr_path.open("ab") if stderr_path else None
     try:
-        proc = subprocess.Popen(list(argv), cwd=cwd, stderr=err)
+        proc = subprocess.Popen(
+            list(argv),
+            cwd=cwd,
+            stderr=err,
+            preexec_fn=None if interruptible else _ignore_sigint,
+        )
         try:
             return proc.wait()
         except KeyboardInterrupt:
             LOG.warning(
-                "Ctrl-C: the scanner may be mid-move. Waiting for the driver "
-                "to finish; it is not being killed."
+                "Interrupt received: the scanner may be mid-move and the driver keeps "
+                "running (it ignores Ctrl-C by design). Waiting for it to finish; "
+                "do not unplug anything."
             )
-            _drain_child(proc, grace)
+            _wait_child(proc)
             raise ChildInterrupted(proc.returncode) from None
     finally:
         if err:
@@ -439,21 +495,29 @@ def _stop(msg: str) -> None:
     )
 
 
-def load_and_scan(cfg: Config, tray: int) -> tuple[int, float, Path]:
+def load_and_scan(cfg: Config, tray: int, frames: str, next_strip: bool) -> tuple[int, float, Path]:
     """Steps 2-3. Returns (scan exit code, wall seconds, stem). Raises on a load failure."""
     tdir = tray_dir_for(cfg, tray)
+    load_args = ("load", "--next-strip") if next_strip else ("load",)
     try:
-        rc = run_child(driver_argv(cfg, "load"), cfg.driver_dir)
+        rc = run_child(driver_argv(cfg, *load_args), cfg.driver_dir, interruptible=True)
     except ChildInterrupted:
         raise TrayInterrupted(tray, "load") from None
+    if rc != 0 and next_strip:
+        raise ConfigError(
+            f"`load --next-strip` exited {rc} for tray {tray}. Not retrying: power-cycle "
+            "the scanner and restart with a plain load (omit --first-load-next-strip)."
+        )
     if rc != 0:
         raise ConfigError(f"`load` exited {rc} for tray {tray}; aborting the loop")
     tdir.mkdir(parents=True)
+    pending = Opening(tray, 0, PENDING_STATUS, None, requested=frames)
+    append_rows(cfg.out_root / CSV_NAME, [pending])
     stem = tdir / f"tray{tray:04d}"
     started = time.monotonic()
     try:
         scan_rc = run_child(
-            driver_argv(cfg, *scan_args(cfg, tdir / f"tray{tray:04d}.tiff")),
+            driver_argv(cfg, *scan_args(cfg, tdir / f"tray{tray:04d}.tiff", frames)),
             cfg.driver_dir,
             stderr_path=tdir / "scan.log",
         )
@@ -477,10 +541,15 @@ def decide(openings: Sequence[Opening], cfg: Config) -> str | None:
     return None
 
 
-def process_tray(cfg: Config, tray: int) -> tuple[tuple[Opening, ...], str | None]:
-    scan_rc, wall, stem = load_and_scan(cfg, tray)
+def process_tray(
+    cfg: Config, tray: int, frames: str, next_strip: bool
+) -> tuple[tuple[Opening, ...], str | None]:
+    scan_rc, wall, stem = load_and_scan(cfg, tray, frames, next_strip)
     feedls = parse_feedl(stem.parent / "scan.log")
-    openings = tuple(assess_opening(tray, n, stem, scan_rc, wall, feedls) for n in OPENINGS)
+    openings = tuple(
+        dataclasses.replace(assess_opening(tray, n, stem, scan_rc, wall, feedls), requested=frames)
+        for n in parse_frames(frames)
+    )
     reason = decide(openings, cfg)
     if reason:
         return openings, reason
@@ -493,31 +562,79 @@ def process_tray(cfg: Config, tray: int) -> tuple[tuple[Opening, ...], str | Non
     return openings, (f"`eject` exited {eject_rc}" if eject_rc != 0 else None)
 
 
-def ask_tray(tray: int, input_fn: Callable[[str], str]) -> bool:
-    """True to proceed; False on q / EOF."""
-    prompt = f"Seat holder for tray {tray} and press Enter to load (q to quit): "
-    try:
-        return input_fn(prompt).strip().lower() not in ("q", "quit")
-    except EOFError:
-        return False
+def ask_tray(
+    tray: int, input_fn: Callable[[str], str], default_frames: str, swap: bool
+) -> tuple[bool, str]:
+    """(proceed, openings spec). Enter keeps the default spec; q / EOF quits."""
+    if swap:
+        prompt = (
+            "Eject done. Swap and seat the holder at the stop in one motion, press Enter "
+            f"(tray {tray}; or type openings e.g. 1-3; q to quit) [{default_frames}]: "
+        )
+    else:
+        prompt = (
+            f"Seat holder for tray {tray} and press Enter to load "
+            f"(or type openings e.g. 1-3; q to quit) [{default_frames}]: "
+        )
+    while True:
+        try:
+            answer = input_fn(prompt).strip().lower()
+        except EOFError:
+            return False, default_frames
+        if answer in ("q", "quit"):
+            return False, default_frames
+        if not answer:
+            return True, default_frames
+        try:
+            parse_frames(answer)
+        except ConfigError as exc:
+            LOG.error("%s", exc)
+            continue
+        return True, answer
+
+
+@contextlib.contextmanager
+def instance_lock(out_root: Path) -> Iterator[None]:
+    """Refuse to run if another instance holds the out-root lock."""
+    with (out_root / LOCK_NAME).open("a") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise ConfigError(
+                f"another scan_slide_tray instance is using {out_root} (lock {LOCK_NAME}); "
+                "refusing to run two at once."
+            ) from None
+        yield
 
 
 def run_loop(cfg: Config, input_fn: Callable[[str], str]) -> int:
     csv_path = cfg.out_root / CSV_NAME
+    with instance_lock(cfg.out_root):
+        return _tray_loop(cfg, input_fn, csv_path)
+
+
+def _tray_loop(cfg: Config, input_fn: Callable[[str], str], csv_path: Path) -> int:
     tray = cfg.start_tray if cfg.start_tray is not None else next_tray_from_csv(csv_path)
     done = 0
     while cfg.max_trays is None or done < cfg.max_trays:
         check_out_root(cfg.out_root)
         if tray_dir_for(cfg, tray).exists():
             raise ConfigError(
-                f"{tray_dir_for(cfg, tray)} already exists; move it aside "
-                "or pick another --start-tray. Refusing to overwrite."
+                f"{tray_dir_for(cfg, tray)} already exists: tray {tray} was started before "
+                "(interrupted, failed or awaiting inspection). Inspect that tray and its "
+                f"PENDING/last rows in {CSV_NAME}, then move it aside or pick another "
+                "--start-tray. Refusing to overwrite."
             )
-        if not ask_tray(tray, input_fn):
+        next_strip = not cfg.no_next_strip and (done > 0 or cfg.first_load_next_strip)
+        proceed, frames = ask_tray(tray, input_fn, cfg.frames, next_strip)
+        if not proceed:
             LOG.info("quit requested; stopping before tray %d", tray)
             return 0
-        openings, reason = process_tray(cfg, tray)
-        append_rows(csv_path, openings)
+        try:
+            openings, reason = process_tray(cfg, tray, frames, next_strip)
+            append_rows(csv_path, openings)
+        except KeyboardInterrupt:
+            raise TrayInterrupted(tray, "post-scan processing or the CSV write") from None
         if reason:
             _stop(reason)
             return 1
@@ -526,10 +643,18 @@ def run_loop(cfg: Config, input_fn: Callable[[str], str]) -> int:
     return 0
 
 
+def _raise_interrupt(signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
 def main(argv: Sequence[str] | None = None, input_fn: Callable[[str], str] = input) -> int:
     logging.basicConfig(
         level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(message)s"
     )
+    # SIGTERM/SIGHUP take the same wait-for-the-child path as Ctrl-C, so a scan
+    # is never orphaned. The child itself still gets a group-wide SIGTERM/SIGHUP
+    # from the terminal or service manager; that is outside this script's control.
+    old = {s: signal.signal(s, _raise_interrupt) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
         cfg = parse_args(argv)
         validate_config(cfg)
@@ -539,15 +664,20 @@ def main(argv: Sequence[str] | None = None, input_fn: Callable[[str], str] = inp
         return 2
     except TrayInterrupted as exc:
         LOG.error(
-            "Interrupted: tray %d was in flight during %s. The scanner/holder may "
-            "be mid-state; inspect before restarting. No CSV row was written.",
+            "Interrupted: tray %d was in flight during %s. The scanner/holder may be "
+            "mid-state and the CSV row may be missing (a PENDING row marks the tray). "
+            "Abort rule: power the scanner off, then inspect tray %d before restarting.",
             exc.tray,
             exc.phase,
+            exc.tray,
         )
         return 130
     except KeyboardInterrupt:
         LOG.error("Interrupted at the prompt; no tray in flight.")
         return 130
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
