@@ -17,6 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "hardware" / "scan_slide_tray.py"
 _spec = importlib.util.spec_from_file_location("scan_slide_tray", SCRIPT)
+assert _spec is not None and _spec.loader is not None
 sst = importlib.util.module_from_spec(_spec)
 sys.modules["scan_slide_tray"] = sst
 _spec.loader.exec_module(sst)

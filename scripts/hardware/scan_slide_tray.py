@@ -124,7 +124,7 @@ class Opening:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> Config:
-    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--driver-dir", type=Path, default=DEFAULT_DRIVER_DIR)
     p.add_argument("--out-root", type=Path, required=True)
     p.add_argument("--dpi", type=int, default=3600)
