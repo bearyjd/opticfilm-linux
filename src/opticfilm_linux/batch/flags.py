@@ -9,7 +9,9 @@ FULL_SCALE = 65535
 DARK_MEAN = 0.12  # mean brightness below this: too dark
 BRIGHT_MEAN = 0.88  # mean brightness above this: too bright
 CLIP_FRACTION = 0.02  # more than this share of values pure black or white: clipping
-DUST_FRACTION = 0.005  # more than this share of the image masked as defects: dusty
+DUST_FRACTION = (
+    0.005  # share of masked pixels that lists a slide as dusty (advisory: it still exports)
+)
 SAMPLE_STEP = 4
 
 

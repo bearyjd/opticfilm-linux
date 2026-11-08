@@ -23,6 +23,7 @@ from opticfilm_linux.batch.model import (
     SlideStatus,
     TrayRecord,
     TrayStage,
+    advisory_only,
 )
 from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.output import Format, JpegSize
@@ -506,7 +507,9 @@ def _release_flags(tray: TrayRecord) -> bool:
     return any(
         not is_empty_confirmed(tray, s)
         if s.status is SlideStatus.BLANK
-        else (s.flags or s.position in tray.auto_flagged) and not s.owner_decided
+        else (s.flags or s.position in tray.auto_flagged)
+        and not advisory_only(s.flags)
+        and not s.owner_decided
         for s in tray.slides
     )
 

@@ -21,6 +21,7 @@ from opticfilm_linux.batch.model import (
     SlideStatus,
     TrayRecord,
     TrayStage,
+    advisory_only,
 )
 from opticfilm_linux.batch.previews import make_preview, write_master, write_preview
 from opticfilm_linux.batch.slots import compose, slot_orientation
@@ -123,7 +124,7 @@ def _protect_content(slide: SlideRecord) -> bool:
 def _classified_record(
     base: SlideRecord, flags: tuple[Flag, ...], blank: bool, fingerprint: str
 ) -> SlideRecord:
-    auto = SlideStatus.NEEDS_LOOK if flags else SlideStatus.ACCEPTED
+    auto = SlideStatus.NEEDS_LOOK if flags and not advisory_only(flags) else SlideStatus.ACCEPTED
     return dataclasses.replace(
         base,
         status=base.status if base.owner_decided else SlideStatus.BLANK if blank else auto,

@@ -69,6 +69,17 @@ def test_unflagged_slides_are_auto_accepted(tmp_path):
     assert all(not s.owner_decided for s in _tray(store).slides)
 
 
+def test_dust_only_slide_is_listed_but_accepted(tmp_path, monkeypatch):
+    from opticfilm_linux.batch import enhance
+
+    monkeypatch.setattr(enhance, "compute_flags", lambda *_a, **_k: (Flag.DUST,))
+    store = _store(tmp_path, make_sweep(dpi=600, dust=12))
+    enhance_tray(store, 1)
+    assert all(
+        s.status is SlideStatus.ACCEPTED and s.flags == (Flag.DUST,) for s in _tray(store).slides
+    )
+
+
 def test_dark_slide_is_flagged_and_needs_a_look(tmp_path):
     sweep = make_sweep(dpi=600)
     box = truth_boxes(600)[1]
