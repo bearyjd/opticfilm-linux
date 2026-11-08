@@ -14,7 +14,9 @@ from opticfilm_linux.app.auto import MISSING_DESTINATION, READY, AutoPipeline
 from opticfilm_linux.app.batch_rules import box_section_refusal, check_export_directory
 from opticfilm_linux.batch.model import BatchManifest, TrayRecord
 from opticfilm_linux.batch.runner import BatchRunner
+from opticfilm_linux.batch.skipped import scan_positions
 from opticfilm_linux.batch.store import BatchError, BatchStore
+from opticfilm_linux.model import ALL_POSITIONS
 from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import ScanError, Scanner, ScannerStatus
 from opticfilm_linux.scanner.fake import FakeScanner
@@ -52,6 +54,12 @@ def add_run_commands(sub: argparse._SubParsersAction) -> None:
     run.add_argument("--jpeg-size", choices=["full", "3600"], help="JPEG size (saved)")
     run.add_argument("--auto-export", action=argparse.BooleanOptionalAction, default=None)
     run.add_argument("--keep-raw", action=argparse.BooleanOptionalAction, default=None)
+    run.add_argument(
+        "--skip",
+        metavar="OPENINGS",
+        help="holder openings 1-4 that are bare, e.g. 4 or 3,4: not scanned, for every tray of "
+        "this command; their slide numbers stay reserved",
+    )
     run.add_argument("--box", type=_positive, help="box number (an empty section only)")
     run.add_argument("--section", help="section a-f or 01-99 (an empty section only)")
 
@@ -59,6 +67,28 @@ def add_run_commands(sub: argparse._SubParsersAction) -> None:
     held.add_argument("directory", type=Path)
     held.add_argument("number", type=_positive, help="the held tray")
     held.add_argument("--yes", action="store_true", help="I checked the exported JPEGs")
+
+
+def _skipped(args: argparse.Namespace) -> tuple[int, ...]:
+    """The bare openings ``--skip`` names; raises ``RunRefused`` for anything the holder lacks."""
+    if args.skip is None:
+        return ()
+    span = f"{ALL_POSITIONS[0]}-{ALL_POSITIONS[-1]}"
+    parts = [part.strip() for part in args.skip.split(",")]
+    if not all(parts):
+        raise RunRefused("--skip names no openings; give e.g. --skip 4 or --skip 3,4")
+    if not all(len(part) == 1 and part.isascii() and part.isdecimal() for part in parts) or any(
+        int(part) not in ALL_POSITIONS for part in parts
+    ):
+        raise RunRefused(f"--skip {args.skip!r}: the holder has openings {span}")
+    numbers = tuple(sorted(int(part) for part in parts))
+    if len(set(numbers)) != len(numbers):
+        raise RunRefused(f"--skip {args.skip!r}: name each opening once")
+    try:
+        scan_positions(numbers)
+    except BatchError as exc:
+        raise RunRefused(str(exc)) from exc
+    return numbers
 
 
 def _changes(manifest: BatchManifest, args: argparse.Namespace, out: Path | None) -> BatchManifest:
@@ -174,7 +204,9 @@ def _drain_backlog(pipeline: AutoPipeline) -> None:
         pipeline.run(number)
 
 
-def _scan_trays(store: BatchStore, scanner: Scanner, count: int) -> list[int]:
+def _scan_trays(
+    store: BatchStore, scanner: Scanner, count: int, skipped: tuple[int, ...] = ()
+) -> list[int]:
     runner = BatchRunner(store, scanner)
     pipeline = AutoPipeline(store)
     numbers: list[int] = []
@@ -184,7 +216,7 @@ def _scan_trays(store: BatchStore, scanner: Scanner, count: int) -> list[int]:
         _drain_backlog(pipeline)
         for _ in range(count):
             scanning = True
-            numbers.append(runner.scan_tray())
+            numbers.append(runner.scan_tray(skipped))
             runner.wait_scans_idle()
             scanning = False
             runner.wait_idle()
@@ -272,6 +304,7 @@ def _interrupted_exit(store: BatchStore, before: BatchManifest, stop: _Interrupt
 def run(args: argparse.Namespace) -> int:
     try:
         _precheck(args)
+        skipped = _skipped(args)
         with BatchStore.open(args.directory) as store:
             out = _validate_flags(store, args)  # 1: pure refusals, nothing written
             scanner = _open_scanner(args)  # 2-3: scanner state; read-only refusals
@@ -279,7 +312,7 @@ def run(args: argparse.Namespace) -> int:
             _warn_manual_trays(store)
             before = store.snapshot()
             try:
-                numbers = _scan_trays(store, scanner, args.count)
+                numbers = _scan_trays(store, scanner, args.count, skipped)
             except _Interrupted as stop:
                 return _interrupted_exit(store, before, stop)
             return _report(store, args.directory, before, numbers)
