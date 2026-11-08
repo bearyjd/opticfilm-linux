@@ -10,6 +10,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
+from opticfilm_linux.app import keys
 from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
 from opticfilm_linux.app.messages import bytes_text, load_command
 from opticfilm_linux.app.prefs import (
@@ -43,6 +44,7 @@ from opticfilm_linux.app.state import EMPTY_STATE, AppState
 from opticfilm_linux.batch.model import ROTATIONS, SlideStatus
 
 TICK_MS = 500
+KEY_BANNER_MS = 4000  # how long a key's refusal stays up
 DEBOUNCE_MS = 300
 TRAY_KEYS = (
     "number",
@@ -147,6 +149,10 @@ class Bridge(WorkflowBridge):
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(DEBOUNCE_MS)
         self._flush_timer.timeout.connect(self._flush)
+        self._key_banner_timer = QTimer(self)
+        self._key_banner_timer.setSingleShot(True)
+        self._key_banner_timer.setInterval(KEY_BANNER_MS)
+        self._key_banner_timer.timeout.connect(self._controller.clear_key_refusal)
         self._destination = DestinationCheck(self)
         self._destination.changed.connect(self.automaticExportProblemChanged)
         self._heldReleasePrepared.connect(self._held_release_ready)
@@ -586,6 +592,26 @@ class Bridge(WorkflowBridge):
     @Slot()
     def dismissFreeSpace(self) -> None:  # noqa: N802
         self._controller.dismiss_free_space()
+
+    @Slot(str, bool, bool, result=bool)
+    def keyAllowed(self, letter: str, autoRepeat: bool, textFocus: bool) -> bool:  # noqa: N802
+        """May this tray key act now? The same gates as the buttons; a refusal shows its banner."""
+        action = keys.action_for(letter)
+        if action is None:
+            return False
+        verdict = keys.decide(
+            action,
+            self._state,
+            self._trays.rowCount(),
+            text_focus=textFocus,
+            auto_repeat=autoRepeat,
+        )
+        if verdict.reason:
+            self._controller.show_key_refusal(verdict.reason)
+            self._key_banner_timer.start()
+        elif verdict.allowed:
+            self._controller.clear_key_refusal()
+        return verdict.allowed
 
     @Slot()
     def dismissBanner(self) -> None:  # noqa: N802

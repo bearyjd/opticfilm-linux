@@ -80,11 +80,14 @@ Kirigami.Page {
         const keys = [Qt.Key_S, Qt.Key_E, Qt.Key_L, Qt.Key_X, Qt.Key_F, Qt.Key_Return, Qt.Key_Enter];
         const modified = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier);
         if (modified || keys.indexOf(event.key) < 0) return false;
-        if (event.isAutoRepeat) return true;
-        if (event.key === Qt.Key_S) { if (bridge.canScan) bridge.scan(); }
-        else if (event.key === Qt.Key_E) { if (bridge.canEject) bridge.ejectHolder(); }
-        else if (event.key === Qt.Key_L) { if (bridge.canLoadNext) bridge.loadNextHolder(); }
-        else if (event.key === Qt.Key_X) { if (bridge.trays.rowCount() > 0) exportDialog.open(); }
+        const letter = String.fromCharCode(event.key);
+        const repeat = event.isAutoRepeat;
+        const typing = page.textHasFocus();
+        if (repeat && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) return true;
+        if (event.key === Qt.Key_S) { if (bridge.keyAllowed(letter, repeat, typing)) bridge.scan(); }
+        else if (event.key === Qt.Key_E) { if (bridge.keyAllowed(letter, repeat, typing)) bridge.ejectHolder(); }
+        else if (event.key === Qt.Key_L) { if (bridge.keyAllowed(letter, repeat, typing)) bridge.loadNextHolder(); }
+        else if (event.key === Qt.Key_X) { if (bridge.keyAllowed(letter, repeat, typing)) exportDialog.open(); }
         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             // Enter on a focused button (Eject reached by Tab) is about that button
             const active = page.Window.window ? page.Window.window.activeFocusItem : null;
@@ -92,14 +95,17 @@ Kirigami.Page {
                 return true;  // an AbstractButton (autoExclusive and toggle() are its own)
             if (bridge.loadAndScanEnabled && bridge.canLoadAndScan) bridge.loadAndScan();
         }
-        else if (bridge.collection !== "" && bridge.canFinishBox) finishBoxDialog.open();
+        else if (bridge.keyAllowed(letter, repeat, typing)) finishBoxDialog.open();
         return true;
     }
 
-    function handleKey(event) {
+    function textHasFocus() {
         const active = page.Window.window ? page.Window.window.activeFocusItem : null;
-        if (active && typeof active.cursorPosition === "number") return;
-        if (active && holdsFocus(metaStrip, active)) return;  // keys typed into the strip
+        return !!active && (typeof active.cursorPosition === "number" || holdsFocus(metaStrip, active));
+    }
+
+    function handleKey(event) {
+        if (page.textHasFocus()) return;  // keys typed into a text field or the strip
         const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
         const shift = (event.modifiers & Qt.ShiftModifier) !== 0;
         if (ctrl && event.key === Qt.Key_A) bridge.selectAll();
