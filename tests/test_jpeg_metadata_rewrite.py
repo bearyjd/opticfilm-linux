@@ -308,3 +308,19 @@ def test_only_stale_temporaries_of_the_exact_pattern_are_removed(tmp_path):
         os.utime(item, (old, old))
     assert clean_stale_temporaries(path) == 1
     assert not stale.exists() and fresh.exists() and other.exists() and odd.exists()
+
+
+def test_a_file_changed_while_the_plan_was_recorded_is_not_replaced(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+
+    def meanwhile(_digest, _size):  # same size, other bytes, later mtime
+        data = bytearray(path.read_bytes())
+        data[-3] ^= 0xFF
+        path.write_bytes(bytes(data))
+        stamp = os.stat(path).st_mtime_ns + 5_000_000_000
+        os.utime(path, ns=(stamp, stamp))
+
+    with pytest.raises(RewriteRefused, match="while it was being rewritten"):
+        rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}, before_replace=meanwhile)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() != digest  # their edit is still there
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["001.jpg"]

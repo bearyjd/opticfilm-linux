@@ -225,6 +225,8 @@ a description or date edit**, on by default;
   or computer dies at that moment, the next pass recognises the file as its own work and
   finishes the record. Temporary files such as `.001.jpg.0123456789ab.tmp` that a kill left in
   the output folder are removed at the start of a pass when they are older than a minute.
+  Do not go back to an older version of the app while such an update was interrupted: the
+  older version does not know this record and drops it the next time it saves.
 
 With the setting off, or to retry, press **Update JPEGs**: that one runs like an export
 (scanning waits for it) and also has the Stop button.

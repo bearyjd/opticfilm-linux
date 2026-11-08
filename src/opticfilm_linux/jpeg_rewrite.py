@@ -134,13 +134,21 @@ def updated_packet(old: bytes | None, estimate: Mapping[str, str]) -> bytes:
     return _xmp_packet({**kept, **estimate})
 
 
-def _read_exactly(path: Path) -> tuple[bytes, int]:
+def _read_exactly(path: Path) -> tuple[bytes, int, tuple[int, int, int]]:
+    """The file's bytes, its permission bits and its identity (inode, size, mtime_ns)."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     with os.fdopen(descriptor, "rb") as handle:
         opened = os.fstat(handle.fileno())
         if not stat.S_ISREG(opened.st_mode):
             raise RewriteRefused("the export is not a regular file")
-        return handle.read(), stat.S_IMODE(opened.st_mode)
+        identity = (opened.st_ino, opened.st_size, opened.st_mtime_ns)
+        return handle.read(), stat.S_IMODE(opened.st_mode), identity
+
+
+def fingerprint(path: Path) -> tuple[str, int]:
+    """The sha256 and size of the file as it is now."""
+    data, _, _ = _read_exactly(path)
+    return hashlib.sha256(data).hexdigest(), len(data)
 
 
 def _replace(path: Path, data: bytes, mode: int) -> None:
@@ -208,7 +216,7 @@ def rewrite_xmp_file(
     rename, so the caller can record what the file will become: if the process dies between
     the rename and saving the new receipt, the next pass recognises the file as its own work.
     """
-    data, mode = _read_exactly(path)
+    data, mode, identity = _read_exactly(path)
     digest = hashlib.sha256(data).hexdigest()
     ours = (digest, len(data)) == (sha256, size_bytes)
     ours_pending = bool(pending[0]) and (digest, len(data)) == pending
@@ -224,5 +232,9 @@ def rewrite_xmp_file(
     new_digest = hashlib.sha256(new).hexdigest()
     if before_replace is not None:
         before_replace(new_digest, len(new))
+    # recording the plan took time: the file must still be the one that was checked
+    now = os.lstat(path)
+    if (now.st_ino, now.st_size, now.st_mtime_ns) != identity:
+        raise RewriteRefused("the file changed while it was being rewritten; it was left as it is")
     _replace(path, new, mode)
     return new_digest, len(new)

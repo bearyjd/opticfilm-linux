@@ -35,7 +35,11 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
-from opticfilm_linux.jpeg_rewrite import clean_stale_temporaries, rewrite_xmp_file
+from opticfilm_linux.jpeg_rewrite import (
+    clean_stale_temporaries,
+    fingerprint,
+    rewrite_xmp_file,
+)
 from opticfilm_linux.provenance import _estimate_fields, estimate_signature
 
 JPEG_SUFFIXES = (".jpg", ".jpeg")
@@ -126,6 +130,19 @@ def _update_one(store: BatchStore, key: SlideKey) -> bool:
     old = slide.exports[-1]
     clean_stale_temporaries(path)
     current = old
+    if old.pending_sha256 and fingerprint(path) == (old.pending_sha256, old.pending_size):
+        # An earlier rewrite replaced the file but its receipt was never finished. Finish it
+        # first, so that planning the next rewrite cannot lose the hash the file has now.
+        finished = dataclasses.replace(
+            old,
+            sha256=old.pending_sha256,
+            size_bytes=old.pending_size,
+            pending_sha256="",
+            pending_size=0,
+        )
+        _store_receipt(store, key, old, finished)
+        old = current = finished
+        digest, size = finished.sha256, finished.size_bytes
 
     def record_plan(new_digest: str, new_size: int) -> None:
         nonlocal current
@@ -138,7 +155,7 @@ def _update_one(store: BatchStore, key: SlideKey) -> bool:
         digest,
         size or 0,
         estimate,
-        pending=(old.pending_sha256, old.pending_size),
+        pending=("", 0),
         before_replace=record_plan,
     )
     new = dataclasses.replace(

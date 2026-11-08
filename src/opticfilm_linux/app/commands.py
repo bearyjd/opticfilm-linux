@@ -418,6 +418,10 @@ class ReviewCommands:
         )
         if future is None:  # shut down meanwhile
             self._finish_metadata_update(cancel)
+        else:  # a job cancelled before it started (shutdown) never reaches its own finish
+            future.add_done_callback(
+                lambda done: self._finish_metadata_update(cancel) if done.cancelled() else None
+            )
 
     def _run_automatic_metadata_update(self, session, cancel: threading.Event) -> None:
         try:
