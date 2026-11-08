@@ -69,6 +69,7 @@ def test_properties_notify_and_return_copies(bridge):
         "metaLevels": {},
         "metaNote": "",
         "batchMeta": {},
+        "trayMax": 0,
         "metaScope": "",
     }
     summary["settings"]["rotation"] = 0

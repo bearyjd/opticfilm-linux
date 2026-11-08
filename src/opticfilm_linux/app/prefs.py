@@ -28,10 +28,17 @@ AUTO_EJECT_KEY = "workflow/auto_eject"
 SKIP_EMPTY_KEY = "workflow/skip_empty"
 AUTO_EXPORT_KEY = "workflow/auto_export_default"
 LOAD_AND_SCAN_KEY = "workflow/load_and_scan"
-SWITCH_KEYS = (AUTO_EJECT_KEY, SKIP_EMPTY_KEY, AUTO_EXPORT_KEY, LOAD_AND_SCAN_KEY)
+UPDATE_METADATA_KEY = "workflow/update_exported_metadata_automatically"
+SWITCH_KEYS = (
+    AUTO_EJECT_KEY,
+    SKIP_EMPTY_KEY,
+    AUTO_EXPORT_KEY,
+    LOAD_AND_SCAN_KEY,
+    UPDATE_METADATA_KEY,
+)
 _SWITCH_ON = ("1", "true")
 # Starting value of a switch that was never saved. A saved "0" or "1" always wins over this.
-SWITCH_DEFAULTS = {AUTO_EXPORT_KEY: True, SKIP_EMPTY_KEY: True}
+SWITCH_DEFAULTS = {AUTO_EXPORT_KEY: True, SKIP_EMPTY_KEY: True, UPDATE_METADATA_KEY: True}
 
 
 class Prefs(Protocol):

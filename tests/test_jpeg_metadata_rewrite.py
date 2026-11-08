@@ -12,6 +12,7 @@ from PIL import Image
 from opticfilm_linux import jpeg_rewrite
 from opticfilm_linux.jpeg_rewrite import (
     RewriteRefused,
+    clean_stale_temporaries,
     jpeg_segments,
     replace_xmp,
     rewrite_xmp_file,
@@ -216,12 +217,25 @@ def test_a_crash_before_the_rename_leaves_the_old_file(tmp_path, monkeypatch):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["001.jpg"]
 
 
-def test_a_file_already_rewritten_before_the_receipt_was_saved_is_adopted(tmp_path):
+def test_a_file_that_already_has_the_fields_but_not_the_receipts_hash_is_refused(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+    new_digest, _ = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    # the receipt still holds the old digest (a crash between the rename and the receipt save,
+    # or another program that wrote the same fields): the receipt is not renewed to match
+    with pytest.raises(RewriteRefused, match="changed since"):
+        rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == new_digest
+
+
+def test_a_file_that_matches_its_receipt_and_is_current_is_left_alone(tmp_path):
     path, digest, size = _on_disk(tmp_path)
     new_digest, new_size = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
-    # the receipt still holds the old digest (crash between the rename and the receipt save)
-    assert rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}) == (new_digest, new_size)
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == new_digest
+    before = path.read_bytes()
+    assert rewrite_xmp_file(path, new_digest, new_size, {"PhotoDate": "1980"}) == (
+        new_digest,
+        new_size,
+    )
+    assert path.read_bytes() == before
 
 
 def test_a_failed_directory_sync_after_the_rename_is_not_fatal(tmp_path, monkeypatch):
@@ -243,3 +257,70 @@ def test_a_read_only_file_is_refused(tmp_path):
     with pytest.raises(RewriteRefused, match="read-only"):
         rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
     assert path.read_bytes() == before
+
+
+def test_the_planned_hash_is_reported_before_the_file_is_replaced(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+    seen = []
+    old_bytes = path.read_bytes()
+
+    def record(new_digest, new_size):
+        seen.append((new_digest, new_size, path.read_bytes() == old_bytes))
+
+    result = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}, before_replace=record)
+    assert seen == [(*result, True)]  # reported while the old file was still in place
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == result[0]
+
+
+def test_a_crash_after_the_rename_is_recognised_by_the_pending_hash(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+    planned = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    # receipt: old hash + planned hash; the file already is the planned one
+    done = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}, pending=planned)
+    assert done == planned
+    # fields changed again meanwhile: the planned file is a valid base for the next rewrite
+    again = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1981"}, pending=planned)
+    assert again != planned and hashlib.sha256(path.read_bytes()).hexdigest() == again[0]
+
+
+def test_a_file_matching_neither_hash_is_refused_even_with_a_pending_hash(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+    planned = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    path.write_bytes(path.read_bytes() + b"edited by another program")
+    before = path.read_bytes()
+    with pytest.raises(RewriteRefused, match="changed since"):
+        rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}, pending=planned)
+    assert path.read_bytes() == before
+    with pytest.raises(RewriteRefused):  # a pending hash with the wrong size matches nothing
+        rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}, pending=(planned[0], 1))
+
+
+def test_only_stale_temporaries_of_the_exact_pattern_are_removed(tmp_path):
+    path, _, _ = _on_disk(tmp_path)
+    stale = tmp_path / f".{path.name}.0123456789ab.tmp"
+    fresh = tmp_path / f".{path.name}.ba9876543210.tmp"
+    other = tmp_path / ".002.jpg.0123456789ab.tmp"
+    odd = tmp_path / f".{path.name}.nothex.tmp"
+    for item in (stale, fresh, other, odd):
+        item.write_bytes(b"x")
+    old = os.stat(path).st_mtime - 3600
+    for item in (stale, other, odd):
+        os.utime(item, (old, old))
+    assert clean_stale_temporaries(path) == 1
+    assert not stale.exists() and fresh.exists() and other.exists() and odd.exists()
+
+
+def test_a_file_changed_while_the_plan_was_recorded_is_not_replaced(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+
+    def meanwhile(_digest, _size):  # same size, other bytes, later mtime
+        data = bytearray(path.read_bytes())
+        data[-3] ^= 0xFF
+        path.write_bytes(bytes(data))
+        stamp = os.stat(path).st_mtime_ns + 5_000_000_000
+        os.utime(path, ns=(stamp, stamp))
+
+    with pytest.raises(RewriteRefused, match="while it was being rewritten"):
+        rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}, before_replace=meanwhile)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() != digest  # their edit is still there
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["001.jpg"]

@@ -83,6 +83,15 @@ Kirigami.Dialog {
             switchObject.objectName: "autoExportDefaultSwitch"
         }
         Setting {
+            objectName: "updateMetadataSetting"
+            label: qsTr("Update exported JPEGs after a description or date edit")
+            detail: qsTr("On by default. After an edit that makes exported JPEGs out of date, the app rewrites their description and date by itself, without encoding the picture again, and never while an export or scan is using them. Off: use the Update JPEGs button. Applies from the next edit.")
+            value: bridge.updateMetadataEnabled
+            lockedBy: bridge.updateMetadataLockedBy
+            onToggled: on => bridge.setUpdateMetadata(on)
+            switchObject.objectName: "updateMetadataSwitch"
+        }
+        Setting {
             objectName: "autoEjectSetting"
             label: qsTr("Eject the holder after each good scan")
             detail: qsTr("Applies to the next scan that finishes. Automatic eject is not yet proven on the scanner; watch the first few trays.")

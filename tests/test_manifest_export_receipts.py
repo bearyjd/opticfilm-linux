@@ -108,3 +108,19 @@ def test_receipt_with_unknown_keys_loads_and_ignores_them():
         loaded.trays[0].slides[0].exports[0]
         == from_json(json.dumps(_data())).trays[0].slides[0].exports[0]
     )
+
+
+def test_receipt_without_a_pending_rewrite_has_neither_key_and_one_with_it_round_trips():
+    text = to_json(from_json(json.dumps(_data())))
+    assert "pending_sha256" not in text and "pending_size" not in text
+    data = _data()
+    record = data["trays"][0]["slides"][0]["exports"][0]
+    record["pending_sha256"], record["pending_size"] = "b" * 64, 1234
+    manifest = from_json(json.dumps(data))
+    assert manifest.trays[0].slides[0].exports[0].pending_size == 1234
+    assert from_json(to_json(manifest)) == manifest
+    for bad in ({"pending_sha256": "short"}, {"pending_size": -1}, {"pending_size": "3"}):
+        broken = _data()
+        broken["trays"][0]["slides"][0]["exports"][0].update(bad)
+        with pytest.raises(ManifestFormatError):
+            from_json(json.dumps(broken))

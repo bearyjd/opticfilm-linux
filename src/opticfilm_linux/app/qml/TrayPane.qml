@@ -30,7 +30,7 @@ ColumnLayout {
             wrapMode: Text.Wrap
             font.pixelSize: Theme.fontSmall
             color: Theme.text
-            text: qsTr("Next tray: %1 · %2").arg(pane.batchMeta.description || qsTr("no description")).arg(pane.batchMeta.date ? "~" + pane.batchMeta.date : qsTr("no date"))
+            text: qsTr("Batch: %1 · %2").arg(pane.batchMeta.description || qsTr("no description")).arg(pane.batchMeta.date ? "~" + pane.batchMeta.date : qsTr("no date"))
         }
         QQC2.Button {
             objectName: "nextTrayMetaEdit"

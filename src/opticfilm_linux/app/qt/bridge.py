@@ -308,6 +308,7 @@ class Bridge(WorkflowBridge):
         int, changed, lambda s, _: s.export.not_accepted if s.export else 0
     )
     exportRawFreed = _p(int, changed, lambda s, _: s.export.raw_freed if s.export else 0)  # noqa: N815
+    metadataUpdating = _p(bool, changed, lambda s, _: s.metadata_updating)  # noqa: N815
     metadataPending = _p(int, changed, lambda s, _: s.metadata_pending)  # noqa: N815
     exportMessage = _p(str, changed, lambda s, _: s.export.message if s.export else "")  # noqa: N815
     freeSpaceReady = _p(  # noqa: N815
@@ -380,6 +381,10 @@ class Bridge(WorkflowBridge):
         self._controller.close_batch()
 
     # -- scanning and review -------------------------------------------------------------
+
+    @Slot()
+    def cancelMetadataUpdate(self) -> None:  # noqa: N802
+        self._controller.cancel_metadata_update()
 
     @Slot()
     def updateExportedMetadata(self) -> None:  # noqa: N802

@@ -267,7 +267,7 @@ def test_batch_meta_from_now_on_and_its_undo(selected):
     store = selected._session.store
     store.update(lambda m: dataclasses.replace(m, description="Old"))
     selected.set_tray_meta(2, "description", "Tray two")
-    selected.set_batch_meta("description", "New")  # default scope: from now on
+    selected.set_batch_meta("description", "New", scope="from_now_on")
     wait_until(selected, lambda: store.snapshot().description == "New")
     trays = {t.number: t.meta for t in store.snapshot().trays}
     assert trays == {1: MetaOverride("Old"), 2: MetaOverride("Tray two"), 3: MetaOverride("Old")}
@@ -278,7 +278,7 @@ def test_batch_meta_from_now_on_and_its_undo(selected):
         2: "Tray two",
         3: None,
     }
-    selected.set_batch_meta("date", "1980", scope="inheriting")
+    selected.set_batch_meta("date", "1980")  # the default: the entire batch
     wait_until(selected, lambda: store.snapshot().date == "1980")
     assert store.snapshot().trays[0].meta == MetaOverride()
 

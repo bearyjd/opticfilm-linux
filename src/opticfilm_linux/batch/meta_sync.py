@@ -10,7 +10,8 @@ A receipt made before signatures existed has an empty one, which equals the sign
 fields: such a slide is out of date only if it now resolves to a description or a date.
 
 ``update_exported_metadata`` is the one way such files are brought up to date: on the owner's
-request only, never automatically. Each file is checked against its receipt first, so a file the
+request (the Update JPEGs button) or, with the app setting on, by the controller after an edit
+that made some out of date. Each file is checked against its receipt first, so a file the
 owner or another program changed is reported and left alone. The receipt then gets the new hash,
 size and signature, the signature taken from the same snapshot whose values were written, so an
 edit made during the update still shows as out of date afterwards.
@@ -34,7 +35,11 @@ from opticfilm_linux.batch.model import (
     TrayRecord,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
-from opticfilm_linux.jpeg_rewrite import rewrite_xmp_file
+from opticfilm_linux.jpeg_rewrite import (
+    clean_stale_temporaries,
+    fingerprint,
+    rewrite_xmp_file,
+)
 from opticfilm_linux.provenance import _estimate_fields, estimate_signature
 
 JPEG_SUFFIXES = (".jpg", ".jpeg")
@@ -109,8 +114,30 @@ def _store_receipt(store: BatchStore, key: SlideKey, old: ExportRecord, new: Exp
         raise BatchError("the slide was exported again meanwhile; its receipt was left as it is")
 
 
+def _finish_interrupted(
+    store: BatchStore, key: SlideKey, old: ExportRecord, path: Path
+) -> ExportRecord | None:
+    """If an earlier rewrite replaced the file but its receipt was never finished, finish it
+    now (so planning the next rewrite cannot lose the hash the file has) and return it."""
+    if not old.pending_sha256 or fingerprint(path) != (old.pending_sha256, old.pending_size):
+        return None
+    finished = dataclasses.replace(
+        old,
+        sha256=old.pending_sha256,
+        size_bytes=old.pending_size,
+        pending_sha256="",
+        pending_size=0,
+    )
+    _store_receipt(store, key, old, finished)
+    return finished
+
+
 def _update_one(store: BatchStore, key: SlideKey) -> bool:
-    """Rewrite one file from one snapshot; False when there was nothing (left) to do."""
+    """Rewrite one file from one snapshot; False when there was nothing (left) to do.
+
+    The planned hash goes into the receipt before the file is replaced, so a crash after the
+    rename leaves a receipt that names both the old and the planned file: the next pass accepts
+    either, and finishes the receipt."""
     manifest = store.snapshot()
     found = _find(manifest, key)
     if found is None or not metadata_out_of_date(manifest, *found):
@@ -118,12 +145,37 @@ def _update_one(store: BatchStore, key: SlideKey) -> bool:
     tray, slide = found
     path, _, digest, size = _export_receipt(slide)
     estimate = _estimate_fields(manifest, tray, slide)
-    new_digest, new_size = rewrite_xmp_file(path, digest, size or 0, estimate)
     old = slide.exports[-1]
-    new = dataclasses.replace(
-        old, sha256=new_digest, size_bytes=new_size, meta_signature=estimate_signature(estimate)
+    clean_stale_temporaries(path)
+    finished = _finish_interrupted(store, key, old, path)
+    if finished is not None:
+        old = finished
+        digest, size = finished.sha256, finished.size_bytes
+    current = old
+
+    def record_plan(new_digest: str, new_size: int) -> None:
+        nonlocal current
+        planned = dataclasses.replace(old, pending_sha256=new_digest, pending_size=new_size)
+        _store_receipt(store, key, current, planned)
+        current = planned
+
+    new_digest, new_size = rewrite_xmp_file(
+        path,
+        digest,
+        size or 0,
+        estimate,
+        pending=("", 0),
+        before_replace=record_plan,
     )
-    _store_receipt(store, key, old, new)
+    new = dataclasses.replace(
+        old,
+        sha256=new_digest,
+        size_bytes=new_size,
+        meta_signature=estimate_signature(estimate),
+        pending_sha256="",
+        pending_size=0,
+    )
+    _store_receipt(store, key, current, new)
     return True
 
 

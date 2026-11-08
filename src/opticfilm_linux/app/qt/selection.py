@@ -117,10 +117,10 @@ class SelectionBridge(QObject):
     # "date" ("1978" or "1978-07"). Clear sets a blank at that level; Reset inherits again.
     # Batch scope: "from_now_on" (existing trays keep their values) or "inheriting".
 
-    def _meta(self, edit, *args) -> str:
+    def _meta(self, edit, *args, **named) -> str:
         self._flush_now()
         try:
-            edit(*args)
+            edit(*args, **named)
         except ValueError as exc:
             return str(exc)
         return ""
@@ -171,3 +171,32 @@ class SelectionBridge(QObject):
     def clearBatchMeta(self, field: str, scope: str) -> str:  # noqa: N802
         # the batch has no level above it, so a clear is also its reset
         return self._meta(self._controller.set_batch_meta, field, "", scope)
+
+    # Bulk scopes of the strip (see batch.meta_bulk). ``target`` is a map with any of
+    # ``keys`` ([[tray, position], ...]), ``tray``, ``first`` and ``last``. The preview says
+    # what the edit would change ("Changes 148 slides") or why it would be refused.
+
+    @staticmethod
+    def _bulk_args(target: dict) -> dict:
+        return {
+            "keys": target.get("keys") or (),
+            "tray": target.get("tray"),
+            "first": target.get("first"),
+            "last": target.get("last"),
+        }
+
+    @Slot(str, str, str, "QVariantMap", result="QVariantMap")
+    def previewMetaEdit(self, scope: str, field: str, value: str, target: dict) -> dict:  # noqa: N802
+        try:
+            text = self._controller.preview_meta_edit(
+                scope, field, value, **self._bulk_args(target)
+            )
+        except (ValueError, LookupError) as exc:
+            return {"ok": False, "text": str(exc)}
+        return {"ok": True, "text": text}
+
+    @Slot(str, str, str, "QVariantMap", result=str)
+    def applyMetaEdit(self, scope: str, field: str, value: str, target: dict) -> str:  # noqa: N802
+        return self._meta(
+            self._controller.apply_meta_edit, scope, field, value, **self._bulk_args(target)
+        )

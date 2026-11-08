@@ -1,10 +1,10 @@
 """Workflow switches that can be saved in the preferences (auto-eject, skip-empty, Load & scan).
 
 An explicit environment variable (``OPTICFILM_AUTO_EJECT``, ``OPTICFILM_SKIP_EMPTY``,
-``OPTICFILM_LOAD_AND_SCAN``) always
+``OPTICFILM_LOAD_AND_SCAN``, ``OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY``) always
 wins over the saved value and locks the switch in the app. Unset means "use the saved value",
-which on a fresh profile is on for skip-empty and the automatic-export default and off for
-auto-eject and Load & scan (``prefs.SWITCH_DEFAULTS``).
+which on a fresh profile is on for skip-empty, the automatic-export default and the automatic
+JPEG update, and off for auto-eject and Load & scan (``prefs.SWITCH_DEFAULTS``).
 ``OPTICFILM_SKIP_GAPS`` stays environment-only.
 """
 
@@ -14,6 +14,7 @@ from opticfilm_linux.app.prefs import (
     AUTO_EJECT_KEY,
     LOAD_AND_SCAN_KEY,
     SKIP_EMPTY_KEY,
+    UPDATE_METADATA_KEY,
     Prefs,
     read_switch,
 )
@@ -23,6 +24,7 @@ from opticfilm_linux.scanner.select import (
     AUTO_EJECT_ENV,
     LOAD_AND_SCAN_ENV,
     SKIP_EMPTY_ENV,
+    UPDATE_METADATA_ENV,
     env_switch,
     env_switch_fail_off,
     skip_gaps_enabled,
@@ -32,11 +34,13 @@ ENV_NAMES = {
     "auto_eject": AUTO_EJECT_ENV,
     "skip_empty": SKIP_EMPTY_ENV,
     "load_and_scan": LOAD_AND_SCAN_ENV,
+    "update_exported_metadata_automatically": UPDATE_METADATA_ENV,
 }
 SAVED_KEYS = {
     "auto_eject": AUTO_EJECT_KEY,
     "skip_empty": SKIP_EMPTY_KEY,
     "load_and_scan": LOAD_AND_SCAN_KEY,
+    "update_exported_metadata_automatically": UPDATE_METADATA_KEY,
 }
 
 
@@ -73,6 +77,7 @@ class WorkflowSettings:
     def _init_workflow_settings(self, env_locked: frozenset[str]) -> None:
         self._env_locked = env_locked
         self._eject_at_start = False  # the auto-eject setting when the running scan was started
+        self._meta_update_due = False  # an automatic JPEG update is wanted (held back or stopped)
 
     @property
     def env_locked(self) -> frozenset[str]:
@@ -97,6 +102,21 @@ class WorkflowSettings:
                 self._banner = Banner(OPENINGS_DROPPED)
             self._scan_openings = ALL_POSITIONS
             return True
+
+    @property
+    def update_metadata_enabled(self) -> bool:
+        return self._update_metadata
+
+    def set_update_metadata(self, on: bool) -> bool:
+        """Applies from the next metadata edit; turning it on also catches up on JPEGs already
+        out of date. False: refused (an environment variable decides)."""
+        with self._lock:
+            if self._refuse_locked("update_exported_metadata_automatically"):
+                return False
+            self._update_metadata = on
+        if on:
+            self._queue_metadata_update_if_due()
+        return True
 
     def _snapshot_auto_eject(self) -> None:
         """Called under the lock when a scan is reserved: the setting that scan starts with."""

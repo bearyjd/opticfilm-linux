@@ -102,6 +102,7 @@ def selection_summary(state: AppState) -> dict:
         "metaLevels": dict(summary.meta_levels),  # "batch", "tray", "slide", ""; null: mixed
         "metaNote": summary.meta_note,
         "batchMeta": dict(summary.batch_meta),  # the default for trays scanned next
+        "trayMax": summary.tray_max,
         "metaScope": summary.meta_scope,  # "slides", "tray" (only trays selected) or "batch"
     }
 
