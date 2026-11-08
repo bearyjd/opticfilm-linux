@@ -74,6 +74,15 @@ _RE_DAY_MON_YEAR = re.compile(
     rf"(?<!\d)(?P<d>\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?{_mon('m')}\s*,?\s*(?P<y>\d{{4}})(?!\d)",
     _F,
 )
+_DAY_ORD = r"(?:st|nd|rd|th)?"
+_DAYS = rf"(?P<d1>\d{{1,2}}){_DAY_ORD}\s*(?:{_DASH}|\bto\b)\s*(?P<d2>\d{{1,2}}){_DAY_ORD}"
+_RE_MON_DAY_RANGE = re.compile(rf"{_mon('m')}\s*{_DAYS}\s*,?\s*(?P<y>\d{{4}})(?!\d)", _F)
+_RE_DAY_RANGE_MON = re.compile(
+    rf"(?<!\d){_DAYS}\s+(?:of\s+)?{_mon('m')}\s*,?\s*(?P<y>\d{{4}})(?!\d)", _F
+)
+_RE_MON_YEAR_RANGE = re.compile(
+    rf"{_mon('a')}{_SEP}(?P<ya>\d{{4}})\s*{_TO}\s*{_mon('b')}{_SEP}(?P<yb>\d{{4}})(?!\d)", _F
+)
 _RE_MON_RANGE = re.compile(
     rf"{_mon('a')}\s*(?:{_DASH}|\bto\b|through|thru)\s*{_mon('b')}{_SEP}(?P<y>\d{{4}})(?!\d)", _F
 )
@@ -83,7 +92,7 @@ _RE_YEAR_RANGE = re.compile(
 _RE_BETWEEN = re.compile(rf"\bbetween\s+(?P<a>{_YEAR4})\s+and\s+(?P<b>{_YEAR4})(?!\d)", _F)
 _RE_OR = re.compile(rf"(?<!\d)(?P<a>{_YEAR4})\s+or\s+(?P<b>{_YEAR4})(?!\d)", _F)
 _RE_SHORT_RANGE = re.compile(
-    rf"(?<![\w'’./:-]){_QUOTE}(?P<a>\d{{2}})\s*{_DASH}\s*{_QUOTE}?(?P<b>\d{{2}})(?![\w/:-])(?!\.\d)",
+    rf"(?<![\w'’./:-]){_QUOTE}(?P<a>\d{{2}})\s*{_TO}\s*{_QUOTE}?(?P<b>\d{{2}})(?![\w/:-])(?!\.\d)",
     _F,
 )
 _RE_MON_YEAR = re.compile(rf"{_mon('m')}{_SEP}(?P<y>\d{{4}})(?!\d)", _F)
@@ -92,6 +101,11 @@ _RE_NUM_YM = re.compile(r"(?<![\d/])(?P<y>\d{4})[-/](?P<m>\d{1,2})(?![\d/-])", _
 _RE_NUM_MY = re.compile(r"(?<![\d/.-])(?P<m>\d{1,2})/(?P<y>\d{4})(?![\d/])", _F)
 _RE_SHORT_YEAR = re.compile(rf"(?<![\w'’]){_QUOTE}(?P<y>\d{{2}})(?!\d)", _F)
 # a year stands alone: not glued to letters or digits, not "v1.1974", not after "555-"
+_RE_APPROX = re.compile(
+    r"(?:(?<![A-Za-z])(?:circa|ca|c|about|approx(?:imately)?|around)\b\.?\s*|~\s*)"
+    rf"(?P<y>{_YEAR4})(?![A-Za-z\d])|(?<![A-Za-z\d])(?P<y2>{_YEAR4})ish\b",
+    _F,
+)
 _RE_YEAR = re.compile(
     rf"(?<![A-Za-z\d])(?<![A-Za-z\d]\.)(?<!\b\d{{3}}-)(?P<y>{_YEAR4})(?![A-Za-z\d])", _F
 )
@@ -122,6 +136,7 @@ class _Found:
     singles: list[Pick] = field(default_factory=list)
     groups: list[tuple[str, int, int]] = field(default_factory=list)  # ("range"|"or", first, last)
     month_ranges: list[tuple[int, tuple[int, ...]]] = field(default_factory=list)
+    spans: list[tuple[Pick, ...]] = field(default_factory=list)  # months across a year boundary
     decades: list[int] = field(default_factory=list)
     seasons: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -203,8 +218,27 @@ def _scan_days(text: str, found: _Found) -> str:
             )
         return True
 
+    def day_range(m: re.Match[str]) -> bool:
+        month, first, last = _month_no(m["m"]), int(m["d1"]), int(m["d2"])
+        year = int(m["y"])
+        if month is None or not 1 <= first < last <= _days_in(year, month):
+            return False
+        _note_name(found, m["m"])
+        found.singles.append((year, month))
+        found.notes.append(
+            f"the days ({first}-{last}) in {m.group(0)} were dropped; only year and month are kept"
+        )
+        return True
+
     def iso(m: re.Match[str]) -> bool:
         month = int(m["m"])
+        if not 1 <= month <= 12:
+            found.singles.append((int(m["y"]), None))
+            found.notes.append(
+                f"{m.group(0)}: month {month} is not valid, so only the year {int(m['y'])} "
+                "was guessed"
+            )
+            return True
         return 1 <= month <= 12 and add(int(m["y"]), month, int(m["d"]), m.group(0))
 
     def slash(m: re.Match[str]) -> bool:
@@ -225,10 +259,23 @@ def _scan_days(text: str, found: _Found) -> str:
             _note_name(found, m["m"])
         return month is not None and add(int(m["y"]), month, int(m["d"]), m.group(0))
 
+    text = _blank(_RE_MON_DAY_RANGE, text, day_range)
+    text = _blank(_RE_DAY_RANGE_MON, text, day_range)
     text = _blank(_RE_ISO, text, iso)
     text = _blank(_RE_SLASH3, text, slash)
     text = _blank(_RE_MON_DAY_YEAR, text, named)
     return _blank(_RE_DAY_MON_YEAR, text, named)
+
+
+def _month_picks(y1: int, first: int, y2: int, last: int) -> list[Pick]:
+    picks: list[Pick] = []
+    year, month = y1, first
+    while (year, month) <= (y2, last):
+        picks.append((year, month))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+        if len(picks) > MAX_RANGE_YEARS:
+            break
+    return picks
 
 
 def _scan_ranges(text: str, found: _Found, hi: int) -> str:
@@ -244,12 +291,30 @@ def _scan_ranges(text: str, found: _Found, hi: int) -> str:
         found.month_ranges.append((int(m["y"]), span))
         return True
 
+    def month_span(m: re.Match[str]) -> bool:
+        first, last = _month_no(m["a"]), _month_no(m["b"])
+        (y1, y2) = int(m["ya"]), int(m["yb"])
+        if first is None or last is None or not EARLIEST_YEAR <= y1 < y2 <= hi:
+            return False
+        picks = tuple(_month_picks(y1, first, y2, last))
+        if len(picks) > MAX_RANGE_YEARS:
+            found.groups.append(("range", y1, y2))
+        else:
+            found.spans.append(picks)
+        return True
+
     def years(kind: str) -> Callable[[re.Match[str]], bool]:
         def take(m: re.Match[str]) -> bool:
             first, last = int(m["a"]), m["b"]
             end = int(last) if len(last) == 4 else first // 100 * 100 + int(last)
             if len(last) == 2 and 1 <= int(last) <= 12:
                 return False  # 1974-07 is a year and month
+            if len(last) == 2 and int(last) == 0:
+                found.singles.append((first, None))
+                found.notes.append(
+                    f"{m.group(0)}: month 00 is not valid, so only the year {first} was guessed"
+                )
+                return True
             if end < first and kind == "range":
                 found.notes.append(
                     f"{m.group(0)}: the range ends before it starts, so it was not read as a range"
@@ -265,11 +330,17 @@ def _scan_ranges(text: str, found: _Found, hi: int) -> str:
 
     def short(m: re.Match[str]) -> bool:
         first, last = _short_year(int(m["a"]), hi), _short_year(int(m["b"]), hi)
-        if first is None or last is None or last <= first:
+        if first is None or last is None or last == first:
             return False  # "'74-'76" only; bare pairs like "35-40" are slide numbers
+        if last < first:
+            found.notes.append(
+                f"{m.group(0)}: the range ends before it starts, so it was read as {last}-{first}"
+            )
+            first, last = last, first
         found.groups.append(("range", first, last))
         return True
 
+    text = _blank(_RE_MON_YEAR_RANGE, text, month_span)
     text = _blank(_RE_MON_RANGE, text, months)
     text = _blank(_RE_YEAR_RANGE, text, years("range"))
     text = _blank(_RE_BETWEEN, text, years("range"))
@@ -310,6 +381,15 @@ def _scan_singles(text: str, found: _Found, hi: int) -> str:
     text = _blank(_RE_NUM_YM, text, numeric)
     text = _blank(_RE_NUM_MY, text, numeric)
     text = _blank(_RE_SHORT_YEAR, text, short)
+
+    def approx(m: re.Match[str]) -> bool:
+        found.singles.append((int(m["y"] or m["y2"]), None))
+        found.notes.append(
+            f"{m.group(0)} was taken as approximate (every date here is an estimate)"
+        )
+        return True
+
+    text = _blank(_RE_APPROX, text, approx)
 
     def plain(m: re.Match[str]) -> bool:
         before = text[max(0, m.start() - 20) : m.start()]
@@ -409,6 +489,26 @@ def _season_picks(seasons: list[str], year: int, notes: list[str]) -> list[Pick]
     return [(year, m) for m in picks]
 
 
+def _from_span(span: tuple[Pick, ...], notes: list[str]) -> tuple[Pick, list[Pick], list[str]]:
+    def name(pick: Pick) -> str:
+        return f"{_MONTH_NAMES[(pick[1] or 1) - 1]} {pick[0]}"
+
+    default = span[(len(span) - 1) // 2]
+    notes.append(
+        f"{name(span[0])}-{name(span[-1])} is a range of months: the date is one month, so "
+        f"{name(default)} was chosen; pick another if you know it"
+    )
+    return default, list(span), notes
+
+
+def _season_with_range(seasons: list[str]) -> str:
+    names = list(dict.fromkeys(seasons))
+    note = f"{' and '.join(names)} is not a month, so no month was guessed"
+    if "winter" in names:
+        note += ". Winter spans two calendar years, so the December may belong to the year before"
+    return note
+
+
 def _no_year(found: _Found, hi: int, notes: list[str]) -> tuple[None, list[Pick], list[str]]:
     decades = sorted(set(found.decades))
     if len(decades) > 1:
@@ -434,10 +534,17 @@ def _no_year(found: _Found, hi: int, notes: list[str]) -> tuple[None, list[Pick]
 def _decide(found: _Found, hi: int) -> tuple[Pick | None, list[Pick], list[str]]:
     notes = list(found.notes)
     singles = [y for y, _ in found.singles] + [y for y, _ in found.month_ranges]
+    span_years = {y for span in found.spans for y, _ in span}
+    singles += sorted(span_years)
     if len(found.groups) == 1 and all(
         found.groups[0][1] <= y <= found.groups[0][2] for y in singles
     ):
-        return _from_group(found.groups[0], hi, notes)
+        result = _from_group(found.groups[0], hi, notes)
+        if found.seasons:
+            result[2].append(_season_with_range(found.seasons))
+        return result
+    if len(found.spans) == 1 and not found.groups and set(singles) <= span_years:
+        return _from_span(found.spans[0], notes)
     years = singles + [y for _, a, b in found.groups for y in (a, b)]
     if not years:
         return _no_year(found, hi, notes)

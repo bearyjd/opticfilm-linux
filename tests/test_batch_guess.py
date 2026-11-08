@@ -218,7 +218,7 @@ def test_a_slide_range_does_not_hide_the_real_year():
     assert result.alternatives == ()
 
 
-@pytest.mark.parametrize("text", ["1974-13", "1974-20", "1980-79", "1999-00", "1976-1974"])
+@pytest.mark.parametrize("text", ["1974-13", "1974-20", "1980-79", "1976-1974"])
 def test_a_range_that_ends_before_it_starts_is_not_swapped(text):
     result = guess(text)
     assert has_note(result, "ends before it starts")
@@ -522,3 +522,94 @@ def test_a_megabyte_paste_is_fast():
 @pytest.mark.parametrize("bad", [None, 5, b"1974", ["1974"]])
 def test_non_text_gives_an_empty_guess(bad):
     assert guess(bad) == BatchGuess("", None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["June 3-5 1974", "June 3 - 5, 1974", "3-5 June 1974", "Jun 3rd-5th, 1974", "June 3 to 5 1974"],
+)
+def test_a_day_range_inside_one_month_keeps_the_month(text):
+    result = guess(text)
+    assert result.date == E(1974, 6)
+    assert result.alternatives == ()
+    assert has_note(result, "days", "dropped")
+
+
+def test_a_day_range_that_is_not_real_falls_back_to_the_year():
+    assert guess("Feb 28-31 1975").date != E(1975, 2)
+
+
+@pytest.mark.parametrize(
+    ("text", "default", "span"),
+    [
+        ("Dec 1999 - Feb 2000", (2000, 1), ((1999, 12), (2000, 1), (2000, 2))),
+        ("December 1999 to February 2000", (2000, 1), ((1999, 12), (2000, 1), (2000, 2))),
+        ("Nov 1999 - Feb 2000", (1999, 12), ((1999, 11), (1999, 12), (2000, 1), (2000, 2))),
+        ("Dec 1999 - Jan 2000", (1999, 12), ((1999, 12), (2000, 1))),
+    ],
+)
+def test_a_month_range_across_years_defaults_to_the_middle_month(text, default, span):
+    result = guess(text)
+    assert result.date == E(*default)
+    assert result.alternatives == tuple(E(*p) for p in span)
+    assert has_note(result, "range of months", "chosen")
+
+
+def test_a_month_range_across_years_is_capped_at_15_months():
+    ok = guess("Jan 1999 - Mar 2000")  # exactly 15 months
+    assert ok.date == E(1999, 8)
+    assert len(ok.alternatives) == 15
+    wide = guess("Jan 1999 - Apr 2000")  # 16 months: the year-range handling
+    assert wide.date == E(1999)
+    assert wide.alternatives == years(1999, 2000)
+    assert not any(a.month for a in wide.alternatives)
+
+
+@pytest.mark.parametrize("text", ["'74 to '76", "'74 through '76", "'74 - '76", "’74 to ’76"])
+def test_a_short_year_range_with_words_is_a_year_range(text):
+    result = guess(text)
+    assert result.date == E(1975)
+    assert result.alternatives == years(1974, 1975, 1976)
+    assert has_note(result, "chosen")
+
+
+@pytest.mark.parametrize("text", ["'76 to '74", "'76-'74"])
+def test_a_reversed_short_year_range_is_read_ascending_with_a_note(text):
+    result = guess(text)
+    assert result.date == E(1975)
+    assert result.alternatives == years(1974, 1975, 1976)
+    assert has_note(result, "ends before it starts")
+
+
+@pytest.mark.parametrize("text", ["rock'n 74", "rock'n'74", "rock'n 74 to 76"])
+def test_a_quote_inside_a_word_is_not_a_short_year(text):
+    assert guess(text).date is None
+
+
+def test_a_season_note_is_kept_beside_a_year_range_note():
+    result = guess("Winter 1983-84")
+    assert result.date == E(1983)
+    assert result.alternatives == years(1983, 1984)
+    assert has_note(result, "chosen")
+    assert has_note(result, "winter", "not a month")
+    assert has_note(result, "two calendar years")
+    assert has_note(guess("summer 1974-76"), "summer", "not a month")
+
+
+@pytest.mark.parametrize(
+    "text", ["1975ish", "c. 1975", "circa 1975", "about 1975", "~1975", "~ 1975", "ca. 1975"]
+)
+def test_an_approximate_year_is_the_year_with_a_note(text):
+    result = guess(text)
+    assert result.date == E(1975)
+    assert result.alternatives == ()
+    assert has_note(result, "approximate")
+
+
+@pytest.mark.parametrize("text", ["1974-13-01", "1974-00", "1974-00-05"])
+def test_an_invalid_month_is_not_used_and_says_so(text):
+    result = guess(text)
+    assert result.date == E(1974)
+    assert result.alternatives == ()
+    assert has_note(result, "month", "not valid")
+    assert not has_note(result, "ends before it starts")
