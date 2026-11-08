@@ -6,13 +6,18 @@ pytestmark = pytest.mark.qt
 pytest.importorskip("PySide6")
 
 import test_qt_smoke as smoke
-from PySide6.QtCore import QMetaObject, QObject, Qt, QUrl
-from PySide6.QtQuick import QQuickItem
+from PySide6.QtCore import Q_ARG, QMetaObject, QObject, Qt, QUrl
 
 from opticfilm_linux.batch.store import BatchStore
 
 qapp = smoke.qapp
 loaded = smoke.loaded
+
+
+def _plain(value):
+    """A QML var arrives as a dict/list or as a QJSValue, depending on what holds it."""
+    return value.toVariant() if hasattr(value, "toVariant") else value
+
 
 KNOW = "Maine trip, summer 1974, Kodachrome, Grandma's camera"
 
@@ -32,16 +37,6 @@ class Page:
         assert item is not None, name
         return item
 
-    def find_all(self, name):
-        """Repeater delegates hang off the visual tree, so walk the suggestion block's items."""
-        found, todo = [], [self.find("newBatchGuess")]
-        while todo:
-            item = todo.pop(0)
-            todo.extend(item.childItems() if isinstance(item, QQuickItem) else [])
-            if item.objectName() == name:
-                found.append(item)
-        return found
-
     def set(self, name, value, prop="text"):
         self.find(name).setProperty(prop, value)
 
@@ -49,10 +44,19 @@ class Page:
         assert QMetaObject.invokeMethod(self.find(name), "click")
 
     def chips(self):
-        return {c.property("value"): c for c in self.find_all("newBatchGuessChip")}
+        """The choices the chips show, in order: read from the page, never by walking items."""
+        return list(_plain(self.find("startPage").property("guessChoices")))
+
+    def checked(self, value):
+        return self.find("startPage").property("pendingDate") == value
+
+    def notes(self):
+        return list(_plain(self.find("startPage").property("guess"))["notes"])
 
     def pick(self, value):
-        assert QMetaObject.invokeMethod(self.chips()[value], "click")
+        assert QMetaObject.invokeMethod(
+            self.find("startPage"), "pickGuess", Q_ARG("QVariant", value)
+        )
 
     def date(self):
         return self.find("newBatchYear").property("text"), self.find("newBatchMonth").property(
@@ -77,10 +81,11 @@ def test_a_suggestion_appears_with_the_default_chip_the_alternatives_and_the_not
     page.set("newBatchKnow", KNOW)
     assert page.find("newBatchGuess").property("visible")
     assert "1974" in page.find("newBatchGuessText").property("text")
-    assert list(page.chips()) == ["1974", "1974-06", "1974-07", "1974-08"]
-    assert page.chips()["1974"].property("checked")
-    assert not page.chips()["1974-07"].property("checked")
-    notes = [n.property("text") for n in page.find_all("newBatchGuessNote")]
+    assert page.chips() == ["1974", "1974-06", "1974-07", "1974-08"]
+    assert page.find("newBatchGuessRepeater").property("count") == 4
+    assert page.checked("1974")
+    assert not page.checked("1974-07")
+    notes = page.notes()
     assert len(notes) == 1
     assert "summer" in notes[0]
 
@@ -107,8 +112,8 @@ def test_the_batch_is_created_through_the_normal_path_with_the_applied_values(pa
 def test_picking_a_chip_changes_what_use_suggestion_applies(page):
     page.set("newBatchKnow", KNOW)
     page.pick("1974-07")
-    assert page.chips()["1974-07"].property("checked")
-    assert not page.chips()["1974"].property("checked")
+    assert page.checked("1974-07")
+    assert not page.checked("1974")
     page.click("newBatchGuessApply")
     assert page.date() == ("1974", 7)
 
@@ -154,7 +159,7 @@ def test_replace_buttons_hide_when_the_fields_are_empty_or_already_match(page):
 
 def test_a_decade_has_no_default_so_use_suggestion_leaves_the_date_empty(page):
     page.set("newBatchKnow", "Family slides, the 1970s")
-    assert not any(c.property("checked") for c in page.chips().values())
+    assert not any(page.checked(c) for c in page.chips())
     assert len(page.chips()) == 10
     page.click("newBatchGuessApply")
     assert page.description() == "Family slides, the 1970s"
@@ -199,12 +204,12 @@ def test_ctrl_enter_in_the_field_uses_the_suggestion(page):
     assert page.date() == ("1983", 12)
 
 
-def test_the_apply_button_and_chips_are_in_the_tab_order(page):
+def test_one_chip_is_shown_per_choice(page):
     page.set("newBatchKnow", KNOW)
-    chips = list(page.chips().values())
-    for before, after in zip(chips, chips[1:], strict=False):
-        assert before.nextItemInFocusChain(True) is after
-    assert page.find("newBatchKnow").nextItemInFocusChain(True) is chips[0]
+    repeater = page.find("newBatchGuessRepeater")
+    assert repeater.property("count") == len(page.chips()) == 4
+    assert page.find("newBatchGuessChips").property("visible")
+    assert page.find("newBatchGuessApply").property("visible")
 
 
 def test_the_bridge_slot_is_pure(page):

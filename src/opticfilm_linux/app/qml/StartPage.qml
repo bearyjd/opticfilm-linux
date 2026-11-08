@@ -29,6 +29,9 @@ Kirigami.ScrollablePage {
         const parts = text.split("-");
         return parts.length > 1 ? monthNames[parseInt(parts[1], 10) - 1] + " " + parts[0] : parts[0];
     }
+    function pickGuess(value) {
+        pendingDate = value;
+    }
     // Fills only the fields the owner left empty; typed values stay as they are
     function applyGuess() {
         if (descriptionField.text === "")
@@ -137,6 +140,7 @@ Kirigami.ScrollablePage {
                         Layout.fillWidth: true
                         spacing: Theme.spacingSmall
                         Repeater {
+                            objectName: "newBatchGuessRepeater"
                             model: page.guessChoices
                             delegate: QQC2.Button {
                                 required property string modelData
@@ -147,7 +151,7 @@ Kirigami.ScrollablePage {
                                 checked: modelData === page.pendingDate
                                 highlighted: checked
                                 Accessible.name: qsTr("Use the date %1").arg(text)
-                                onClicked: page.pendingDate = modelData
+                                onClicked: page.pickGuess(modelData)
                             }
                         }
                     }
