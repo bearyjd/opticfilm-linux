@@ -28,7 +28,11 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from opticfilm_linux.app.controller import Controller  # noqa: E402
-from opticfilm_linux.app.prefs import MemoryPrefs  # noqa: E402
+from opticfilm_linux.app.prefs import (  # noqa: E402
+    AUTO_EXPORT_KEY,
+    MemoryPrefs,
+    remember_switch,
+)
 from opticfilm_linux.app.qt.app import create_engine, scanner_factory  # noqa: E402
 from opticfilm_linux.app.qt.bridge import Bridge  # noqa: E402
 from opticfilm_linux.app.qt.images import PreviewProvider  # noqa: E402
@@ -84,12 +88,19 @@ def _drain_deferred_deletes():
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
+def manual_export_prefs() -> MemoryPrefs:
+    """A profile that saved the old manual-export start, for tests not about the new default."""
+    prefs = MemoryPrefs()
+    remember_switch(prefs, AUTO_EXPORT_KEY, False)
+    return prefs
+
+
 @pytest.fixture
 def loaded(qapp, sweep600_dir, monkeypatch):
     """The bridge, the QML engine with the window loaded, and its collected warnings."""
     monkeypatch.delenv("OPTICFILM_NEXT_STRIP", raising=False)
     controller = Controller(scanner_factory(sweep600_dir))
-    bridge = Bridge(controller, MemoryPrefs(), demo_dpi=600)
+    bridge = Bridge(controller, manual_export_prefs(), demo_dpi=600)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
     engine, warnings = create_engine(bridge, provider, size=(1220, 780))
     assert engine.rootObjects(), warnings
@@ -612,8 +623,8 @@ def test_export_dialog_resets_for_same_name_batch_replacement(loaded, tmp_path):
     assert not warnings
 
 
-@pytest.mark.parametrize("demo_dpi,expected", [(0, 7200), (600, 600)])
-def test_start_page_defaults_to_7200(qapp, sweep600_dir, demo_dpi, expected):
+@pytest.mark.parametrize("demo_dpi,expected", [(0, 3600), (600, 600)])
+def test_start_page_defaults_to_3600(qapp, sweep600_dir, demo_dpi, expected):
     controller = Controller(scanner_factory(sweep600_dir))
     bridge = Bridge(controller, MemoryPrefs(), demo_dpi=demo_dpi)
     provider = PreviewProvider(lambda n, p, k: controller.preview_path(n, p, k))
@@ -623,7 +634,9 @@ def test_start_page_defaults_to_7200(qapp, sweep600_dir, demo_dpi, expected):
         root = engine.rootObjects()[0]
         resolution = root.findChild(QObject, "newBatchDpi")
         assert resolution.property("currentValue") == expected
-        assert root.findChild(QObject, "newBatchJpegSize").property("currentValue") == "full"
+        assert root.findChild(QObject, "newBatchJpegSize").property("currentValue") == "3600"
+        assert root.findChild(QObject, "newBatchAutoExport").property("checked")
+        assert root.findChild(QObject, "newBatchKeepRaw").property("checked")
         assert not warnings
     finally:
         bridge.shutdown()
@@ -658,7 +671,7 @@ def test_start_page_automatic_export_is_opt_in_and_saved(loaded, tmp_path, keep_
     retain = root.findChild(QObject, "newBatchKeepRaw")
     assert retain is not None
     assert retain.property("text") == "Keep raw scans after export"
-    assert not retain.property("checked")
+    assert retain.property("checked")  # raw scans are kept by default for now
     retain.setProperty("checked", keep_raw)
     page = root.findChild(QObject, "startPage")
     page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))

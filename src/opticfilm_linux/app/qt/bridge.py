@@ -14,6 +14,7 @@ from opticfilm_linux.app.controller import LOCKED_PREFIX, Controller
 from opticfilm_linux.app.messages import bytes_text, load_command
 from opticfilm_linux.app.prefs import (
     DEFAULT_DPI,
+    DEFAULT_KEEP_RAW,
     DPI_CHOICES,
     THEMES,
     Prefs,
@@ -219,6 +220,7 @@ class Bridge(WorkflowBridge):
     slides = Property(QObject, lambda self: self._slides, constant=True)
     demoDpi = Property(int, lambda self: self._demo_dpi, constant=True)  # noqa: N815
     defaultDpi = Property(int, lambda self: self._demo_dpi or DEFAULT_DPI, constant=True)  # noqa: N815
+    defaultKeepRaw = Property(bool, lambda self: DEFAULT_KEEP_RAW, constant=True)  # noqa: N815
     dpiChoices = Property("QVariantList", lambda self: list(DPI_CHOICES), constant=True)  # noqa: N815
     rotationChoices = Property("QVariantList", lambda self: list(ROTATIONS), constant=True)  # noqa: N815
     loadCommand = Property(str, lambda self: self._load_command, constant=True)  # noqa: N815

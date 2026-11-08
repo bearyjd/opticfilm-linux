@@ -61,7 +61,7 @@ def test_new_slide_record_starts_pending_and_undecided():
 
 def test_batch_defaults_match_new_batch_defaults():
     defaults = BatchDefaults()
-    assert (defaults.dpi, defaults.infrared, defaults.mode) == (7200, True, "positive")
+    assert (defaults.dpi, defaults.infrared, defaults.mode) == (3600, True, "positive")
     assert (defaults.color_strength, defaults.grain_strength, defaults.sharpen_amount) == (
         1.0,
         0.3,
