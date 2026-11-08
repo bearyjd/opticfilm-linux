@@ -6,6 +6,7 @@ import csv
 import fcntl
 import importlib.util
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -94,7 +95,7 @@ def test_ok_path_keeps_overscan_by_default(env):
     assert (d / "scan.log").read_text().count("FEEDL=") == 4
     assert verbs(log) == ["load", "scan", "eject"]
     scan = log.read_text().splitlines()[1]
-    assert "--holder slide --frames 1-4 --dpi 3600 --ir --slide-positive" in scan
+    assert "--holder slide --frames 1,2,3,4 --dpi 3600 --ir --slide-positive" in scan
     assert "--overscan" not in scan
     assert scan.endswith(str(d / "tray0001.tiff"))
 
@@ -410,7 +411,8 @@ def test_pending_row_written_before_scan_and_resume_names_tray(env, caplog):
 def test_second_instance_refused_by_lock(env):
     out, log = env
     with (out / sst.LOCK_NAME).open("a") as held:
-        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        # A shared lock: refused only if the script takes an exclusive one.
+        fcntl.flock(held.fileno(), fcntl.LOCK_SH)
         assert run(out) == 2
     assert verbs(log) == []
     assert run(out, "--max-trays", "1") == 0  # lock released
@@ -525,20 +527,23 @@ def test_swap_prompt_text_for_later_trays(env):
 def test_frames_flag_passed_and_recorded(env):
     out, log = env
     run(out, "--max-trays", "1", "--frames", "1-3")
-    assert "--frames 1-3 " in log.read_text().splitlines()[1] + " "
+    assert "--frames 1,2,3 " in log.read_text().splitlines()[1] + " "
     r = rows(out)
     assert [x["opening"] for x in r] == ["1", "2", "3"]
-    assert {x["requested"] for x in r} == {"1-3"}
+    assert {x["requested"] for x in r} == {"1,2,3"}
     assert list(r[0].keys())[-1] == "requested"
-    assert all_rows(out)[0]["requested"] == "1-3"  # PENDING row too
+    assert all_rows(out)[0]["requested"] == "1,2,3"  # PENDING row too
 
 
 def test_prompt_openings_override_per_tray(env):
     out, log = env
     run(out, "--max-trays", "2", answers=("1-2", ""))
     scans = [c for c in log.read_text().splitlines() if c.startswith("scan")]
-    assert "--frames 1-2 " in scans[0] + " " and "--frames 1-4 " in scans[1] + " "
-    assert sorted({(x["tray"], x["requested"]) for x in rows(out)}) == [("1", "1-2"), ("2", "1-4")]
+    assert "--frames 1,2 " in scans[0] + " " and "--frames 1,2,3,4 " in scans[1] + " "
+    assert sorted({(x["tray"], x["requested"]) for x in rows(out)}) == [
+        ("1", "1,2"),
+        ("2", "1,2,3,4"),
+    ]
 
 
 def test_prompt_rejects_invalid_openings_and_asks_again(env, caplog):
@@ -564,3 +569,49 @@ def test_bad_frames_flag_refused(env, spec):
 )
 def test_parse_frames(spec, want):
     assert sst.parse_frames(spec) == want
+
+
+def test_wait_warning_gives_pid_and_only_abort_routes(env, monkeypatch, caplog):
+    out, _ = env
+    monkeypatch.setenv("FAKE_SCAN_DELAY", "2")
+    timers = [_later(signal.SIGINT, 0.7), _later(signal.SIGINT, 1.1)]
+    try:
+        assert run(out) == 130
+    finally:
+        for t in timers:
+            t.cancel()
+    pids = set(re.findall(r"driver pid (\d+)", caplog.text))
+    assert len(pids) == 1
+    pid = pids.pop()
+    assert f"kill -9 {pid}" in caplog.text
+    assert "powering the scanner off" in caplog.text
+    assert "closing the terminal does not stop the driver" in caplog.text
+    assert caplog.text.count(f"driver pid {pid}") >= 2  # first warning and the repeat
+
+
+def test_next_strip_failure_message_lists_causes(env, monkeypatch, caplog):
+    out, _ = env
+    monkeypatch.setenv("FAKE_NEXT_STRIP_FAIL", "5")
+    run(out, "--max-trays", "2", answers=("", ""))
+    for phrase in ("power-cycled", "did not engage", "seated at the stop", "plain load"):
+        assert phrase in caplog.text
+
+
+def test_frames_normalised_for_driver(env):
+    out, log = env
+    run(out, "--max-trays", "1", "--frames", "3,1,1")
+    scan = [c for c in log.read_text().splitlines() if c.startswith("scan")][0]
+    assert "--frames 1,3 " in scan + " "
+    assert {x["requested"] for x in rows(out)} == {"1,3"}
+    assert [x["opening"] for x in rows(out)] == ["1", "3"]
+
+
+def test_append_rows_is_one_write(tmp_path, monkeypatch):
+    writes = []
+    real = os.write
+    monkeypatch.setattr(sst.os, "write", lambda fd, data: writes.append(data) or real(fd, data))
+    csv_path = tmp_path / "tray_log.csv"
+    rows_ = [sst.Opening(tray=1, opening=n, status="OK", exit_code=0) for n in (1, 2, 3)]
+    sst.append_rows(csv_path, rows_)
+    assert len(writes) == 1 and writes[0].count(b"\n") == 4  # header + 3 rows
+    assert csv_path.read_bytes() == writes[0]

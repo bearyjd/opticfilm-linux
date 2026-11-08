@@ -18,6 +18,7 @@ import contextlib
 import csv
 import dataclasses
 import fcntl
+import io
 import json
 import logging
 import os
@@ -258,36 +259,43 @@ def _cell(value: object) -> str:
 
 
 def append_rows(csv_path: Path, rows: Sequence[Opening]) -> None:
+    """Append rows with ONE os.write so a signal cannot leave a partial CSV line."""
     new_file = not csv_path.exists() or csv_path.stat().st_size == 0
     utc = datetime.now(UTC).isoformat(timespec="seconds")
-    with csv_path.open("a", newline="") as fh:
-        writer = csv.writer(fh)
-        if new_file:
-            writer.writerow(CSV_COLUMNS)
-        for r in rows:
-            writer.writerow(
-                [
-                    _cell(v)
-                    for v in (
-                        utc,
-                        r.tray,
-                        r.opening,
-                        r.status,
-                        r.exit_code,
-                        r.verified,
-                        r.poll_timeouts,
-                        r.feedl,
-                        r.total_seconds,
-                        r.scan_seconds,
-                        r.wall_seconds,
-                        r.cropped_path,
-                        r.overscan_dropped,
-                        r.requested,
-                    )
-                ]
-            )
-        fh.flush()
-        os.fsync(fh.fileno())
+    buf = io.StringIO(newline="")
+    writer = csv.writer(buf)
+    if new_file:
+        writer.writerow(CSV_COLUMNS)
+    for r in rows:
+        writer.writerow(
+            [
+                _cell(v)
+                for v in (
+                    utc,
+                    r.tray,
+                    r.opening,
+                    r.status,
+                    r.exit_code,
+                    r.verified,
+                    r.poll_timeouts,
+                    r.feedl,
+                    r.total_seconds,
+                    r.scan_seconds,
+                    r.wall_seconds,
+                    r.cropped_path,
+                    r.overscan_dropped,
+                    r.requested,
+                )
+            ]
+        )
+    data = buf.getvalue().encode()
+    fd = os.open(csv_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        if os.write(fd, data) != len(data):
+            raise OSError(f"short write to {csv_path}")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------- driver calls
@@ -318,13 +326,21 @@ def _ignore_sigint() -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
+def _abort_help(pid: int) -> str:
+    return (
+        f"Still waiting for the driver (driver pid {pid}); do not unplug anything. The ONLY "
+        f"ways to abort it are powering the scanner off (preferred) or `kill -9 {pid}`; "
+        "closing the terminal does not stop the driver."
+    )
+
+
 def _wait_child(proc: subprocess.Popen) -> None:
     """Wait for the child however many more Ctrl-Cs arrive; never signal it."""
     while proc.poll() is None:
         try:
             proc.wait()
         except KeyboardInterrupt:
-            LOG.warning("still waiting for the driver to finish; do not unplug anything")
+            LOG.warning("%s", _abort_help(proc.pid))
 
 
 def run_child(
@@ -357,8 +373,8 @@ def run_child(
         except KeyboardInterrupt:
             LOG.warning(
                 "Interrupt received: the scanner may be mid-move and the driver keeps "
-                "running (it ignores Ctrl-C by design). Waiting for it to finish; "
-                "do not unplug anything."
+                "running (it ignores Ctrl-C by design). %s",
+                _abort_help(proc.pid),
             )
             _wait_child(proc)
             raise ChildInterrupted(proc.returncode) from None
@@ -505,8 +521,10 @@ def load_and_scan(cfg: Config, tray: int, frames: str, next_strip: bool) -> tupl
         raise TrayInterrupted(tray, "load") from None
     if rc != 0 and next_strip:
         raise ConfigError(
-            f"`load --next-strip` exited {rc} for tray {tray}. Not retrying: power-cycle "
-            "the scanner and restart with a plain load (omit --first-load-next-strip)."
+            f"`load --next-strip` exited {rc} for tray {tray}. It fails if the scanner was "
+            "power-cycled, or if the feed did not engage. Check the holder is seated at "
+            "the stop, power-cycle the scanner, then restart with --first-load-next-strip "
+            "off (plain load). Not retrying automatically."
         )
     if rc != 0:
         raise ConfigError(f"`load` exited {rc} for tray {tray}; aborting the loop")
@@ -630,6 +648,7 @@ def _tray_loop(cfg: Config, input_fn: Callable[[str], str], csv_path: Path) -> i
         if not proceed:
             LOG.info("quit requested; stopping before tray %d", tray)
             return 0
+        frames = ",".join(map(str, parse_frames(frames)))  # sorted, deduped
         try:
             openings, reason = process_tray(cfg, tray, frames, next_strip)
             append_rows(csv_path, openings)
