@@ -132,3 +132,23 @@ def test_empty_opening_found_after_the_scan_keeps_its_number_and_frees_once_conf
     _assert_clean_finish(rig.tray(number))
     assert rig.album() == FIRST_TRAY + ["005.jpg", "007.jpg", "008.jpg"]
     assert len(rig.scanners[-1].scan_requests) == 1
+
+
+def test_a_skipped_opening_keeps_its_number_so_the_next_full_tray_starts_one_past_the_span(rig):
+    rig.release_first_tray()
+    second = rig.scan((True,) * 3, (4,))
+    rig.run(second)
+    _assert_clean_finish(rig.tray(second))
+    third = rig.scan((True,) * 4)
+    rig.run(third)
+    _assert_clean_finish(rig.tray(third))
+    assert rig.tray(third).location.start == 9
+    assert rig.album() == FIRST_TRAY + [
+        "005.jpg",
+        "006.jpg",
+        "007.jpg",
+        "009.jpg",
+        "010.jpg",
+        "011.jpg",
+        "012.jpg",
+    ]
