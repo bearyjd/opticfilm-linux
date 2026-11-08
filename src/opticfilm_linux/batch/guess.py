@@ -195,41 +195,73 @@ def _days_in(year: int, month: int) -> int:
     return (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[month - 1]
 
 
-def _scan_days(text: str, found: _Found) -> str:
-    def add(y: int, month: int | None, day: int, token: str) -> bool:
-        if not 1 <= day <= 31:
-            return False
-        if month is not None and day > _days_in(y, month):
-            found.singles.append((y, None))
-            found.notes.append(
-                f"{token} is not a real date (there is no day {day} in {_MONTH_NAMES[month - 1]} "
-                f"{y}), so only the year was guessed"
-            )
-            return True
-        found.singles.append((y, month))
-        if month is None:
-            found.notes.append(
-                f"{token} could be day/month or month/day, so no month was guessed "
-                "(the day is dropped; only year and month are kept)"
-            )
-        else:
-            found.notes.append(
-                f"the day ({day}) in {token} was dropped; only year and month are kept"
-            )
-        return True
-
-    def day_range(m: re.Match[str]) -> bool:
-        month, first, last = _month_no(m["m"]), int(m["d1"]), int(m["d2"])
-        year = int(m["y"])
-        if month is None or not 1 <= first < last <= _days_in(year, month):
-            return False
-        _note_name(found, m["m"])
-        found.singles.append((year, month))
+def _add_day(found: _Found, y: int, month: int | None, day: int, token: str) -> bool:
+    if not 1 <= day <= 31:
+        return False
+    if month is not None and day > _days_in(y, month):
+        found.singles.append((y, None))
         found.notes.append(
-            f"the days ({first}-{last}) in {m.group(0)} were dropped; only year and month are kept"
+            f"{token} is not a real date (there is no day {day} in {_MONTH_NAMES[month - 1]} "
+            f"{y}), so only the year was guessed"
         )
         return True
+    found.singles.append((y, month))
+    if month is None:
+        found.notes.append(
+            f"{token} could be day/month or month/day, so no month was guessed "
+            "(the day is dropped; only year and month are kept)"
+        )
+    else:
+        found.notes.append(f"the day ({day}) in {token} was dropped; only year and month are kept")
+    return True
 
+
+def _take_day_range(found: _Found, m: re.Match[str]) -> bool:
+    month, first, last = _month_no(m["m"]), int(m["d1"]), int(m["d2"])
+    year = int(m["y"])
+    if month is None or not 1 <= first < last <= _days_in(year, month):
+        return False
+    _note_name(found, m["m"])
+    found.singles.append((year, month))
+    found.notes.append(
+        f"the days ({first}-{last}) in {m.group(0)} were dropped; only year and month are kept"
+    )
+    return True
+
+
+def _take_month_span(found: _Found, hi: int, m: re.Match[str]) -> bool:
+    first, last = _month_no(m["a"]), _month_no(m["b"])
+    (y1, y2) = int(m["ya"]), int(m["yb"])
+    if first is None or last is None or not EARLIEST_YEAR <= y1 < y2 <= hi:
+        return False
+    picks = tuple(_month_picks(y1, first, y2, last))
+    if len(picks) > MAX_RANGE_YEARS:
+        found.groups.append(("range", y1, y2))
+    else:
+        found.spans.append(picks)
+    return True
+
+
+def _take_short_range(found: _Found, hi: int, m: re.Match[str]) -> bool:
+    first, last = _short_year(int(m["a"]), hi), _short_year(int(m["b"]), hi)
+    if first is None or last is None or last == first:
+        return False  # "'74-'76" only; bare pairs like "35-40" are slide numbers
+    if last < first:
+        found.notes.append(
+            f"{m.group(0)}: the range ends before it starts, so it was read as {last}-{first}"
+        )
+        first, last = last, first
+    found.groups.append(("range", first, last))
+    return True
+
+
+def _take_approx(found: _Found, m: re.Match[str]) -> bool:
+    found.singles.append((int(m["y"] or m["y2"]), None))
+    found.notes.append(f"{m.group(0)} was taken as approximate (every date here is an estimate)")
+    return True
+
+
+def _scan_days(text: str, found: _Found) -> str:
     def iso(m: re.Match[str]) -> bool:
         month = int(m["m"])
         if not 1 <= month <= 12:
@@ -239,28 +271,28 @@ def _scan_days(text: str, found: _Found) -> str:
                 "was guessed"
             )
             return True
-        return 1 <= month <= 12 and add(int(m["y"]), month, int(m["d"]), m.group(0))
+        return 1 <= month <= 12 and _add_day(found, int(m["y"]), month, int(m["d"]), m.group(0))
 
     def slash(m: re.Match[str]) -> bool:
         a, b = int(m["a"]), int(m["b"])
         if a > 12 and 1 <= b <= 12:
-            return add(int(m["y"]), b, a, m.group(0))
+            return _add_day(found, int(m["y"]), b, a, m.group(0))
         if b > 12 and 1 <= a <= 12:
-            return add(int(m["y"]), a, b, m.group(0))
+            return _add_day(found, int(m["y"]), a, b, m.group(0))
         if a == b and 1 <= a <= 12:
-            return add(int(m["y"]), a, b, m.group(0))
+            return _add_day(found, int(m["y"]), a, b, m.group(0))
         if 1 <= a <= 12 and 1 <= b <= 12:
-            return add(int(m["y"]), None, 1, m.group(0))
+            return _add_day(found, int(m["y"]), None, 1, m.group(0))
         return False
 
     def named(m: re.Match[str]) -> bool:
         month = _month_no(m["m"])
         if month is not None:
             _note_name(found, m["m"])
-        return month is not None and add(int(m["y"]), month, int(m["d"]), m.group(0))
+        return month is not None and _add_day(found, int(m["y"]), month, int(m["d"]), m.group(0))
 
-    text = _blank(_RE_MON_DAY_RANGE, text, day_range)
-    text = _blank(_RE_DAY_RANGE_MON, text, day_range)
+    text = _blank(_RE_MON_DAY_RANGE, text, lambda m: _take_day_range(found, m))
+    text = _blank(_RE_DAY_RANGE_MON, text, lambda m: _take_day_range(found, m))
     text = _blank(_RE_ISO, text, iso)
     text = _blank(_RE_SLASH3, text, slash)
     text = _blank(_RE_MON_DAY_YEAR, text, named)
@@ -291,18 +323,6 @@ def _scan_ranges(text: str, found: _Found, hi: int) -> str:
         found.month_ranges.append((int(m["y"]), span))
         return True
 
-    def month_span(m: re.Match[str]) -> bool:
-        first, last = _month_no(m["a"]), _month_no(m["b"])
-        (y1, y2) = int(m["ya"]), int(m["yb"])
-        if first is None or last is None or not EARLIEST_YEAR <= y1 < y2 <= hi:
-            return False
-        picks = tuple(_month_picks(y1, first, y2, last))
-        if len(picks) > MAX_RANGE_YEARS:
-            found.groups.append(("range", y1, y2))
-        else:
-            found.spans.append(picks)
-        return True
-
     def years(kind: str) -> Callable[[re.Match[str]], bool]:
         def take(m: re.Match[str]) -> bool:
             first, last = int(m["a"]), m["b"]
@@ -328,24 +348,12 @@ def _scan_ranges(text: str, found: _Found, hi: int) -> str:
 
         return take
 
-    def short(m: re.Match[str]) -> bool:
-        first, last = _short_year(int(m["a"]), hi), _short_year(int(m["b"]), hi)
-        if first is None or last is None or last == first:
-            return False  # "'74-'76" only; bare pairs like "35-40" are slide numbers
-        if last < first:
-            found.notes.append(
-                f"{m.group(0)}: the range ends before it starts, so it was read as {last}-{first}"
-            )
-            first, last = last, first
-        found.groups.append(("range", first, last))
-        return True
-
-    text = _blank(_RE_MON_YEAR_RANGE, text, month_span)
+    text = _blank(_RE_MON_YEAR_RANGE, text, lambda m: _take_month_span(found, hi, m))
     text = _blank(_RE_MON_RANGE, text, months)
     text = _blank(_RE_YEAR_RANGE, text, years("range"))
     text = _blank(_RE_BETWEEN, text, years("range"))
     text = _blank(_RE_OR, text, years("or"))
-    return _blank(_RE_SHORT_RANGE, text, short)
+    return _blank(_RE_SHORT_RANGE, text, lambda m: _take_short_range(found, hi, m))
 
 
 def _scan_singles(text: str, found: _Found, hi: int) -> str:
@@ -382,14 +390,7 @@ def _scan_singles(text: str, found: _Found, hi: int) -> str:
     text = _blank(_RE_NUM_MY, text, numeric)
     text = _blank(_RE_SHORT_YEAR, text, short)
 
-    def approx(m: re.Match[str]) -> bool:
-        found.singles.append((int(m["y"] or m["y2"]), None))
-        found.notes.append(
-            f"{m.group(0)} was taken as approximate (every date here is an estimate)"
-        )
-        return True
-
-    text = _blank(_RE_APPROX, text, approx)
+    text = _blank(_RE_APPROX, text, lambda m: _take_approx(found, m))
 
     def plain(m: re.Match[str]) -> bool:
         before = text[max(0, m.start() - 20) : m.start()]
