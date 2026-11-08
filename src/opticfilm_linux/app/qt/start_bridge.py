@@ -1,11 +1,14 @@
 """Start-page slots of the bridge: creating a batch and checking what its form asks for."""
 
+import datetime
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QUrl, Slot
 
 from opticfilm_linux.app.prefs import batch_subfolder
 from opticfilm_linux.app.qt.selection import SelectionBridge
+from opticfilm_linux.batch.guess import guess_batch
 from opticfilm_linux.batch.metadata import EstimatedDate
 from opticfilm_linux.batch.slots import slot_orientations
 
@@ -187,6 +190,20 @@ class StartBridge(SelectionBridge):
             section_size=section_size,
             description=description,
         )
+
+    @Slot(str, result="QVariantMap")
+    def guessBatch(self, text: str) -> dict[str, Any]:  # noqa: N802
+        """A pure proposal for the start page from what the owner typed: no state changes.
+
+        ``date`` is the default pick ("1974", "1974-07" or ""), ``alternatives`` the other
+        picks in order, ``notes`` plain sentences saying what was guessed or refused."""
+        guess = guess_batch(text, this_year=datetime.date.today().year)
+        return {
+            "description": guess.description,
+            "date": guess.date.text() if guess.date else "",
+            "alternatives": [a.text() for a in guess.alternatives],
+            "notes": list(guess.notes),
+        }
 
     @Slot(str, result=str)
     def validateDate(self, text: str) -> str:  # noqa: N802
