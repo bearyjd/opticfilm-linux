@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import os
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -37,15 +39,16 @@ COARSE_FACTOR = 4
 MIN_TILES = 9
 MIN_PEAK = 12.0  # z-score of the correlation peak (random mismatch gives ~5)
 BLOCK = 128
-BLOCK_MARGIN = 16  # real pixels read around each block
-PAD = 16  # reflect padding before the FFT
-EDGE_MARGIN = 24  # dropped around the common area (>= BLOCK_MARGIN + rounding)
-MAX_SCALE_DEV = 0.01
+BLOCK_MARGIN = 24  # real pixels read around each block
+LANCZOS_A = 12  # Lanczos half-width (taps = 2 * A)
+EDGE_MARGIN = 26  # dropped around the common area (>= BLOCK_MARGIN + rounding)
+MAX_SCALE_DEV = 2e-3  # block shift error stays <= 2e-3 * BLOCK / 2 = 0.13 px
 MAX_ROT_DEG = 0.5
 FLAT_TILE = 64
 FLAT_TILES = 32
-# Tags copied from the reference besides the structural ones tifffile writes itself.
-COPY_TAGS = (270, 271, 272, 305, 306, 34675)  # description, make, model, software, date, ICC
+# Tags copied from the reference: make, model, date, ICC.  tifffile writes its own Software
+# tag, and the description (270) is not copied onto a cropped image.
+COPY_TAGS = (271, 272, 306, 34675)
 
 
 class RegistrationError(Exception):
@@ -94,7 +97,7 @@ class Registration:
 IDENTITY = Registration(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, (0.0, 0.0), 0.0, 0.0, 0, 0.0)
 
 
-def luminance(img: npt.NDArray[np.uint16]) -> Array:
+def luminance(img: npt.NDArray[np.uint16] | Array) -> Array:
     return img.astype(np.float32).mean(axis=2)
 
 
@@ -207,15 +210,28 @@ def common_area(
     return r0, r1, c0, c1
 
 
+def _taps(frac: float) -> npt.NDArray[np.float32]:
+    """Normalised Lanczos taps w_j, j = -(A-1)..A, for out(i) = sum_j w_j in(i + j) at i + frac."""
+    j = np.arange(-(LANCZOS_A - 1), LANCZOS_A + 1)
+    w = np.sinc(j - frac) * np.sinc((j - frac) / LANCZOS_A)
+    return (w / w.sum()).astype(np.float32)
+
+
 def _shift_block(block: Array, fy: float, fx: float) -> Array:
-    """Fourier-shift ``block`` so out(r) = block(r + f); reflect padding avoids wrap seams."""
-    padded = np.pad(block, ((PAD, PAD), (PAD, PAD), (0, 0)), mode="reflect")
-    spec = np.fft.rfft2(padded, axes=(0, 1))
-    py = np.exp(2j * np.pi * np.fft.fftfreq(padded.shape[0])[:, None] * fy)
-    px = np.exp(2j * np.pi * np.fft.rfftfreq(padded.shape[1])[None, :] * fx)
-    spec *= (py * px)[:, :, None].astype(np.complex64)
-    out = np.fft.irfft2(spec, s=padded.shape[:2], axes=(0, 1)).astype(np.float32)
-    return out[PAD:-PAD, PAD:-PAD]
+    """Shift by (fy, fx) in [-0.5, 0.5] with separable Lanczos taps; trims LANCZOS_A px per edge.
+
+    Compact support avoids the seams a per-block FFT shift leaves (wrap-around ringing).
+    """
+    k = LANCZOS_A
+    h, w = block.shape[0] - 2 * k, block.shape[1] - 2 * k
+    ty, tx = _taps(fy), _taps(fx)
+    rows = np.zeros((h, block.shape[1], 3), np.float32)
+    for i in range(2 * k):
+        rows += ty[i] * block[i : i + h]
+    cols = np.zeros((h, w, 3), np.float32)
+    for i in range(2 * k):
+        cols += tx[i] * rows[:, i : i + w]
+    return cols
 
 
 def warp_crop(
@@ -223,8 +239,8 @@ def warp_crop(
 ) -> Array:
     """Resample ``img`` onto reference coordinates ``area`` in blocks (local Fourier shifts).
 
-    The shift varies by under 0.05 px across a block for a scale error of 5e-4, so each block
-    uses the shift at its centre.
+    Each block uses the shift at its centre; across a block the true shift differs by at most
+    |G| * BLOCK / 2 (0.13 px at the MAX_SCALE_DEV limit, 0.03 px for a typical 5e-4 error).
     """
     r0, r1, c0, c1 = area
     out = np.empty((r1 - r0, c1 - c0, 3), np.float32)
@@ -238,8 +254,12 @@ def warp_crop(
             fy, fx = sy - ny, sx - nx
             blk = img[a - m + ny : b + m + ny, c - m + nx : d + m + nx].astype(np.float32)
             if fy != 0.0 or fx != 0.0:
-                blk = _shift_block(blk, fy, fx)
-            out[a - r0 : b - r0, c - c0 : d - c0] = blk[m:-m, m:-m]
+                # tap output i' is input row i' + A - 1; the block starts at input row m
+                t0 = m - LANCZOS_A + 1
+                blk = _shift_block(blk, fy, fx)[t0 : t0 + (b - a), t0 : t0 + (d - c)]
+            else:
+                blk = blk[m : m + (b - a), m : m + (d - c)]
+            out[a - r0 : b - r0, c - c0 : d - c0] = blk
     return out
 
 
@@ -319,9 +339,30 @@ def read_tiff(path: Path) -> tuple[npt.NDArray[np.uint16], dict[str, object]]:
 
 
 def write_tiff(path: Path, data: npt.NDArray[np.uint16], meta: dict[str, object]) -> None:
+    """Write atomically: temp file in the same directory, then os.replace onto ``path``."""
     kwargs: dict[str, object] = {"photometric": "rgb", "metadata": None}
     kwargs.update(meta)
-    tifffile.imwrite(path, data, **kwargs)  # type: ignore[arg-type]
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    try:
+        tifffile.imwrite(tmp, data, **kwargs)  # type: ignore[arg-type]
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def check_paths(output: Path, inputs: Sequence[Path], force: bool = False) -> None:
+    """Refuse an unsafe OUT (would clobber an input or an existing file) or repeated inputs."""
+    if output.is_symlink():
+        raise ValueError(f"{output} is a symlink; refusing to write through it")
+    resolved = [p.resolve() for p in inputs]
+    if output.resolve() in resolved:
+        raise ValueError(f"output {output} is also an input; refusing to overwrite a scan")
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("the same input file was given more than once")
+    if output.exists() and not force:
+        raise ValueError(f"{output} exists; pass --force to replace it")
 
 
 def average(
@@ -366,7 +407,7 @@ def average(
         del img
         if total is None:
             total = warped.copy()
-            tiles = pick_flat_tiles(luminance_f(warped))
+            tiles = pick_flat_tiles(luminance(warped))
         else:
             total += warped
         patches.append(
@@ -393,21 +434,19 @@ def average(
     return out, meta, lines
 
 
-def luminance_f(a: Array) -> Array:
-    return a.mean(axis=2)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("output", type=Path)
     ap.add_argument(
         "inputs", nargs="+", type=Path, help="at least 2 repeat scans; first = reference"
     )
+    ap.add_argument("--force", action="store_true", help="replace an existing output file")
     ap.add_argument("--max-residual", type=float, default=0.5, help="refuse above this (px)")
     args = ap.parse_args(argv)
     if len(args.inputs) < 2:
         ap.error("need at least 2 inputs")
     try:
+        check_paths(args.output, args.inputs, args.force)
         out, meta, lines = average(args.inputs, args.max_residual)
     except (RegistrationError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)

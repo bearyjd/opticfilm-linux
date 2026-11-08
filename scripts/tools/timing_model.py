@@ -7,8 +7,12 @@ The baseline is the per-opening phase times of the ``--holder slide`` CLI path a
 one calibration per opening.  The position and park phases grow with the opening's distance
 from the home position, so they are fitted linearly against the opening index (frame - 1).
 
-IMPORTANT: the app's ``--slides`` path (which calibrates once per tray) is UNMEASURED.  Use
-``--cal-reuse`` to see what that would save; it is a projection, not a measurement.  Likewise
+The app's ``--slides`` path was MEASURED on 2026-11-07 (driver-latest ``scan --slides 1-3
+--dpi 3600 --ir --no-clean --dark-fallback default``): calibration ~5.1-5.2 s on EVERY opening
+(no once-per-tray saving for dual/IR), scan pass 43.8-43.9 s, wall 218 s for 3 slides, of which
+~33 s lies outside the driver's own total (start-up, writing the overscan TIFFs).  So
+``--cal-reuse`` is a PROJECTION: what a calibration reuse would save (~5 s per opening); the
+app currently recalibrates every opening.  Sidecar totals exclude that ~33 s per run.
 ``--post-overlap`` only hides the small unaccounted remainder (total_seconds minus the sum of
 phase_seconds, plus ``--post-seconds``); real post-processing time is not in the sidecars.
 """
@@ -23,7 +27,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Measured: --overscan-mm 1.5 -> 11696 lines, 0.5 -> 11120 lines at 3600 dpi (576 lines/mm).
+# Measured: --overscan-mm 1.5 -> 11696 lines, 0.5 -> 11120 lines at 3600 dpi.  The slope is
+# 576 wire lines per +1 mm of --overscan-mm (per side), not image lines per mm of film, and it is
+# quantised by the driver's chunk size, so small overscan changes are approximate.
 LINES_PER_OVERSCAN_MM_AT_3600 = 576.0
 BASE_DPI = 3600
 DEFAULT_SLIDES = 3000

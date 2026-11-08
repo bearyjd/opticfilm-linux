@@ -40,7 +40,7 @@ def _field(seed: int):
 
 
 def _render(field, sy=0.0, sx=0.0, k=1.0, h=H, w=W) -> np.ndarray:
-    """img(q) = F(k * (q - s)) for q on the h x w grid; mean 28000, sd about 8000."""
+    """img(q) = F(k * (q - s)) for q on the h x w grid; mean 28000, sd about 5000."""
     freq, amp, phase = field
     y = k * (np.arange(h) - sy)
     x = k * (np.arange(w) - sx)
@@ -50,7 +50,7 @@ def _render(field, sy=0.0, sx=0.0, k=1.0, h=H, w=W) -> np.ndarray:
         ax = 2 * np.pi * np.outer(x, freq[c, :, 1])
         wa = amp[c]
         f = (np.cos(ay) * wa) @ np.cos(ax).T - (np.sin(ay) * wa) @ np.sin(ax).T
-        out[:, :, c] = 28000 + 8000 * f
+        out[:, :, c] = 28000 + 5000 * f
     return out
 
 
@@ -227,7 +227,11 @@ def test_cli_prints_hours_and_help_states_unmeasured(tmp_path, capsys):
         paths.append(str(p))
     assert tm.main([*paths, "--slides", "100"]) == 0
     assert "hours" in capsys.readouterr().out
-    assert "UNMEASURED" in tm.build_parser().format_help()
+    helptext = " ".join(tm.build_parser().format_help().split())
+    assert "UNMEASURED" not in helptext
+    assert "MEASURED on 2026-11-07" in helptext
+    assert "recalibrates every opening" in helptext
+    assert "PROJECTION" in helptext
 
 
 def test_scale_error_is_reported_and_corrected(tmp_path):
@@ -245,3 +249,189 @@ def test_scale_error_is_reported_and_corrected(tmp_path):
     assert reg.translation_residual > reg.residual
     out, _, _ = sa.average(paths)
     assert out.shape[0] > 400
+
+
+# ---- scan_average: ground truth, guards, output safety ---------------------------------
+
+
+def _render_affine(field, k: float, theta_deg: float, n: int = 448) -> np.ndarray:
+    """img(q) = F(k * R(theta) (q - centre) + centre): scaled and rotated about the centre."""
+    freq, amp, phase = field
+    th = np.radians(theta_deg)
+    yy, xx = np.mgrid[0:n, 0:n].astype(np.float64) - n / 2
+    ys = k * (np.cos(th) * yy - np.sin(th) * xx) + n / 2
+    xs = k * (np.sin(th) * yy + np.cos(th) * xx) + n / 2
+    out = np.empty((n, n, 3))
+    for c in range(3):
+        acc = np.zeros((n, n))
+        for i in range(0, freq.shape[1], 20):
+            f = freq[c, i : i + 20]
+            arg = (
+                2 * np.pi * (ys[..., None] * f[:, 0] + xs[..., None] * f[:, 1])
+                + phase[c, i : i + 20]
+            )
+            acc += (np.cos(arg) * amp[c, i : i + 20]).sum(axis=2)
+        out[:, :, c] = 28000 + 5000 * acc
+    return np.clip(np.rint(out), 0, 65535).astype(np.uint16)
+
+
+@pytest.mark.parametrize("shift", [(2.4, -3.7), (-1.3, 0.45), (5.0, 2.0)])
+def test_warp_crop_matches_ground_truth_for_known_shift(shift):
+    field = _field(11)
+    img = np.clip(np.rint(_render(field, *shift)), 0, 65535).astype(np.uint16)
+    truth = _render(field)
+    reg = sa.Registration(*shift, 0.0, 0.0, 0.0, 0.0, (H / 2, W / 2), 0.0, 0.0, 9, 99.0)
+    area = (60, H - 60, 60, W - 60)
+    out = sa.warp_crop(img, reg, area)
+    err = out - truth[area[0] : area[1], area[2] : area[3]]
+    assert np.sqrt(np.mean(err**2)) < 8.0  # wrong sign or direction gives thousands
+
+
+def test_average_matches_ground_truth_end_to_end(tmp_path):
+    field = _field(12)
+    shifts = [(0.0, 0.0), (1.4, -2.6), (-2.2, 3.3)]
+    paths = []
+    for i, (sy, sx) in enumerate(shifts):
+        p = tmp_path / f"g{i}.tiff"
+        tifffile.imwrite(p, _scan(field, sy, sx, 0.0, i), photometric="rgb")
+        paths.append(p)
+    out, _, _ = sa.average(paths)
+    ref_lum = sa.luminance(sa.read_tiff(paths[0])[0])
+    regs = [sa.IDENTITY] + [
+        sa.register(ref_lum, sa.luminance(sa.read_tiff(p)[0])) for p in paths[1:]
+    ]
+    r0, r1, c0, c1 = sa.common_area([(H, W)] * 3, regs, (H, W))
+    assert out.shape[:2] == (r1 - r0, c1 - c0)
+    err = out - _render(field)[r0:r1, c0:c1]
+    assert np.sqrt(np.mean(err**2)) < 5.0
+
+
+def test_scale_and_rotation_guards_refuse():
+    field = _field(13)
+    ref = sa.luminance(_render_affine(field, 1.0, 0.0))
+    assert sa.register(ref, sa.luminance(_render_affine(field, 1.0, 0.0))).residual < 0.1
+    with pytest.raises(sa.RegistrationError, match="not small"):
+        sa.register(ref, sa.luminance(_render_affine(field, 1.02, 0.0)), max_residual=50)
+    with pytest.raises(sa.RegistrationError, match="not small"):
+        sa.register(ref, sa.luminance(_render_affine(field, 1.0, 1.0)), max_residual=50)
+
+
+def test_residual_gate_refuses_inconsistent_tiles_alone():
+    field = _field(14)
+    top = _scan(field, 0.0, 2.0, 50, 1)[: H // 2]
+    bottom = _scan(field, 0.0, -2.0, 50, 2)[H // 2 :]
+    ref = sa.luminance(_scan(field, 0.0, 0.0, 50, 3))
+    img = sa.luminance(np.concatenate([top, bottom]))
+    with pytest.raises(sa.RegistrationError, match="residual"):
+        sa.register(ref, img)  # default 0.5 px gate; scale/rotation stay in range
+    assert sa.register(ref, img, max_residual=50).residual > 0.5
+
+
+def _tiny(path: Path, value: int = 1000) -> Path:
+    tifffile.imwrite(path, np.full((8, 8, 3), value, np.uint16), photometric="rgb")
+    return path
+
+
+@pytest.fixture
+def ok_average(monkeypatch):
+    """average() succeeds trivially, so only the path guards can make main() refuse."""
+    result = np.zeros((8, 8, 3), np.uint16)
+    monkeypatch.setattr(sa, "average", lambda paths, residual: (result, {}, ["ok"]))
+
+
+def test_output_equal_to_input_is_refused(tmp_path, capsys, ok_average):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+    before = a.read_bytes()
+    assert sa.main([str(a), str(a), str(b), "--force"]) == 2
+    assert a.read_bytes() == before
+    assert "also an input" in capsys.readouterr().err
+
+
+def test_output_symlink_to_input_is_refused(tmp_path, ok_average):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+    link = tmp_path / "link.tiff"
+    link.symlink_to(a)
+    before = a.read_bytes()
+    assert sa.main([str(link), str(a), str(b), "--force"]) == 2
+    assert a.read_bytes() == before and link.is_symlink()
+
+
+def test_output_symlink_is_refused_even_to_a_third_file(tmp_path, ok_average, capsys):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+    other = tmp_path / "other.tiff"
+    other.write_bytes(b"third")
+    link = tmp_path / "link.tiff"
+    link.symlink_to(other)
+    assert sa.main([str(link), str(a), str(b), "--force"]) == 2
+    assert "symlink" in capsys.readouterr().err
+    assert other.read_bytes() == b"third"
+    dangling = tmp_path / "dangling.tiff"
+    dangling.symlink_to(tmp_path / "nowhere.tiff")
+    assert sa.main([str(dangling), str(a), str(b)]) == 2
+    assert not (tmp_path / "nowhere.tiff").exists()
+
+
+def test_existing_output_needs_force(tmp_path, ok_average, capsys):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+    out = tmp_path / "out.tiff"
+    out.write_bytes(b"precious")
+    assert sa.main([str(out), str(a), str(b)]) == 2
+    assert "--force" in capsys.readouterr().err
+    assert out.read_bytes() == b"precious"
+    assert sa.main([str(out), str(a), str(b), "--force"]) == 0
+    assert tifffile.imread(out).shape == (8, 8, 3)
+
+
+def test_duplicate_input_is_refused(tmp_path, ok_average, capsys):
+    a = _tiny(tmp_path / "a.tiff")
+    alias = tmp_path / "alias.tiff"
+    alias.symlink_to(a)
+    assert sa.main([str(tmp_path / "o.tiff"), str(a), str(a)]) == 2
+    assert "more than once" in capsys.readouterr().err
+    assert sa.main([str(tmp_path / "o.tiff"), str(a), str(alias)]) == 2
+    assert not (tmp_path / "o.tiff").exists()
+
+
+def test_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
+    a, b = _tiny(tmp_path / "a.tiff"), _tiny(tmp_path / "b.tiff", 2000)
+    out = tmp_path / "out.tiff"
+    out.write_bytes(b"precious")
+
+    def boom(path, data, **kwargs):
+        Path(path).write_bytes(b"partial")
+        raise OSError("disk full")
+
+    result = np.zeros((8, 8, 3), np.uint16)
+    monkeypatch.setattr(sa, "average", lambda paths, residual: (result, {}, []))
+    monkeypatch.setattr(sa.tifffile, "imwrite", boom)
+    with pytest.raises(OSError):
+        sa.main([str(out), str(a), str(b), "--force"])
+    assert out.read_bytes() == b"precious"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.tiff", "b.tiff", "out.tiff"]
+
+
+def test_metadata_is_preserved_and_description_dropped(tmp_path):
+    field = _field(15)
+    icc = b"fake-icc-profile-bytes"
+    paths = []
+    for i, (sy, sx) in enumerate([(0.0, 0.0), (0.8, -0.6)]):
+        p = tmp_path / f"m{i}.tiff"
+        tifffile.imwrite(
+            p,
+            _scan(field, sy, sx, 100, 500 + i),
+            photometric="rgb",
+            resolution=(3600, 3600),
+            resolutionunit=2,
+            description="uncropped original",
+            extratags=[(34675, 7, len(icc), icc, True)],
+        )
+        paths.append(p)
+    out = tmp_path / "avg.tiff"
+    assert sa.main([str(out), *map(str, paths)]) == 0
+    with tifffile.TiffFile(out) as tf:
+        page = tf.pages.first
+        assert page.dtype == np.uint16
+        assert page.tags["XResolution"].value == (3600, 1)
+        assert page.tags["ResolutionUnit"].value == 2
+        assert bytes(page.tags[34675].value) == icc
+        assert "ImageDescription" not in page.tags
