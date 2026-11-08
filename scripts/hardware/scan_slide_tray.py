@@ -93,6 +93,7 @@ class Config:
     keep_going_on_unverified: bool = False
     python: str = "python3"
     module: str = "of135i"
+    allow_no_tty: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -135,6 +136,11 @@ def parse_args(argv: Sequence[str] | None = None) -> Config:
     p.add_argument("--keep-going-on-unverified", action="store_true")
     p.add_argument("--python", default="python3")
     p.add_argument("--module", default="of135i")
+    p.add_argument(
+        "--allow-no-tty",
+        action="store_true",
+        help="tests only: the real driver load needs a terminal on stdin",
+    )
     ns = p.parse_args(argv)
     return Config(**vars(ns))
 
@@ -152,6 +158,11 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError(f"--module is not a dotted module name: {cfg.module!r}")
     if not cfg.python or cfg.python.startswith("-"):
         raise ConfigError(f"--python is not a program name: {cfg.python!r}")
+    if not cfg.allow_no_tty and not sys.stdin.isatty():
+        raise ConfigError(
+            "stdin is not a terminal: the driver's interactive load ends at its prompt "
+            "(exit 130) and needs a power cycle. Run this in a real terminal."
+        )
     if not cfg.driver_dir.is_dir():
         raise ConfigError(f"--driver-dir is not a directory: {cfg.driver_dir}")
     check_out_root(cfg.out_root)

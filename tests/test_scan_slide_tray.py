@@ -55,6 +55,7 @@ def run(out, *extra, answers=("",), mode=None):
         sys.executable,
         "--module",
         "fakedriver_tray",
+        "--allow-no-tty",
         *extra,
     ]
     return sst.main(argv, input_fn=fake_input)
@@ -308,3 +309,9 @@ def test_main_reports_tray_in_flight(env, monkeypatch, caplog):
     monkeypatch.setattr(sst, "run_child", boom)
     assert run(out) == 130
     assert "tray 1 was in flight" in caplog.text
+
+
+def test_refuses_without_a_terminal(env, monkeypatch):
+    monkeypatch.setattr(sst.sys.stdin, "isatty", lambda: False, raising=False)
+    argv = ["--driver-dir", str(TESTS), "--out-root", str(env), "--module", "fakedriver_tray"]
+    assert sst.main(argv, input_fn=lambda _p: "q") == 2
