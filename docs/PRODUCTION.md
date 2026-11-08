@@ -186,6 +186,24 @@ verification." Turn **Keep raw scans after export** on if you want to keep every
 - When you finish for the day: close the app (it restores the Eject watcher), then eject and
   take out the holder.
 
+## Before a session
+
+Run the pre-flight check with the app closed and the Eject watcher stopped:
+
+```sh
+python3 scripts/hardware/preflight.py --driver-dir <driver-dir> --dest <batch-folder> \
+  [--min-free-gb 50] [--min-tmp-free-gb 8] [--skip-scanner]
+```
+
+It prints one PASS/WARN/FAIL line per check and ends with GO (exit 0) or NO-GO (exit 1, any
+FAIL). Checks: free space plus a real small write and fsync on the destination and the temp dir
+(a full `/tmp` quota breaks every command); the destination is a writable directory, not a
+symlink leaving its parent; the Eject watcher is inactive; the driver imports; the scanner state
+from the driver's read-only `doctor` (idle-homed, holder loaded; UNKNOWN is a WARN, never a
+guess); no `of135i`, `ofscan` or app process is running; no held `batch.lock`. It runs only
+`systemctl --user is-active`, `python3 -c "import of135i"` and `python3 -m of135i doctor`, never
+scan, load or eject. `--skip-scanner` omits the `doctor` call.
+
 ## 5. Troubleshooting
 
 | Symptom | Likely cause | Do | Do NOT |
