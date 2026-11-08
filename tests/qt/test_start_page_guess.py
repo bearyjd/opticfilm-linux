@@ -185,6 +185,13 @@ def test_changing_the_text_resets_the_pick(page):
     assert page.date() == ("1983", 12)
 
 
+def test_editing_the_text_keeps_the_pick_while_the_parsed_date_is_unchanged(page):
+    page.set("newBatchKnow", KNOW)
+    page.pick("1974-07")
+    page.set("newBatchKnow", KNOW + ", slide box 2")
+    assert page.checked("1974-07")
+
+
 def test_clearing_the_text_hides_the_suggestion(page):
     page.set("newBatchKnow", KNOW)
     page.set("newBatchKnow", "")

@@ -20,7 +20,14 @@ Kirigami.ScrollablePage {
     readonly property var guess: bridge.guessBatch(knowField.text)
     // The date Use suggestion would apply: the default, or the chip the owner picked
     property string pendingDate: ""
-    onGuessChanged: pendingDate = guess.date
+    // The date of the previous guess: editing the text keeps a picked chip while the parsed date is unchanged
+    property string guessDate: ""
+    onGuessChanged: {
+        if (guess.date !== guessDate) {
+            guessDate = guess.date;
+            pendingDate = guess.date;
+        }
+    }
     // The default (when it is not already one of the alternatives) followed by the alternatives
     readonly property var guessChoices: guess.date === "" || guess.alternatives.indexOf(guess.date) >= 0 ? guess.alternatives : [guess.date].concat(guess.alternatives)
     readonly property var monthNames: [qsTr("Jan"), qsTr("Feb"), qsTr("Mar"), qsTr("Apr"), qsTr("May"), qsTr("Jun"), qsTr("Jul"), qsTr("Aug"), qsTr("Sep"), qsTr("Oct"), qsTr("Nov"), qsTr("Dec")]
