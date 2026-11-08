@@ -77,8 +77,7 @@ class WorkflowSettings:
     def _init_workflow_settings(self, env_locked: frozenset[str]) -> None:
         self._env_locked = env_locked
         self._eject_at_start = False  # the auto-eject setting when the running scan was started
-        self._meta_update_queued = False  # an automatic JPEG update waits for the jobs worker
-        self._meta_update_due = False  # one was held back by a running scan
+        self._meta_update_due = False  # an automatic JPEG update is wanted (held back or stopped)
 
     @property
     def env_locked(self) -> frozenset[str]:

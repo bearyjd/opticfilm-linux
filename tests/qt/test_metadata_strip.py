@@ -431,8 +431,8 @@ def test_add_to_description_applies_on_enter_only_and_shows_the_cap_refusal(stri
     store.update_tray(1, meta=MetaOverride(description="x" * 498))
     bridge._controller._rebuild()
     select_all(bridge, root)
-    scope = find(root, "metaBatchScope")
-    scope.setProperty("currentIndex", scope.property("count") - 1)
+    QTest.qWait(100)  # the box takes its entries for the new selection
+    pick_scope(bridge, root, "append")
     _wait(bridge, lambda: find(root, "metadataStrip").property("appendMode"))
     type_into(root, "metaDescription", "more", enter=False)
     count = find(root, "metaCount")
@@ -441,3 +441,74 @@ def test_add_to_description_applies_on_enter_only_and_shows_the_cap_refusal(stri
     error = find(root, "metaError")
     _wait(bridge, lambda: "would pass 500 characters" in error.property("text"))
     assert all(s.meta.description is None for s in slides(store))
+
+
+def pick_scope(bridge, root, key):
+    """Choose an Apply to entry the way the owner does: with the arrow keys on the box."""
+    scope = find(root, "metaBatchScope")
+    scope.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.qWait(20)
+    keys = [option["key"] for option in scope.property("model")]
+    steps = keys.index(key) - scope.property("currentIndex")
+    for _ in range(abs(steps)):
+        QTest.keyClick(root, Qt.Key.Key_Down if steps > 0 else Qt.Key.Key_Up)
+        QTest.qWait(20)
+    assert scope.property("currentValue") == key
+
+
+def test_a_batch_level_scope_stays_chosen_across_selection_changes(strip):
+    bridge, root, store = strip
+    bridge.clearSelection()
+    _wait(bridge, lambda: find(root, "metaDescription").property("enabled"))
+    pick_scope(bridge, root, "from_now_on")
+    scope = find(root, "metaBatchScope")
+    select_one(bridge, root, 1, 1)
+    _wait(bridge, lambda: scope.property("model")[0]["key"] == "slides")
+    _wait(bridge, lambda: scope.property("currentValue") == "from_now_on")
+    bridge.clearSelection()
+    QTest.qWait(100)
+    assert scope.property("currentValue") == "from_now_on"
+    pick_scope(bridge, root, "batch")
+    select_one(bridge, root, 1, 2)
+    _wait(bridge, lambda: scope.property("currentValue") == "batch")
+
+
+def test_a_selection_scope_is_not_kept_when_it_no_longer_applies(strip):
+    bridge, root, store = strip
+    select_one(bridge, root, 1, 1)
+    scope = find(root, "metaBatchScope")
+    assert scope.property("currentValue") == "slides"
+    pick_scope(bridge, root, "tray_range")
+    pick_scope(bridge, root, "slides")
+    bridge.clearSelection()
+    _wait(bridge, lambda: scope.property("currentValue") == "batch")
+
+
+def test_a_refused_tray_range_keeps_the_typed_text(strip):
+    bridge, root, store = strip
+    bridge.clearSelection()
+    _wait(bridge, lambda: find(root, "metaDescription").property("enabled"))
+    pick_scope(bridge, root, "tray_range")
+    find(root, "metaRangeFrom").setProperty("value", 2)
+    find(root, "metaRangeTo").setProperty("value", 1)
+    type_into(root, "metaDescription", "Kept", enter=True)
+    _wait(bridge, lambda: "first not after the last" in find(root, "metaError").property("text"))
+    field = find(root, "metaDescription")
+    assert field.property("text") == "Kept"
+    assert find(root, "metadataStrip").property("descriptionDirty")
+    find(root, "metaRangeTo").setProperty("value", 2)
+    QTest.keyClick(root, Qt.Key.Key_Return)
+    _wait(bridge, lambda: store.snapshot().trays[1].meta.description == "Kept")
+    assert store.snapshot().trays[0].meta.description is None
+
+
+def test_the_tray_range_stops_at_the_highest_tray_number(strip):
+    bridge, root, store = strip
+    trays = tuple(
+        TrayRecord(number, TrayStage.REVIEW, slides=tuple(SlideRecord(p) for p in range(1, 5)))
+        for number in (1, 5)
+    )
+    store.update(lambda m: dataclasses.replace(m, trays=trays))
+    bridge._controller._rebuild()
+    bridge.clearSelection()
+    _wait(bridge, lambda: find(root, "metadataStrip").property("trayTotal") == 5)

@@ -161,6 +161,16 @@ class Controller(
         self._jobs = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="app-jobs", initializer=lower_worker_priority
         )
+        # The automatic update of exported JPEGs: its own low-priority worker, so it never
+        # counts as an export (see ReviewCommands._resume_metadata_update).
+        self._meta_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="app-meta", initializer=lower_worker_priority
+        )
+        self._meta_cancel = threading.Event()
+        self._manual_meta_cancel = threading.Event()
+        self._meta_update_active = False
+        self._meta_owner_stop = False
+        self._meta_future: Future | None = None
 
     def _init_holder_workers(self) -> None:
         self._init_first_load()
@@ -248,6 +258,9 @@ class Controller(
         self._cancel_export.set()
         self._cancel_free.set()
         self._cancel_auto.set()
+        self._meta_cancel.set()
+        self._manual_meta_cancel.set()
+        self._meta_pool.shutdown(wait=True, cancel_futures=True)
         self._holder_pool.shutdown(wait=True, cancel_futures=True)  # a running move completes
         self._jobs.shutdown(wait=True, cancel_futures=True)
         self._command.shutdown(wait=True)  # queued edits are kept; queued lifecycle commands skip
@@ -413,6 +426,8 @@ class Controller(
         self._cancel_export.set()
         self._cancel_free.set()
         self._cancel_auto.set()
+        self._manual_meta_cancel.set()
+        self._pause_metadata_update(wait=True)
         with self._jobs_idle:
             self._jobs_idle.wait_for(lambda: not self._job_futures)
 

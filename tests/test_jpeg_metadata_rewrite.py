@@ -216,12 +216,25 @@ def test_a_crash_before_the_rename_leaves_the_old_file(tmp_path, monkeypatch):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["001.jpg"]
 
 
-def test_a_file_already_rewritten_before_the_receipt_was_saved_is_adopted(tmp_path):
+def test_a_file_that_already_has_the_fields_but_not_the_receipts_hash_is_refused(tmp_path):
+    path, digest, size = _on_disk(tmp_path)
+    new_digest, _ = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    # the receipt still holds the old digest (a crash between the rename and the receipt save,
+    # or another program that wrote the same fields): the receipt is not renewed to match
+    with pytest.raises(RewriteRefused, match="changed since"):
+        rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == new_digest
+
+
+def test_a_file_that_matches_its_receipt_and_is_current_is_left_alone(tmp_path):
     path, digest, size = _on_disk(tmp_path)
     new_digest, new_size = rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"})
-    # the receipt still holds the old digest (crash between the rename and the receipt save)
-    assert rewrite_xmp_file(path, digest, size, {"PhotoDate": "1980"}) == (new_digest, new_size)
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == new_digest
+    before = path.read_bytes()
+    assert rewrite_xmp_file(path, new_digest, new_size, {"PhotoDate": "1980"}) == (
+        new_digest,
+        new_size,
+    )
+    assert path.read_bytes() == before
 
 
 def test_a_failed_directory_sync_after_the_rename_is_not_fatal(tmp_path, monkeypatch):

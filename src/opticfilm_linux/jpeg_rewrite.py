@@ -167,11 +167,13 @@ def rewrite_xmp_file(
     """Rewrite the description and date fields of the JPEG at ``path``, which must still be
     exactly the file the export wrote; returns the new ``(sha256, size_bytes)``."""
     data, mode = _read_exactly(path)
-    new = replace_xmp(data, lambda old: updated_packet(old, estimate))
-    if new == data:  # already current: a crash may have come after the rename, before the receipt
-        return hashlib.sha256(data).hexdigest(), len(data)
+    # the receipt is checked first, also when the fields are already current: a file that
+    # another program changed must never have its receipt renewed to match it
     if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:
         raise RewriteRefused("the file changed since it was exported; it was left untouched")
+    new = replace_xmp(data, lambda old: updated_packet(old, estimate))
+    if new == data:  # nothing to write; the caller renews only the signature
+        return sha256, len(data)
     if not mode & stat.S_IWUSR:
         raise RewriteRefused("the export is read-only; it was left untouched")
     _replace(path, new, mode)

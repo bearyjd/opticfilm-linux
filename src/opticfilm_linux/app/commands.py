@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 from collections.abc import Callable, Mapping
+from concurrent.futures import wait as wait_futures
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -329,73 +330,136 @@ class ReviewCommands:
 
     def update_exported_metadata(self) -> None:
         """The owner's "Update JPEGs" button: put the current description and date into every
-        exported JPEG that does not carry them yet, without re-encoding."""
-        self._queue_metadata_update(automatic=False)
-
-    def _queue_metadata_update_if_due(self) -> None:
-        """Automatic update: only if the setting is on, the batch is writable and some JPEG is
-        out of date. A job already waiting covers any edit made before it starts."""
-        with self._lock:
-            session = self._session
-            if not self._update_metadata or session is None or session.runner is None:
-                return
-            if self._meta_update_queued:
-                return
-        if out_of_date_keys(session.store.snapshot()):
-            self._queue_metadata_update(automatic=True)
-
-    def _queue_metadata_update(self, automatic: bool) -> None:
-        if automatic:
-            with self._lock:
-                if self._meta_update_queued:
-                    return
-                self._meta_update_queued = True
+        exported JPEG that does not carry them yet, without re-encoding. It runs as a job like
+        an export (it blocks scanning and holder moves until it ends) and can be stopped."""
 
         def progress(update: MetaUpdateProgress) -> None:
             self._set(_banner=Banner(f"Updating JPEGs: {update.done} of {update.total}"))
             self._rebuild()
 
-        def job(runner: BatchRunner) -> None:
-            if automatic:
-                with self._lock:
-                    self._meta_update_queued = False
-                    if not self._update_metadata:
-                        return  # switched off while it waited
-                    held = runner.scan_pending() or self._scans_queued
-                    self._meta_update_due = bool(held)
-                if held:
-                    return  # a scan ends -> ``_drain_events`` asks again
-            store = self._open_store()
-            if automatic and not out_of_date_keys(store.snapshot()):
-                return  # an earlier update already did it
+        def job(_runner: BatchRunner) -> None:
+            cancel = self._manual_meta_cancel = threading.Event()
+            if self._closing.is_set():
+                cancel.set()
             self._set(_banner=Banner("Updating the description and date in exported JPEGs"))
             self._rebuild()
-            result = update_exported_metadata(store, on_progress=progress, cancel=self._closing)
+            result = update_exported_metadata(
+                self._open_store(), on_progress=progress, cancel=cancel
+            )
             self._set(_banner=Banner(*meta_update_text(result)))
             self._rebuild()
 
-        def not_queued() -> None:
-            if automatic:
-                with self._lock:
-                    self._meta_update_queued = False
+        self._after_pending_commands(job, "Could not update the exported JPEGs")
 
-        # ``_after_pending_commands`` runs the job on the jobs worker, the one that exports and
-        # automatic exports use: an update never overlaps an export, whichever tray.
-        self._after_pending_commands(
-            job,
-            "Could not update the exported JPEGs",
-            on_finished=not_queued if automatic else None,
-        )
+    def cancel_metadata_update(self) -> None:
+        """Stop an update of exported JPEGs after the file it is on. An automatic one then stays
+        stopped until the next description or date edit."""
+        with self._lock:
+            self._meta_owner_stop = True
+            self._manual_meta_cancel.set()
+            self._meta_cancel.set()
+
+    # -- the automatic update ------------------------------------------------------------
+    # It is a low-priority job on its own worker, not counted as an export: it never makes
+    # Load & scan, Eject, Scan or an export wait. Any of those cancels it after the file it is
+    # on (``_pause_metadata_update``); it is then due again and resumes when nothing is using
+    # the scanner or the jobs worker, rewriting only the files not yet done.
+
+    def _queue_metadata_update_if_due(self) -> None:
+        """After an edit (or turning the setting on): mark the update due if some exported
+        JPEG is out of date, and start it if nothing is in the way."""
+        with self._lock:
+            session = self._session
+            if not self._update_metadata or session is None or session.runner is None:
+                return
+        if out_of_date_keys(session.store.snapshot()):
+            with self._lock:
+                self._meta_update_due = True
+                self._meta_owner_stop = False
+            self._resume_metadata_update()
 
     def _resume_metadata_update(self) -> None:
-        """No scan is running any more: run the automatic update one held back."""
+        """Start the due update when idle. One update runs at a time; an edit made meanwhile
+        only keeps it due, so any number of edits cost at most one more pass."""
         with self._lock:
-            runner = self._session.runner if self._session else None
-            if self._scans_queued or (runner is not None and runner.scan_pending()):
-                return  # still scanning: stay due
-            due, self._meta_update_due = self._meta_update_due, False
-        if due:
-            self._queue_metadata_update_if_due()
+            session = self._session
+            runner = session.runner if session is not None else None
+            if not self._meta_update_due or not self._update_metadata or runner is None:
+                return
+            if self._meta_update_active or self._closing.is_set() or self._meta_owner_stop:
+                return
+            if (
+                self._holder_busy
+                or self._lifecycle_pending
+                or self._scans_queued
+                or self._long_jobs
+                or self._job_futures
+                or runner.scan_pending()
+            ):
+                return  # stays due; the next drain asks again
+            self._meta_update_due = False
+            self._meta_update_active = True
+            cancel = self._meta_cancel = threading.Event()
+        self._meta_future = self._run(
+            lambda: self._run_automatic_metadata_update(session, cancel),
+            "Could not update the exported JPEGs",
+            pool=self._meta_pool,
+        )
+        if self._meta_future is None:  # shut down meanwhile
+            self._finish_metadata_update(cancel)
+
+    def _run_automatic_metadata_update(self, session, cancel: threading.Event) -> None:
+        try:
+            store = session.store
+            if self._session is not session or not out_of_date_keys(store.snapshot()):
+                return
+
+            def progress(update: MetaUpdateProgress) -> None:
+                self._meta_banner(
+                    f"Updating metadata in exported JPEGs: {update.done} of {update.total}"
+                )
+
+            self._meta_banner("Updating metadata in exported JPEGs")
+            result = update_exported_metadata(store, on_progress=progress, cancel=cancel)
+            if cancel.is_set() and not result.failed:
+                self._meta_banner(
+                    "Metadata update paused; it continues when the scanner and exports are free"
+                )
+            else:
+                message, detail = meta_update_text(result)
+                self._meta_banner(message, detail, force=bool(result.failed))
+        finally:
+            self._finish_metadata_update(cancel)
+
+    def _finish_metadata_update(self, cancel: threading.Event) -> None:
+        with self._lock:
+            self._meta_update_active = False
+            if cancel.is_set() and not self._meta_owner_stop and not self._closing.is_set():
+                self._meta_update_due = True  # stopped for something else: resume later
+        self._rebuild()
+
+    def _meta_banner(self, message: str, detail: str = "", force: bool = False) -> None:
+        """A banner of the automatic update: it never hides another message unless it is a
+        failure report."""
+        with self._lock:
+            current = self._banner
+            ours = current is not None and current.message.startswith(
+                ("Updating metadata", "Metadata update", "Description and date")
+            )
+            if force or current is None or ours:
+                self._banner = Banner(message, detail)
+        self._rebuild()
+
+    def _pause_metadata_update(self, wait: bool = False) -> None:
+        """Something that needs the scanner or the jobs worker was requested: stop the
+        automatic update after its current file (it resumes later). ``wait``: until it ends."""
+        with self._lock:
+            if not self._meta_update_active:
+                return
+            self._meta_cancel.set()
+            future = self._meta_future
+        if wait and future is not None:
+            wait_futures([future], timeout=30)
 
     def cancel_export(self) -> None:
         self._cancel_export.set()
@@ -455,6 +519,7 @@ class ReviewCommands:
         handed_over = threading.Event()
 
         def handover(runner: BatchRunner) -> None:
+            self._pause_metadata_update(wait=True)  # never beside an export or other long job
             if prepare is not None:
                 prepare(runner)
             future = self._run_writer(job, message, pool=self._jobs)

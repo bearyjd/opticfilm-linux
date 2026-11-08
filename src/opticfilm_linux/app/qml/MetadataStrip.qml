@@ -73,6 +73,8 @@ Rectangle {
     readonly property string chosenScope: scopeBox.currentValue || (scope === "batch" ? "batch" : scope)
     readonly property bool appendMode: chosenScope === "append"
     property int trayTotal: 1
+    // the owner's batch-level choice in the Apply to box, kept while the selection changes
+    property string keptScope: ""
     property string previewText: ""
     property bool previewRefused: false
     // shown on request even where a short window would leave it out (see MainPage)
@@ -94,7 +96,7 @@ Rectangle {
     onIdentityChanged: {
         error = "";
         commitPending();
-        scopeBox.currentIndex = 0;  // each new selection starts at its own scope
+        Qt.callLater(restoreScope);  // after the box has its new entries
         if (requested && scope !== requestedScope)
             requested = false;
         sync();
@@ -112,9 +114,20 @@ Rectangle {
         }
     }
 
+    // A new selection starts at its own scope, unless the owner picked a batch-level scope
+    // (entire batch, from now on, tray range, ...) that still applies: that choice stays.
+    function restoreScope() {
+        let index = 0;
+        for (let i = 0; i < scopeOptions.length; i++) {
+            if (keptScope !== "" && scopeOptions[i].key === keptScope)
+                index = i;
+        }
+        scopeBox.currentIndex = index;
+    }
+
     // The fields show the selection's values unless the owner is in the middle of changing them.
     function sync() {
-        trayTotal = Math.max(1, bridge.trays.rowCount());
+        trayTotal = Math.max(1, summary.trayMax || 1);
         if (!descriptionDirty && !appendMode) {
             shownDescription = meta.description || "";
             descriptionField.text = shownDescription;
@@ -234,7 +247,7 @@ Rectangle {
     // kind: "set" (value), "clear" ("" at this level) or "reset" (inherit again)
     function apply(field, kind, value, to) {
         if (!editable)
-            return;
+            return "";
         const t = to || currentTarget();
         const batchScope = (t.mode || chosenScope) === "from_now_on" ? "from_now_on" : "inheriting";
         let refusal;
@@ -249,31 +262,48 @@ Rectangle {
         // Clear and Reset touch both fields: keep the first refusal of the pair
         if (refusal !== "" || kind === "set")
             error = refusal;
+        return kind === "set" ? refusal : "";
     }
 
     // Unchanged text is no change: a mixed field typed into and emptied again stays mixed.
+    // explicit: true (Enter) or false (leaving the field) when the owner did it; undefined when
+    // the selection moved. A refused edit the owner asked for keeps the typed text and its
+    // target, so it can be corrected (for example a tray range) and applied again.
     function applyDescription(explicit) {
         if (!descriptionDirty)
             return;
         descriptionDirty = false;
+        let refusal = "";
         // Add to description is never applied by leaving the field: only Enter adds the text.
         if (appendMode) {
             if (explicit && descriptionField.text.trim() !== "")
-                apply("description", "set", descriptionField.text, target);
-            descriptionField.text = "";
+                refusal = apply("description", "set", descriptionField.text, target);
+            if (refusal === "" || explicit === undefined)
+                descriptionField.text = "";
         } else if (descriptionField.text !== shownDescription) {
-            apply("description", "set", descriptionField.text, target);
+            refusal = apply("description", "set", descriptionField.text, target);
+        }
+        if (refusal !== "" && explicit !== undefined) {
+            descriptionDirty = true;
+            refreshPreview();
+            return;
         }
         endEditIfDone();
         refreshPreview();
     }
 
-    function applyDate() {
+    function applyDate(user) {
         if (!dateDirty || dateField.dateProblem !== "")
             return;  // the inline date message says why; nothing is sent
         dateDirty = false;
+        let refusal = "";
         if (dateField.dateText !== shownDate)
-            apply("date", "set", dateField.dateText, target);
+            refusal = apply("date", "set", dateField.dateText, target);
+        if (refusal !== "" && user === true) {
+            dateDirty = true;
+            refreshPreview();
+            return;
+        }
         endEditIfDone();
         refreshPreview();
     }
@@ -330,7 +360,8 @@ Rectangle {
                 }
                 onAccepted: {
                     strip.applyDescription(true);
-                    strip.reviewFocusRequested();
+                    if (!strip.descriptionDirty)  // a refused edit stays here to be corrected
+                        strip.reviewFocusRequested();
                 }
                 // Qt emits editingFinished before accepted: Add to description waits for Enter
                 onEditingFinished: {
@@ -371,7 +402,7 @@ Rectangle {
                     strip.dateDirty = true;
                     Qt.callLater(strip.refreshPreview);
                 }
-                onEdited: strip.applyDate()
+                onEdited: strip.applyDate(true)
                 Keys.onEscapePressed: strip.leave()
             }
             LevelChip {
@@ -400,6 +431,7 @@ Rectangle {
                 displayText: qsTr("Apply to: %1").arg(currentText)
                 Accessible.name: qsTr("Apply the edit to")
                 onActivated: {
+                    strip.keptScope = currentValue === "slides" || currentValue === "tray" ? "" : currentValue;
                     strip.error = "";
                     strip.refreshPreview();
                 }
@@ -477,6 +509,14 @@ Rectangle {
             Accessible.name: qsTr("Put the current description and date into %1 exported JPEGs").arg(bridge.metadataPending)
             Accessible.description: qsTr("Only the description and date change; the image is not encoded again")
             onClicked: bridge.updateExportedMetadata()
+        }
+        PillButton {
+            objectName: "metaStopUpdate"
+            Layout.columnSpan: content.columns
+            visible: bridge.hasBanner && bridge.bannerMessage.indexOf("Updating") === 0 && bridge.bannerMessage.indexOf("JPEG") >= 0
+            text: qsTr("Stop updating")
+            Accessible.name: qsTr("Stop updating the exported JPEGs after the file it is on")
+            onClicked: bridge.cancelMetadataUpdate()
         }
         QQC2.Label {
             objectName: "metaCount"

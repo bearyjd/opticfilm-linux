@@ -252,3 +252,16 @@ def test_a_refused_edit_writes_nothing_and_an_unchanged_one_has_nothing_to_undo(
     assert store.manifest.description == "Old"
     result, planned = apply(store, _edit("batch", "Old"))
     assert result.before.empty and planned.summary() == "Changes nothing"
+
+
+def test_append_only_skips_text_that_is_the_whole_or_a_separated_ending():
+    store = _store(_tray(1, meta=MetaOverride(description="Lake party")), description="party")
+    # "Lake party" merely ends with the letters "party": the text is still added
+    assert plan(store.manifest, _edit("append", "party", tray=1)).slides_changed == 2
+    apply(store, _edit("append", "party", tray=1))
+    assert _text(store.manifest, 1, 1) == "Lake party; party"
+    assert plan(store.manifest, _edit("append", "party", tray=1)).slides_changed == 0
+    store.manifest = dataclasses.replace(store.manifest, trays=(_tray(2),), description="party")
+    assert (
+        plan(store.manifest, _edit("append", "party")).slides_changed == 0
+    )  # it is the whole text

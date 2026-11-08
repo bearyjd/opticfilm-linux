@@ -2,6 +2,8 @@
 on request, or by themselves when the automatic update setting is on."""
 
 import dataclasses
+import threading
+import types
 
 import pytest
 
@@ -227,3 +229,118 @@ def test_preview_counts_without_writing_and_refuses_what_apply_refuses(exported)
         c.preview_meta_edit("tray", "description", "x", tray=9)
     with pytest.raises(ValueError, match="description only"):
         c.preview_meta_edit("append", "date", "1980")
+
+
+# --- the automatic update is a background job: it never blocks, yields, resumes --------------
+
+
+@pytest.fixture
+def gated(monkeypatch):
+    """Rewrites go through; the second one waits for the test, so a run can be caught midway."""
+    from opticfilm_linux.batch import meta_sync
+
+    real = meta_sync.rewrite_xmp_file
+    state = types.SimpleNamespace(
+        calls=[], entered=threading.Event(), gate=threading.Event(), stop_at=2
+    )
+
+    def slow(path, *args):
+        state.calls.append(path)
+        if len(state.calls) == state.stop_at:
+            state.entered.set()
+            state.gate.wait(20)
+        return real(path, *args)
+
+    monkeypatch.setattr(meta_sync, "rewrite_xmp_file", slow)
+    return state
+
+
+def _caught_midway(c, gated):
+    c.apply_meta_edit("batch", "description", "Midway")
+    wait_until(c, lambda: gated.entered.is_set())
+
+
+def test_an_automatic_update_does_not_block_a_scan_and_a_scan_stops_it_and_it_resumes(
+    auto_exported, gated, tmp_path
+):
+    c = auto_exported
+    _caught_midway(c, gated)
+    banner = c.state().banner.message
+    assert banner.startswith("Updating metadata in exported JPEGs") and "of 4" in banner
+    assert c.state().can_scan  # not counted as an export or other long job
+    with c._lock:
+        assert c._holder_refusal() is None and not (c._long_jobs or c._job_futures)
+    c.scan()  # not refused; it asks the update to stop after the file it is on
+    assert c._meta_cancel.is_set()
+    gated.gate.set()
+    wait_until(c, lambda: len(c.state().trays) == 2 and c.state().trays[1].stage.value == "review")
+    wait_until(c, lambda: c.state().metadata_pending == 0)
+    # the first run did 2 files; the resumed one did only the 2 that were not yet done
+    assert len(gated.calls) == 4 and len(set(gated.calls)) == 4
+    assert all(b"Midway" in p.read_bytes() for p in _jpegs(tmp_path))
+
+
+def test_an_export_waits_for_the_update_to_stop_and_never_overlaps_it(
+    auto_exported, gated, tmp_path, monkeypatch
+):
+    from opticfilm_linux.app import controller
+
+    c = auto_exported
+    during = []
+    real_export = controller.run_export
+
+    def watching(*args, **kwargs):
+        during.append(c._meta_update_active)  # was the update still going when the export began?
+        return real_export(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "run_export", watching)
+    _caught_midway(c, gated)
+    c.export(tmp_path / "out2", "jpeg")
+    threading.Timer(0.5, gated.gate.set).start()
+    wait_until(c, lambda: bool(during))
+    assert during == [False]
+    wait_until(c, lambda: c.state().metadata_pending == 0)  # and it resumed afterwards
+
+
+def test_rapid_edits_queue_at_most_one_more_pass(auto_exported, gated):
+    c = auto_exported
+    submitted = []
+    real_submit = c._meta_pool.submit
+    c._meta_pool.submit = lambda *a, **k: (submitted.append(1), real_submit(*a, **k))[1]
+    _caught_midway(c, gated)  # run one is under way
+    c.apply_meta_edit("batch", "description", "Second")
+    c.apply_meta_edit("batch", "description", "Third")
+    wait_until(c, lambda: c.state().undo_label == "Edit metadata" and c._meta_update_due)
+    assert len(submitted) == 1  # the edits only kept it due
+    gated.gate.set()
+    wait_until(c, lambda: c.state().metadata_pending == 0 and not c._meta_update_active)
+    assert len(submitted) == 2
+
+
+def test_the_owner_can_stop_an_automatic_update_and_it_stays_stopped_until_the_next_edit(
+    auto_exported, gated
+):
+    c = auto_exported
+    _caught_midway(c, gated)
+    c.cancel_metadata_update()
+    gated.gate.set()
+    wait_until(c, lambda: not c._meta_update_active)
+    for _ in range(20):
+        c.tick()
+    assert c.state().metadata_pending == 2 and not c._meta_update_due
+    c.apply_meta_edit("batch", "description", "Again")
+    wait_until(c, lambda: c.state().metadata_pending == 0)
+
+
+def test_the_manual_button_can_be_stopped(exported, gated):
+    c = exported
+    c.apply_meta_edit("batch", "description", "Manual")
+    wait_until(c, lambda: c.state().metadata_pending == 4)
+    c.update_exported_metadata()
+    wait_until(c, lambda: gated.entered.is_set())
+    c.cancel_metadata_update()
+    gated.gate.set()
+    wait_until(
+        c, lambda: c.state().banner is not None and "updated in 2" in c.state().banner.message
+    )
+    assert c.state().metadata_pending == 2

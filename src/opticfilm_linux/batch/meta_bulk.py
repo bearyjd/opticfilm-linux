@@ -189,7 +189,7 @@ def _plan_append(manifest: BatchManifest, edit: BulkMetaEdit):
     joined: dict[SlideKey, str] = {}
     for key in _append_targets(manifest, edit):
         old = now.get(key)
-        if old is None or old.endswith(addition):
+        if old is None or old == addition or old.endswith(APPEND_SEPARATOR + addition):
             continue  # not there, or already says it: adding twice would only repeat it
         joined[key] = f"{old}{APPEND_SEPARATOR}{addition}" if old else addition
     over = sorted(k for k, text in joined.items() if len(text) > MAX_DESCRIPTION)

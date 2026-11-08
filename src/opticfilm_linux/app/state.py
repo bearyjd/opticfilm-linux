@@ -112,6 +112,7 @@ class SelectionSummary:
     meta_levels: tuple[tuple[str, str | None], ...] = ()
     meta_note: str = ""  # a common note on an unusable stored value, else ""
     batch_meta: tuple[tuple[str, str], ...] = ()  # the batch default, for "Next tray"
+    tray_max: int = 0  # the highest tray number (the tray range box stops there)
     meta_scope: str = ""  # what a strip edit changes: "slides", "tray" (selected) or "batch"
 
 
@@ -143,6 +144,7 @@ def _meta_fields(manifest, pairs, selection: Selection) -> dict:
         ),
         "meta_note": _common(notes) or "",
         "batch_meta": (("description", batch.description), ("date", text(batch))),
+        "tray_max": max((t.number for t in manifest.trays), default=0),
         "meta_scope": "slides" if pairs else "tray" if selection.trays else "batch",
     }
 

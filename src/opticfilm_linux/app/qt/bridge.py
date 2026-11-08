@@ -380,6 +380,10 @@ class Bridge(WorkflowBridge):
     # -- scanning and review -------------------------------------------------------------
 
     @Slot()
+    def cancelMetadataUpdate(self) -> None:  # noqa: N802
+        self._controller.cancel_metadata_update()
+
+    @Slot()
     def updateExportedMetadata(self) -> None:  # noqa: N802
         self._flush_now()  # a description still being typed is stored first
         self._controller.update_exported_metadata()

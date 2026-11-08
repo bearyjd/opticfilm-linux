@@ -206,10 +206,16 @@ on a batch opened read-only.
 Exported JPEGs carry the description and date only in the `ofscan` XMP fields. An edit that
 makes exported JPEGs out of date updates them by itself (setting **Update exported JPEGs after a
 description or date edit**, on by default; `OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY`
-overrides it). It rewrites only that metadata, without encoding the picture again, after a
-running export and never during one, waits while a scan is running, never touches a read-only
-batch or raw scans, and shows any file it could not change in the banner. With the setting off,
-or to retry, press **Update JPEGs**.
+overrides it). It rewrites only that metadata, without encoding the picture again, as a background job that never
+makes you wait: it starts only when no scan, eject, load, export or disk-space job is running,
+and any of those (a scan, Eject, Load next holder, Load & scan, an export) stops it after the file
+it is on. It then continues by itself when they are done, and only files not yet rewritten are
+done. The banner reads "Updating metadata in exported JPEGs: 120 of 3000". Several edits in a row
+cost at most one more pass. It never touches a read-only batch or raw scans, and a file that no
+longer matches what was exported (changed by another program) is left alone and listed in the
+banner. With the setting off,
+or to retry, press **Update JPEGs**: that one runs like an export (scanning waits for it) and
+the banner has a Stop button.
 
 ## 4. End of box or next section
 

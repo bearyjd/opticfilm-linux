@@ -98,6 +98,7 @@ class LoadAndScanCommands:
         poller = session.poller if session is not None else None
         status, sequence = poller.snapshot() if poller is not None else (ScannerStatus.UNKNOWN, 0)
         marker = interrupted.is_pending()  # storage: read outside the lock
+        self._pause_metadata_update()
         with self._lock:
             refusal = self._load_scan_refusal(session, status, sequence)
             if refusal is None and marker:
