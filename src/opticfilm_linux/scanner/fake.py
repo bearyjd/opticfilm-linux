@@ -32,6 +32,7 @@ class FakeScanner:
         self._before_scan = before_scan
         self.load_error = load_error  # tests may set it later
         self.load_calls = 0
+        self.scan_requests: list[ScanSettings] = []  # every scan_holder request, in order
 
     def status(self) -> ScannerStatus:
         with self._lock:
@@ -40,6 +41,7 @@ class FakeScanner:
             return status
 
     def scan_holder(self, settings: ScanSettings) -> RawSweep:
+        self.scan_requests.append(settings)
         if self._before_scan is not None:
             self._before_scan()
         sweep = load_sweep(self._sweep_dir)
