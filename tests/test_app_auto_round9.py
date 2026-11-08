@@ -182,7 +182,7 @@ def test_reapproval_skips_surviving_trays_that_still_need_owner_review(store, bl
     tray = auto._tray(2)
     changes = {
         "blank": {"status": SlideStatus.BLANK},
-        "flagged": {"flags": (Flag.DUST,)},
+        "flagged": {"flags": (Flag.TOO_DARK,)},
         "stale": {"preview_stale": True},
         "empty": {"status": SlideStatus.BLANK, "owner_decided": True},
         "incomplete": {"exported": False},

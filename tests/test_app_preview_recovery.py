@@ -112,7 +112,7 @@ def test_flagged_hold_explains_owner_review_before_first_tray_approval(store):
     auto.arm(1)
     auto.run(1)
     tray = auto._tray(1)
-    flagged = dataclasses.replace(tray.slides[0], flags=(Flag.DUST,), owner_decided=False)
+    flagged = dataclasses.replace(tray.slides[0], flags=(Flag.TOO_DARK,), owner_decided=False)
     store.update_tray(1, slides=(flagged, *tray.slides[1:]))
     auto._verify_and_finish(1)
     assert auto._tray(1).auto == "held"

@@ -54,7 +54,7 @@ def test_automatic_acceptance_is_not_an_owner_decision(store):
 def test_auto_flags_hold_cleanup_until_owner_review(store):
     tray = store.snapshot().trays[1]
     store.update_tray(
-        2, slides=(dataclasses.replace(tray.slides[0], flags=(Flag.DUST,)), *tray.slides[1:])
+        2, slides=(dataclasses.replace(tray.slides[0], flags=(Flag.TOO_DARK,)), *tray.slides[1:])
     )
     auto = pipeline(store)
     auto.arm(1)
@@ -274,7 +274,7 @@ def test_live_flags_hold_automatic_cleanup(store):
     auto.run(1)
     first = auto._tray(1)
     store.update_tray(
-        1, slides=(dataclasses.replace(first.slides[0], flags=(Flag.DUST,)), *first.slides[1:])
+        1, slides=(dataclasses.replace(first.slides[0], flags=(Flag.TOO_DARK,)), *first.slides[1:])
     )
     auto.confirm_free_held(1)
     assert not store.snapshot().first_tray_released
@@ -307,7 +307,7 @@ def test_blank_slots_ignore_live_and_remembered_flags(store, phase, live_flags):
         owner_decided=True,
         blank_fingerprint=fingerprint,
         empty_confirmed=EmptyConfirmation(tray.sweep_version, fingerprint),
-        flags=(Flag.DUST,) if live_flags else (),
+        flags=(Flag.TOO_DARK,) if live_flags else (),
     )
     store.update_tray(2, auto_flagged=(1,), slides=(blank, *tray.slides[1:]))
     assert 2 in auto.resume()

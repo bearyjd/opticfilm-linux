@@ -50,6 +50,18 @@ class Flag(StrEnum):
     DUST = "dust"
 
 
+# Flags that only describe the picture (the enhancement itself succeeded): such slides are
+# exported like the rest and listed for a later look instead of holding the tray. Dust is
+# advisory because the infrared mask routinely covers more than DUST_FRACTION on real slides
+# and the dust filter already cleans them. Dark, bright and clipped can mean a lamp or
+# exposure fault, so they still wait for the owner.
+ADVISORY_FLAGS = frozenset({Flag.DUST})
+
+
+def advisory_only(flags: tuple[Flag, ...]) -> bool:
+    return bool(flags) and all(f in ADVISORY_FLAGS for f in flags)
+
+
 def _check_orientation(rotation: int, mirror: bool) -> None:
     if type(rotation) is not int or rotation not in ROTATIONS:
         raise ValueError(f"rotation must be one of {ROTATIONS}, got {rotation!r}")

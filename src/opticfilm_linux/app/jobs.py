@@ -16,7 +16,13 @@ from opticfilm_linux.batch.export import (
     free_space,
     freeable_trays,
 )
-from opticfilm_linux.batch.model import BatchManifest, SlideKey, SlideStatus, TrayStage
+from opticfilm_linux.batch.model import (
+    BatchManifest,
+    SlideKey,
+    SlideStatus,
+    TrayStage,
+    advisory_only,
+)
 from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.output import Format, JpegSize
 
@@ -169,7 +175,9 @@ def _cleanup_hold_message(manifest: BatchManifest) -> str:
     ):
         reasons.append("first-tray raw removal needs owner approval")
     if any(
-        (s.flags or s.position in t.auto_flagged) and not s.owner_decided
+        (s.flags or s.position in t.auto_flagged)
+        and not advisory_only(s.flags)
+        and not s.owner_decided
         for t in remaining
         for s in t.slides
     ):

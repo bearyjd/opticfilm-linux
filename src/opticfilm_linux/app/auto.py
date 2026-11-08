@@ -20,7 +20,7 @@ from opticfilm_linux.batch.export import (
     verify_tray_export,
 )
 from opticfilm_linux.batch.metadata import without_meta
-from opticfilm_linux.batch.model import NO_DELIVERY, SlideStatus, TrayStage
+from opticfilm_linux.batch.model import NO_DELIVERY, SlideStatus, TrayStage, advisory_only
 from opticfilm_linux.batch.review import accept_tray
 from opticfilm_linux.batch.store import BatchError, BatchStore
 
@@ -290,7 +290,9 @@ class AutoPipeline:
         return any(
             not is_empty_confirmed(tray, s)
             if s.status is SlideStatus.BLANK
-            else (s.position in tray.auto_flagged or s.flags) and not s.owner_decided
+            else (s.position in tray.auto_flagged or s.flags)
+            and not advisory_only(s.flags)
+            and not s.owner_decided
             for s in tray.slides
         )
 

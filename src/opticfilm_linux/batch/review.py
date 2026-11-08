@@ -27,6 +27,7 @@ from opticfilm_linux.batch.model import (
     SlideStatus,
     TrayRecord,
     TrayStage,
+    advisory_only,
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
 
@@ -237,7 +238,13 @@ def accept_tray(store: BatchStore, number: int, *, automatic: bool = False) -> N
             s
             if s.owner_decided
             or s.status is SlideStatus.SKIPPED
-            or (automatic and s.status in (SlideStatus.BLANK, SlideStatus.NEEDS_LOOK))
+            or (
+                automatic
+                and (
+                    s.status is SlideStatus.BLANK
+                    or (s.status is SlideStatus.NEEDS_LOOK and not advisory_only(s.flags))
+                )
+            )
             else dataclasses.replace(
                 s,
                 status=SlideStatus.ACCEPTED,

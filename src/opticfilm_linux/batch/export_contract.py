@@ -16,6 +16,7 @@ from opticfilm_linux.batch.model import (
     SlideStatus,
     TrayRecord,
     TrayStage,
+    advisory_only,
 )
 from opticfilm_linux.batch.store import BatchError
 from opticfilm_linux.output import Format, JpegSize, OutputSpec, jpeg_geometry
@@ -163,6 +164,7 @@ def _unreviewed_flags(tray: TrayRecord) -> bool:
     return any(
         slide.status not in NO_DELIVERY
         and not slide.owner_decided
+        and not advisory_only(slide.flags)
         and (slide.position in tray.auto_flagged or slide.flags)
         for slide in tray.slides
     )

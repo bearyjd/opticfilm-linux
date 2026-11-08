@@ -224,8 +224,10 @@ refused (exit 3).
 
 Enhancement runs in the background while the next tray scans (README).
 
-1. Open the finished tray. Slides with no flag are accepted automatically. Flagged ones
-   (very dark, very bright, clipped, dusty) wait for you.
+1. Open the finished tray. Slides with no flag are accepted automatically. Dusty slides
+   are accepted and exported too: the infrared dust mask covers 3 to 4 percent of real 3600 dpi
+   slides, so dust is only listed ("N flagged", the Flagged filter) for a later spot check. Very
+   dark, very bright, clipped and blank slides still wait for you.
 2. Check each flagged slide. Use rotate and mirror if needed.
    - Rotating one slide in review used to take about 19 s. The fix merged as PR #99: rotate and mirror
      now turn the existing preview instead of re-enhancing the slide.
