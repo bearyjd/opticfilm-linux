@@ -55,6 +55,40 @@ distrobox-host-exec env PYTHONPATH=<repo>/src \
 
 Replace `<repo>` with the repo path. Create or open the batch **outside** the repo.
 
+### 1.1 Batch description and date: the guess assist
+
+On the New batch card, type whatever you know about the box in **What do you know about this
+batch?** (box label, handwriting, memory), for example `Maine trip, summer 1974, Kodachrome,
+Grandma's camera`, `Christmas 1983 - Dec` or `wedding, 6/1979`. A suggestion appears under it.
+**Use suggestion** (or Ctrl+Enter in the box) fills the Description with your words and the
+Date with the suggested year or year and month. It only fills fields you left empty; to
+overwrite something you typed, use the separate **Replace my description** or **Replace my
+date** button. Nothing is saved until you press Create batch, and you can edit every field.
+
+What it guesses (plain rules, English only, no network, no AI):
+
+- One year from 1900 to two years ago, as `1974` or `'74` (only when `'74` cannot also be 2074).
+  A month from a month name next to the year (`Dec 1983`, `1983 - Dec`), `6/1979`, or `1979-06`.
+  A day (`Dec 25, 1983`, `1983-12-25`) is dropped, with a note; the date stays year or year and
+  month, and always an estimate.
+- Seasons (`summer 1974`) and month ranges (`June-August 1974`) default to the year and offer
+  the months as picks. Winter offers Dec, Jan and Feb of that year, with a note that the
+  December may belong to the year before.
+- Year ranges (`1974-1976`, `1974 to 1976`, `74-76`, `between 1974 and 1976`) default to the
+  middle year and offer every year; `1974 or 1975` defaults to the earlier. Ranges wider than 15
+  years give no default.
+- A decade (`1970s`, `the 70s`, `seventies`) gives **no default**: pick one of its ten years,
+  or nothing is applied to the date.
+- Unrelated years (`1974 and 1983`) give no default and offer up to five of them. Implausible
+  years (before 1900, in the last two years or the future) are ignored with a note.
+
+The picks are small buttons under the suggestion (Tab to reach them, Enter or Space to pick);
+the picked one is what Use suggestion applies. It does not guess from events such as Christmas
+and a name that is also a month right next to the year (`Aunt Jan 1974`) is read as the month,
+so check the suggestion. Your words stay
+in the description unchanged apart from tidied spaces and a 500 character limit. Only the batch
+description and estimated date are set; no other metadata is written.
+
 ## 2. Scan one tray
 
 Times are for one 4-slide tray at 7200 dpi.

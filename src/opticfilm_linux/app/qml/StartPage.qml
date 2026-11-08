@@ -16,6 +16,26 @@ Kirigami.ScrollablePage {
     readonly property string dateProblem: dateField.dateProblem
     readonly property bool showDateProblem: dateField.showDateProblem
     readonly property string dateHelp: qsTr("A guess is fine. Saved as approximate.")
+    // What the bridge proposes for the text in "What do you know"; asking it changes nothing
+    readonly property var guess: bridge.guessBatch(knowField.text)
+    // The date Use suggestion would apply: the default, or the chip the owner picked
+    property string pendingDate: ""
+    onGuessChanged: pendingDate = guess.date
+    // The default (when it is not already one of the alternatives) followed by the alternatives
+    readonly property var guessChoices: guess.date === "" || guess.alternatives.indexOf(guess.date) >= 0 ? guess.alternatives : [guess.date].concat(guess.alternatives)
+    readonly property var monthNames: [qsTr("Jan"), qsTr("Feb"), qsTr("Mar"), qsTr("Apr"), qsTr("May"), qsTr("Jun"), qsTr("Jul"), qsTr("Aug"), qsTr("Sep"), qsTr("Oct"), qsTr("Nov"), qsTr("Dec")]
+
+    function choiceLabel(text) {
+        const parts = text.split("-");
+        return parts.length > 1 ? monthNames[parseInt(parts[1], 10) - 1] + " " + parts[0] : parts[0];
+    }
+    // Fills only the fields the owner left empty; typed values stay as they are
+    function applyGuess() {
+        if (descriptionField.text === "")
+            descriptionField.text = guess.description;
+        if (pendingDate !== "" && dateField.dateText === "")
+            dateField.setDate(pendingDate);
+    }
     onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
     Component.onCompleted: exportFolder = bridge.lastExportFolder
     background: Rectangle {
@@ -71,6 +91,97 @@ Kirigami.ScrollablePage {
                         text: qsTr("Browse…")
                         icon.name: "folder-open"
                         onClicked: folderDialog.open()
+                    }
+                }
+                QQC2.TextArea {
+                    id: knowField
+                    objectName: "newBatchKnow"
+                    Kirigami.FormData.label: qsTr("What do you know about this batch?")
+                    Kirigami.FormData.labelAlignment: Qt.AlignTop
+                    placeholderText: qsTr("e.g. Maine trip, summer 1974, Kodachrome, Grandma's camera")
+                    wrapMode: TextEdit.Wrap
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: Theme.gu * 28
+                    Layout.preferredHeight: Theme.gu * 6
+                    Accessible.name: qsTr("What do you know about this batch?")
+                    Accessible.description: qsTr("Type what you know; a description and an estimated date are suggested below. Ctrl+Enter uses the suggestion.")
+                    // Tab moves on instead of typing a tab character
+                    Keys.onTabPressed: nextItemInFocusChain(true).forceActiveFocus(Qt.TabFocusReason)
+                    Keys.onBacktabPressed: nextItemInFocusChain(false).forceActiveFocus(Qt.BacktabFocusReason)
+                    Keys.onPressed: event => {
+                        if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+                            page.applyGuess();
+                            event.accepted = true;
+                        }
+                    }
+                }
+                ColumnLayout {
+                    objectName: "newBatchGuess"
+                    visible: page.guess.description !== ""
+                    spacing: Theme.spacingSmall
+                    Layout.maximumWidth: Theme.gu * 28
+                    QQC2.Label {
+                        objectName: "newBatchGuessText"
+                        Layout.fillWidth: true
+                        font.pixelSize: Theme.fontBody
+                        color: Theme.text
+                        wrapMode: Text.WordWrap
+                        text: page.pendingDate === "" ? qsTr("Suggestion: use what you typed as the description. No date yet.") : qsTr("Suggestion: use what you typed as the description, date %1.").arg(page.choiceLabel(page.pendingDate))
+                    }
+                    Flow {
+                        objectName: "newBatchGuessChips"
+                        visible: page.guessChoices.length > 1
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSmall
+                        Repeater {
+                            model: page.guessChoices
+                            delegate: QQC2.Button {
+                                required property string modelData
+                                objectName: "newBatchGuessChip"
+                                property string value: modelData
+                                text: page.choiceLabel(modelData)
+                                checkable: true
+                                checked: modelData === page.pendingDate
+                                highlighted: checked
+                                Accessible.name: qsTr("Use the date %1").arg(text)
+                                onClicked: page.pendingDate = modelData
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: page.guess.notes
+                        delegate: QQC2.Label {
+                            required property string modelData
+                            objectName: "newBatchGuessNote"
+                            Layout.fillWidth: true
+                            font.pixelSize: Theme.fontBody
+                            color: Theme.muted
+                            wrapMode: Text.WordWrap
+                            text: modelData
+                        }
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSmall
+                        PillButton {
+                            objectName: "newBatchGuessApply"
+                            text: qsTr("Use suggestion")
+                            icon.name: "dialog-ok-apply"
+                            QQC2.ToolTip.text: qsTr("Fills the empty description and date. Never changes what you typed.")
+                            onClicked: page.applyGuess()
+                        }
+                        PillButton {
+                            objectName: "newBatchGuessReplaceDescription"
+                            visible: descriptionField.text !== "" && descriptionField.text !== page.guess.description
+                            text: qsTr("Replace my description")
+                            onClicked: descriptionField.text = page.guess.description
+                        }
+                        PillButton {
+                            objectName: "newBatchGuessReplaceDate"
+                            visible: page.pendingDate !== "" && dateField.dateText !== "" && dateField.dateText !== page.pendingDate
+                            text: qsTr("Replace my date")
+                            onClicked: dateField.setDate(page.pendingDate)
+                        }
                     }
                 }
                 QQC2.TextField {
