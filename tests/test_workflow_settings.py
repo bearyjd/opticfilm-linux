@@ -34,9 +34,46 @@ def clean_env(monkeypatch):
 # --- prefs -----------------------------------------------------------------------------------
 
 
+ON_BY_DEFAULT = (
+    preferences.AUTO_EXPORT_KEY,
+    preferences.SKIP_EMPTY_KEY,
+    preferences.UPDATE_METADATA_KEY,
+)
+
+
 @pytest.mark.parametrize("key", preferences.SWITCH_KEYS)
-def test_switches_default_off_on_a_fresh_profile(key):
-    assert preferences.read_switch(MemoryPrefs(), key) is False
+def test_switches_on_a_fresh_profile_follow_the_defaults(key):
+    assert preferences.read_switch(MemoryPrefs(), key) is (key in ON_BY_DEFAULT)
+
+
+def test_never_run_on_hardware_switches_stay_off_by_default():
+    assert preferences.read_switch(MemoryPrefs(), preferences.AUTO_EJECT_KEY) is False
+    assert preferences.read_switch(MemoryPrefs(), preferences.LOAD_AND_SCAN_KEY) is False
+
+
+@pytest.mark.parametrize("key", ON_BY_DEFAULT)
+def test_saved_off_wins_over_the_new_on_default(key):
+    store = MemoryPrefs()
+    preferences.remember_switch(store, key, False)
+    assert preferences.read_switch(store, key) is False
+
+
+def test_fresh_profile_startup_switches(monkeypatch):
+    values = startup_switches(MemoryPrefs())
+    assert values["skip_empty"] is True
+    assert values["auto_eject"] is False and values["load_and_scan"] is False
+
+
+def test_saved_off_and_env_still_decide_startup(monkeypatch):
+    store = MemoryPrefs()
+    preferences.remember_switch(store, preferences.SKIP_EMPTY_KEY, False)
+    assert startup_switches(store)["skip_empty"] is False
+    monkeypatch.setenv(SKIP_EMPTY_ENV, "1")
+    assert startup_switches(store)["skip_empty"] is True
+
+
+def test_keep_raw_is_one_default_and_on():
+    assert preferences.DEFAULT_KEEP_RAW is True
 
 
 @pytest.mark.parametrize("key", preferences.SWITCH_KEYS)
@@ -64,9 +101,9 @@ def test_old_prefs_without_the_keys_load_unchanged():
     store = MemoryPrefs()
     preferences.remember_theme(store, "light")
     preferences.remember_export(store, "/tmp/x", "png8", "3600")
-    assert [preferences.read_switch(store, k) for k in preferences.SWITCH_KEYS] == [False] * len(
-        preferences.SWITCH_KEYS
-    )
+    assert [preferences.read_switch(store, k) for k in preferences.SWITCH_KEYS] == [
+        k in ON_BY_DEFAULT for k in preferences.SWITCH_KEYS
+    ]
     assert preferences.read_theme(store) == "light"
     assert preferences.export_defaults(store).format == "png8"
 

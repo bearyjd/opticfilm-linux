@@ -236,7 +236,7 @@ Kirigami.ScrollablePage {
                     id: keepRawBox
                     objectName: "newBatchKeepRaw"
                     text: qsTr("Keep raw scans after export")
-                    checked: false
+                    checked: bridge.defaultKeepRaw
                 }
                 QQC2.Label {
                     color: Theme.text

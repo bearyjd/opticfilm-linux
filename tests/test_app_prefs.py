@@ -68,7 +68,7 @@ def test_subfolder_stays_inside_parent():
 
 
 def test_dpi_choices_match_the_spec():
-    assert DPI_CHOICES == (600, 1200, 2400, 3600, 7200) and DEFAULT_DPI == 7200
+    assert DPI_CHOICES == (600, 1200, 2400, 3600, 7200) and DEFAULT_DPI == 3600
 
 
 @pytest.mark.parametrize("stored", [None, "", "system", "DARK"])
@@ -95,9 +95,15 @@ def test_invalid_theme_does_not_replace_a_remembered_choice():
     assert preferences.read_theme(prefs) == "light"
 
 
-def test_export_preferences_default_to_jpeg_full_size():
+def test_export_preferences_default_to_jpeg_3600_size():
     defaults = export_defaults(MemoryPrefs())
-    assert (defaults.folder, defaults.format, defaults.jpeg_size) == ("", "jpeg", "full")
+    assert (defaults.folder, defaults.format, defaults.jpeg_size) == ("", "jpeg", "3600")
+
+
+def test_saved_full_size_wins_over_the_new_default():
+    prefs = MemoryPrefs()
+    prefs.set("export_jpeg_size", "full")
+    assert export_defaults(prefs).jpeg_size == "full"
 
 
 def test_remember_export_preserves_folder_format_and_size():
@@ -119,9 +125,9 @@ def test_export_preferences_keep_legacy_choices_and_ignore_corrupt_enums():
     assert (defaults.folder, defaults.format, defaults.jpeg_size) == (
         "file:///legacy",
         "tiff16",
-        "full",
+        "3600",
     )
     prefs.set("export_format", "unknown")
     prefs.set("export_jpeg_size", "unknown")
     defaults = export_defaults(prefs)
-    assert (defaults.format, defaults.jpeg_size) == ("jpeg", "full")
+    assert (defaults.format, defaults.jpeg_size) == ("jpeg", "3600")

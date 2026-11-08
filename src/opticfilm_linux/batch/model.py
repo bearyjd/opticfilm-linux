@@ -257,7 +257,7 @@ def _check_slots(slots: object) -> None:
 
 @dataclass(frozen=True)
 class BatchDefaults:
-    dpi: int = 7200
+    dpi: int = 3600
     infrared: bool = True
     mode: Mode = "positive"
     skip_blank: bool = True

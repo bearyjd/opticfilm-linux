@@ -11,7 +11,10 @@ from typing import Protocol, cast
 from opticfilm_linux.output import Format, JpegSize
 
 DPI_CHOICES = (600, 1200, 2400, 3600, 7200)
-DEFAULT_DPI = 7200
+DEFAULT_DPI = 3600  # owner decision 2026-11-07: never below 3600; 7200 is too slow for a big job
+# Keep the raw scans after export. ONE switch for new batches: set False to let the app free each
+# tray's raw scans after its export is verified (that path has not run on hardware yet).
+DEFAULT_KEEP_RAW = True
 MAX_RECENT = 10
 RECENT_KEY = "recent_batches"
 FALLBACK_NAME = "batch"
@@ -34,6 +37,8 @@ SWITCH_KEYS = (
     UPDATE_METADATA_KEY,
 )
 _SWITCH_ON = ("1", "true")
+# Starting value of a switch that was never saved. A saved "0" or "1" always wins over this.
+SWITCH_DEFAULTS = {AUTO_EXPORT_KEY: True, SKIP_EMPTY_KEY: True, UPDATE_METADATA_KEY: True}
 
 
 class Prefs(Protocol):
@@ -65,14 +70,16 @@ def remember_theme(prefs: Prefs, name: str) -> None:
     prefs.set(THEME_KEY, name)
 
 
-def read_switch(prefs: Prefs, key: str, default: bool = False) -> bool:
-    """A saved workflow switch. Absent means ``default``; malformed or unknown values are off."""
+def read_switch(prefs: Prefs, key: str) -> bool:
+    """A saved workflow switch; never saved: ``SWITCH_DEFAULTS`` (off if not listed there).
+
+    A saved value that is malformed is off."""
     if key not in SWITCH_KEYS:
         return False
-    raw = prefs.get(key, None)
-    if raw is None:
-        return default
-    return raw.strip().lower() in _SWITCH_ON
+    saved = (prefs.get(key) or "").strip().lower()
+    if not saved:
+        return SWITCH_DEFAULTS.get(key, False)
+    return saved in _SWITCH_ON
 
 
 def remember_switch(prefs: Prefs, key: str, value: bool) -> None:
@@ -93,7 +100,7 @@ class ExportDefaults:
 
     folder: str = ""
     format: Format = "jpeg"
-    jpeg_size: JpegSize = "full"
+    jpeg_size: JpegSize = "3600"  # equals "full" at 3600 dpi; caps a 7200 dpi scan at 3600
 
 
 def export_defaults(prefs: Prefs) -> ExportDefaults:
@@ -102,7 +109,7 @@ def export_defaults(prefs: Prefs) -> ExportDefaults:
     return ExportDefaults(
         folder=prefs.get(EXPORT_FOLDER_KEY, "") or "",
         format=cast(Format, fmt) if fmt in ("jpeg", "png8", "tiff16") else "jpeg",
-        jpeg_size=cast(JpegSize, size) if size in ("full", "3600") else "full",
+        jpeg_size=cast(JpegSize, size) if size in ("full", "3600") else "3600",
     )
 
 

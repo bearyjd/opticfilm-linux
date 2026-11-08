@@ -3,7 +3,8 @@
 An explicit environment variable (``OPTICFILM_AUTO_EJECT``, ``OPTICFILM_SKIP_EMPTY``,
 ``OPTICFILM_LOAD_AND_SCAN``, ``OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY``) always
 wins over the saved value and locks the switch in the app. Unset means "use the saved value",
-which is off on a fresh profile (on for the automatic JPEG update).
+which on a fresh profile is on for skip-empty, the automatic-export default and the automatic
+JPEG update, and off for auto-eject and Load & scan (``prefs.SWITCH_DEFAULTS``).
 ``OPTICFILM_SKIP_GAPS`` stays environment-only.
 """
 
@@ -41,7 +42,6 @@ SAVED_KEYS = {
     "load_and_scan": LOAD_AND_SCAN_KEY,
     "update_exported_metadata_automatically": UPDATE_METADATA_KEY,
 }
-DEFAULT_ON = frozenset({"update_exported_metadata_automatically"})  # absent pref means on
 
 
 OPENINGS_DROPPED = "The chosen openings were cleared: the next scan covers all four."
@@ -57,7 +57,7 @@ def startup_switches(prefs: Prefs) -> dict:
     envs = {name: env_switch(env) for name, env in ENV_NAMES.items()}
     envs["load_and_scan"] = env_switch_fail_off(LOAD_AND_SCAN_ENV)  # moves the motor: fail safe
     values = {
-        name: resolve_switch(env, read_switch(prefs, SAVED_KEYS[name], name in DEFAULT_ON))
+        name: resolve_switch(env, read_switch(prefs, SAVED_KEYS[name]))
         for name, env in envs.items()
     }
     return {
