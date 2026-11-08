@@ -18,6 +18,9 @@ from opticfilm_linux.scanner import interrupted
 from opticfilm_linux.scanner.base import ScanError, ScannerStatus
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.scanner.holder_latch import HolderLatch
+from opticfilm_linux.scanner.positions import slides_arg
+from opticfilm_linux.sweepstore import save_sweep
+from synthetic import make_sweep
 
 
 @pytest.fixture
@@ -530,3 +533,87 @@ def test_run_cli_functions_stay_under_fifty_lines_and_file_under_800():
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.FunctionDef):
             assert node.end_lineno - node.lineno + 1 < 50, node.name
+
+
+def _sweep_without(tmp_path, skipped):
+    scanned = tuple(p for p in (1, 2, 3, 4) if p not in skipped)
+    sweep = dataclasses.replace(
+        make_sweep(dpi=600, filled=(True,) * len(scanned)), positions=scanned
+    )
+    save_sweep(sweep, tmp_path / "partial")
+    return tmp_path / "partial"
+
+
+@pytest.mark.parametrize(
+    ("skip", "skipped", "arg"),
+    [("4", (4,), "1-3"), ("3,4", (3, 4), "1-2"), ("2", (2,), "1,3,4"), ("4,2", (2, 4), "1,3")],
+)
+def test_skip_scans_only_the_other_openings_and_leaves_the_gap(
+    batch, tmp_path, monkeypatch, skip, skipped, arg
+):
+    sweep = _sweep_without(tmp_path, skipped)
+    scanner = FakeScanner(sweep)
+    monkeypatch.setattr(run_cli, "FakeScanner", lambda _sweep: scanner)
+    assert _run(batch, sweep, "--skip", skip, "--count", "2") == 0
+    assert [slides_arg(r.positions) for r in scanner.scan_requests[:1]] == [arg]
+    first, *_ = _trays(batch)
+    assert first.skipped == skipped
+    assert {s.position for s in first.slides if s.status is SlideStatus.SKIPPED} == set(skipped)
+
+
+def test_skip_applies_to_every_tray_and_numbers_stay_reserved(batch, tmp_path, monkeypatch):
+    sweep = _sweep_without(tmp_path, (4,))
+    scanner = FakeScanner(sweep)
+    monkeypatch.setattr(run_cli, "FakeScanner", lambda _sweep: scanner)
+    assert _run(batch, sweep, "--skip", "4", "--count", "2") == 0
+    assert [slides_arg(r.positions) for r in scanner.scan_requests] == ["1-3", "1-3"]
+    assert [t.skipped for t in _trays(batch)] == [(4,), (4,)]
+
+
+def test_collection_numbers_leave_the_skipped_opening_reserved(
+    collection_batch, tmp_path, monkeypatch
+):
+    sweep = _sweep_without(tmp_path, (4,))
+    scanner = FakeScanner(sweep)
+    monkeypatch.setattr(run_cli, "FakeScanner", lambda _sweep: scanner)
+    assert _run(collection_batch, sweep, "--skip", "4", "--count", "2") == 0
+    assert [t.location.start for t in _trays(collection_batch) if t.location] == [1, 5]
+
+
+def test_without_skip_the_whole_holder_is_scanned(batch, synthetic_sweep_dir, monkeypatch):
+    scanner = FakeScanner(synthetic_sweep_dir)
+    monkeypatch.setattr(run_cli, "FakeScanner", lambda _sweep: scanner)
+    assert _run(batch, synthetic_sweep_dir) == 0
+    assert [slides_arg(r.positions) for r in scanner.scan_requests] == ["1-4"]
+    (tray,) = _trays(batch)
+    assert tray.skipped == ()
+
+
+@pytest.mark.parametrize(
+    ("skip", "message"),
+    [
+        ("", "no openings"),
+        ("5", "1-4"),
+        ("0", "1-4"),
+        ("3,3", "once"),
+        ("x", "1-4"),
+        ("1,2,3,4", "empty"),
+        ("2,", "no openings"),
+    ],
+)
+def test_bad_skip_is_refused_before_anything_is_written(
+    batch, synthetic_sweep_dir, capsys, skip, message
+):
+    assert _run(batch, synthetic_sweep_dir, "--skip", skip) == 3
+    err = capsys.readouterr().err
+    assert err.startswith("refused: ") and message in err
+    assert _trays(batch) == ()
+    assert _defaults(batch) == BatchDefaults(dpi=600)
+
+
+def test_help_explains_skip(capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["batch", "run", "--help"])
+    assert raised.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "--skip OPENINGS" in text and "bare" in text and "number" in text
