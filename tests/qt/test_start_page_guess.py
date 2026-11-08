@@ -223,3 +223,9 @@ def test_the_bridge_slot_is_pure(page):
         "notes": [],
     }
     assert (page.description(), page.date(), page.bridge.hasBatch) == before
+
+
+def test_the_know_field_is_capped_at_20000_characters(page):
+    page.set("newBatchKnow", "x" * 25000)
+    assert len(page.find("newBatchKnow").property("text")) == 20000
+    assert page.find("newBatchGuess").property("visible")

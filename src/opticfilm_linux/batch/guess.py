@@ -22,6 +22,7 @@ from opticfilm_linux.batch.metadata import (
 
 MAX_RANGE_YEARS = 15
 MAX_CONFLICT_YEARS = 5
+MAX_SCAN_CHARS = 5000
 
 Pick = tuple[int, int | None]
 
@@ -63,7 +64,9 @@ _RE_DECADE4 = re.compile(rf"(?<!\d)(?P<d>[12]\d\d0){_QUOTE}?s(?![A-Za-z\d])", _F
 _RE_DECADE2 = re.compile(rf"(?<![\w'’]){_QUOTE}?(?P<d>\d0){_QUOTE}?s(?![A-Za-z\d])", _F)
 _RE_DECADE_WORD = re.compile(rf"\b(?P<d>{'|'.join(_DECADE_WORDS)})\b", _F)
 _RE_ISO = re.compile(r"(?<![\d-])(?P<y>\d{4})-(?P<m>\d{1,2})-(?P<d>\d{1,2})(?![\d-])", _F)
-_RE_SLASH3 = re.compile(r"(?<![\d/])(?P<a>\d{1,2})/(?P<b>\d{1,2})/(?P<y>\d{4})(?![\d/])", _F)
+_RE_SLASH3 = re.compile(
+    r"(?<![\d/.])(?P<a>\d{1,2})(?P<s>[/.])(?P<b>\d{1,2})(?P=s)(?P<y>\d{4})(?![\d/.]\d)", _F
+)
 _RE_MON_DAY_YEAR = re.compile(
     rf"{_mon('m')}\s*(?P<d>\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(?P<y>\d{{4}})(?!\d)", _F
 )
@@ -80,7 +83,7 @@ _RE_YEAR_RANGE = re.compile(
 _RE_BETWEEN = re.compile(rf"\bbetween\s+(?P<a>{_YEAR4})\s+and\s+(?P<b>{_YEAR4})(?!\d)", _F)
 _RE_OR = re.compile(rf"(?<!\d)(?P<a>{_YEAR4})\s+or\s+(?P<b>{_YEAR4})(?!\d)", _F)
 _RE_SHORT_RANGE = re.compile(
-    rf"(?<![\w'’./:-]){_QUOTE}?(?P<a>\d{{2}})\s*{_DASH}\s*{_QUOTE}?(?P<b>\d{{2}})(?![\w/:-])(?!\.\d)",
+    rf"(?<![\w'’./:-]){_QUOTE}(?P<a>\d{{2}})\s*{_DASH}\s*{_QUOTE}?(?P<b>\d{{2}})(?![\w/:-])(?!\.\d)",
     _F,
 )
 _RE_MON_YEAR = re.compile(rf"{_mon('m')}{_SEP}(?P<y>\d{{4}})(?!\d)", _F)
@@ -88,7 +91,18 @@ _RE_YEAR_MON = re.compile(rf"(?<!\d)(?P<y>\d{{4}}){_SEP}{_mon('m')}", _F)
 _RE_NUM_YM = re.compile(r"(?<![\d/])(?P<y>\d{4})[-/](?P<m>\d{1,2})(?![\d/-])", _F)
 _RE_NUM_MY = re.compile(r"(?<![\d/.-])(?P<m>\d{1,2})/(?P<y>\d{4})(?![\d/])", _F)
 _RE_SHORT_YEAR = re.compile(rf"(?<![\w'’]){_QUOTE}(?P<y>\d{{2}})(?!\d)", _F)
-_RE_YEAR = re.compile(rf"(?<!\d)(?P<y>{_YEAR4})(?!\d)", _F)
+# a year stands alone: not glued to letters or digits, not "v1.1974", not after "555-"
+_RE_YEAR = re.compile(
+    rf"(?<![A-Za-z\d])(?<![A-Za-z\d]\.)(?<!\b\d{{3}}-)(?P<y>{_YEAR4})(?![A-Za-z\d])", _F
+)
+_STREET = (
+    "st|street|ave|avenue|rd|road|blvd|dr|drive|ln|lane|way|ct|court|apt|unit|suite|hwy|route|rt|"
+    "no|number|nr|slides?|trays?|roll|box|carousel|page|p"
+)
+_RE_NUMBER_BEFORE = re.compile(rf"(?:^|[^A-Za-z])(?:{_STREET})\.?\s*#?\s*$|#\s*$", _F)
+_RE_NUMBER_AFTER = re.compile(
+    r"\s*(?:st|street|ave|avenue|rd|road|blvd|drive|lane|way|court)\b", _F
+)
 _RE_SEASON = re.compile(r"\b(?P<s>spring|summer|fall|autumn|winter)\b", _F)
 
 
@@ -125,6 +139,12 @@ def _month_no(word: str) -> int | None:
     return _MONTH_NAMES.index(word[:3].capitalize()) + 1
 
 
+def _note_name(found: _Found, word: str) -> None:
+    """Names that are also months ("Aunt May 1974") are read as months; say so."""
+    if word.lower() in ("may", "jan"):
+        found.notes.append(f'"{word}" was read as a month; edit it if it is a name')
+
+
 def _short_year(yy: int, hi: int) -> int | None:
     """The year for a two-digit year, or None when 19yy and 20yy both fit."""
     return 1900 + yy if 2000 + yy > hi else None
@@ -155,10 +175,22 @@ def _scan_decades(text: str, found: _Found, hi: int) -> str:
     )
 
 
+def _days_in(year: int, month: int) -> int:
+    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    return (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[month - 1]
+
+
 def _scan_days(text: str, found: _Found) -> str:
     def add(y: int, month: int | None, day: int, token: str) -> bool:
         if not 1 <= day <= 31:
             return False
+        if month is not None and day > _days_in(y, month):
+            found.singles.append((y, None))
+            found.notes.append(
+                f"{token} is not a real date (there is no day {day} in {_MONTH_NAMES[month - 1]} "
+                f"{y}), so only the year was guessed"
+            )
+            return True
         found.singles.append((y, month))
         if month is None:
             found.notes.append(
@@ -189,6 +221,8 @@ def _scan_days(text: str, found: _Found) -> str:
 
     def named(m: re.Match[str]) -> bool:
         month = _month_no(m["m"])
+        if month is not None:
+            _note_name(found, m["m"])
         return month is not None and add(int(m["y"]), month, int(m["d"]), m.group(0))
 
     text = _blank(_RE_ISO, text, iso)
@@ -200,17 +234,27 @@ def _scan_days(text: str, found: _Found) -> str:
 def _scan_ranges(text: str, found: _Found, hi: int) -> str:
     def months(m: re.Match[str]) -> bool:
         first, last = _month_no(m["a"]), _month_no(m["b"])
-        if first is None or last is None or first >= last:
+        if first is None or last is None or first == last:
             return False
-        found.month_ranges.append((int(m["y"]), tuple(range(first, last + 1))))
+        span = (
+            tuple(range(first, last + 1))
+            if first < last
+            else (*range(first, 13), *range(1, last + 1))
+        )
+        found.month_ranges.append((int(m["y"]), span))
         return True
 
     def years(kind: str) -> Callable[[re.Match[str]], bool]:
         def take(m: re.Match[str]) -> bool:
             first, last = int(m["a"]), m["b"]
             end = int(last) if len(last) == 4 else first // 100 * 100 + int(last)
-            if len(last) == 2 and int(last) <= 12:
+            if len(last) == 2 and 1 <= int(last) <= 12:
                 return False  # 1974-07 is a year and month
+            if end < first and kind == "range":
+                found.notes.append(
+                    f"{m.group(0)}: the range ends before it starts, so it was not read as a range"
+                )
+                return False
             if end == first:
                 found.singles.append((first, None))
             else:
@@ -222,7 +266,7 @@ def _scan_ranges(text: str, found: _Found, hi: int) -> str:
     def short(m: re.Match[str]) -> bool:
         first, last = _short_year(int(m["a"]), hi), _short_year(int(m["b"]), hi)
         if first is None or last is None or last <= first:
-            return False
+            return False  # "'74-'76" only; bare pairs like "35-40" are slide numbers
         found.groups.append(("range", first, last))
         return True
 
@@ -238,11 +282,14 @@ def _scan_singles(text: str, found: _Found, hi: int) -> str:
         month = _month_no(m["m"])
         if month is None:
             return False
+        _note_name(found, m["m"])
         found.singles.append((int(m["y"]), month))
         return True
 
     def numeric(m: re.Match[str]) -> bool:
         if not 1 <= int(m["m"]) <= 12:
+            if "/" in m.group(0):  # "1974-13" already got the range note
+                found.notes.append(f"{m.group(0)} is not a year and month (month {int(m['m'])})")
             return False
         found.singles.append((int(m["y"]), int(m["m"])))
         return True
@@ -263,7 +310,15 @@ def _scan_singles(text: str, found: _Found, hi: int) -> str:
     text = _blank(_RE_NUM_YM, text, numeric)
     text = _blank(_RE_NUM_MY, text, numeric)
     text = _blank(_RE_SHORT_YEAR, text, short)
-    return _blank(_RE_YEAR, text, lambda m: found.singles.append((int(m["y"]), None)) or True)
+
+    def plain(m: re.Match[str]) -> bool:
+        before = text[max(0, m.start() - 20) : m.start()]
+        if _RE_NUMBER_BEFORE.search(before) or _RE_NUMBER_AFTER.match(text, m.end()):
+            found.notes.append("a number in the text was read as a year")
+        found.singles.append((int(m["y"]), None))
+        return True
+
+    return _blank(_RE_YEAR, text, plain)
 
 
 def _scan(text: str, hi: int) -> _Found:
@@ -294,7 +349,14 @@ def _from_group(
         notes.append(f"dropped {_years_text(dropped)}: not a plausible year ({EARLIEST_YEAR}-{hi})")
     if not good:
         return None, [], notes
-    default = good[0] if kind == "or" else good[(len(good) - 1) // 2]
+    middle = years[0] if kind == "or" else years[(len(years) - 1) // 2]
+    if middle not in good:
+        notes.append(
+            f"the middle year {middle} of {first}-{last} is not plausible, so no year was chosen; "
+            "pick one of the choices"
+        )
+        return None, [(y, None) for y in good], notes
+    default = middle
     what = "years" if kind == "or" else "a range of years"
     notes.append(
         f"{what} {first}{'/' if kind == 'or' else '-'}{last}: the date is one year, so "
@@ -320,6 +382,9 @@ def _one_year(found: _Found, year: int, notes: list[str]) -> tuple[Pick, list[Pi
             f"{_MONTH_NAMES[span[0] - 1]}-{_MONTH_NAMES[span[-1] - 1]} is a range of months, so "
             f"only the year {year} was guessed; pick a month if you know it"
         )
+        if span[0] > span[-1]:
+            late = _MONTH_NAMES[span[0] - 1] + ("" if span[0] == 12 else "-Dec")
+            notes.append(f"{late} may belong to {year - 1} rather than {year}")
         return (year, None), [(year, m) for m in span], notes
     if found.seasons:
         return (year, None), _season_picks(found.seasons, year, notes), notes
@@ -349,9 +414,14 @@ def _no_year(found: _Found, hi: int, notes: list[str]) -> tuple[None, list[Pick]
     if len(decades) > 1:
         notes.append(f"more than one decade mentioned ({', '.join(f'{d}s' for d in decades)})")
     elif decades:
-        years = [y for y in range(decades[0], decades[0] + 10) if y <= hi]
+        years = [y for y in range(decades[0], decades[0] + 10) if EARLIEST_YEAR <= y <= hi]
+        if not years:
+            where = "before" if decades[0] < EARLIEST_YEAR else "after"
+            limit = EARLIEST_YEAR if where == "before" else hi
+            notes.append(f"the {decades[0]}s: no choices, {where} {limit}")
+            return None, [], notes
         if len(years) < 10:
-            notes.append(f"dropped years after {hi} from the {decades[0]}s: not plausible")
+            notes.append(f"dropped years outside {EARLIEST_YEAR}-{hi} from the {decades[0]}s")
         notes.append(
             f"the {decades[0]}s is a decade, too broad for one date: pick one year from the choices"
         )
@@ -410,15 +480,17 @@ def guess_batch(text: str, *, this_year: int) -> BatchGuess:
     """Propose a description and an estimated date from what the owner typed. Never raises."""
     if not isinstance(text, str):
         return BatchGuess("", None)
-    flat = " ".join(unicodedata.normalize("NFC", text).split())
+    head = text[: MAX_SCAN_CHARS * 4]  # a huge paste must not cost a keystroke
+    flat = " ".join(unicodedata.normalize("NFC", head).split())
     if not flat:
         return BatchGuess("", None)
-    description, cut = _description(text)
-    default, picks, notes = _decide(
-        _scan(flat, this_year - LATEST_YEAR_BACK), this_year - LATEST_YEAR_BACK
-    )
+    description, cut = _description(head)
+    hi = this_year - LATEST_YEAR_BACK
+    default, picks, notes = _decide(_scan(flat[:MAX_SCAN_CHARS], hi), hi)
     date = _estimate(default) if default is not None else None
     alternatives = tuple(e for e in map(_estimate, picks) if e is not None)
     if date is None and not alternatives and not notes:
         notes.append("no year found, so no date was guessed")
+    if len(flat) > MAX_SCAN_CHARS or len(text) > len(head):
+        notes.append(f"only the first {MAX_SCAN_CHARS} characters were read")
     return BatchGuess(description, date, alternatives, tuple(dict.fromkeys([*notes, *cut])))

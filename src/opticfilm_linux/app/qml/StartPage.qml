@@ -103,6 +103,9 @@ Kirigami.ScrollablePage {
                     Layout.fillWidth: true
                     Layout.maximumWidth: Theme.gu * 28
                     Layout.preferredHeight: Theme.gu * 6
+                    // a huge paste would make every keystroke slow
+                    readonly property int maximumTextLength: 20000
+                    onTextChanged: if (length > maximumTextLength) remove(maximumTextLength, length)
                     Accessible.name: qsTr("What do you know about this batch?")
                     Accessible.description: qsTr("Type what you know; a description and an estimated date are suggested below. Ctrl+Enter uses the suggestion.")
                     // Tab moves on instead of typing a tab character

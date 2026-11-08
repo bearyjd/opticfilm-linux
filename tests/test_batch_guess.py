@@ -62,7 +62,6 @@ def test_a_single_year_and_maybe_month_is_guessed(text, year, month):
     assert result.description == text
     if month is not None:
         assert result.alternatives == ()
-        assert result.notes == ()
 
 
 def test_the_headline_example_defaults_to_the_year_and_offers_the_summer_months():
@@ -121,11 +120,19 @@ def test_a_month_range_in_one_year_defaults_to_the_year(text):
     assert has_note(result, "range of months")
 
 
-def test_a_backwards_month_range_is_not_a_range():
-    # only the month next to the year counts; the rest is left to the owner
-    result = guess("Nov-Feb 1974")
-    assert result.date == E(1974, 2)
-    assert result.alternatives == ()
+@pytest.mark.parametrize(
+    ("text", "picks"),
+    [("Nov-Feb 1974", (11, 12, 1, 2)), ("Dec-Feb 1974", (12, 1, 2)), ("Dec to Jan 1974", (12, 1))],
+)
+def test_a_month_range_over_new_year_gives_the_year_and_every_month_of_the_span(text, picks):
+    result = guess(text)
+    assert result.date == E(1974)  # never a stray single month
+    assert result.alternatives == months(1974, *picks)
+    assert has_note(result, "1973")
+
+
+def test_the_same_month_twice_is_just_that_month():
+    assert guess("Aug-Aug 1974").date == E(1974, 8)
 
 
 def test_several_months_in_one_year_give_the_year_and_the_months():
@@ -144,9 +151,8 @@ def test_several_months_in_one_year_give_the_year_and_the_months():
         ("1974-1975", 1974, (1974, 1975)),
         ("between 1974 and 1976", 1975, (1974, 1975, 1976)),
         ("1974-76", 1975, (1974, 1975, 1976)),
-        ("74-76", 1975, (1974, 1975, 1976)),
         ("'74-'76", 1975, (1974, 1975, 1976)),
-        ("1976-1974", 1975, (1974, 1975, 1976)),
+        ("'74-76", 1975, (1974, 1975, 1976)),
         ("1974 or 1975", 1974, (1974, 1975)),
         ("1976 or 1974", 1974, (1974, 1976)),
         ("1970-1980", 1975, tuple(range(1970, 1981))),
@@ -171,17 +177,64 @@ def test_a_range_of_exactly_15_years_is_allowed_and_16_is_too_wide():
 def test_a_range_past_the_bounds_drops_those_years_with_a_note():
     result = guess("2020-2026")
     assert result.alternatives == years(2020, 2021, 2022, 2023, 2024)
-    assert result.date == E(2022)
+    assert result.date == E(2023)  # the middle of the range as typed
     assert has_note(result, "dropped 2025, 2026")
-    old = guess("1895-1902")
+    old = guess("1895-1902")  # the middle, 1898, is cut by the bounds
     assert old.alternatives == years(1900, 1901, 1902)
-    assert has_note(old, "dropped")
+    assert old.date is None
+    assert has_note(old, "dropped 1895")
+    assert has_note(old, "middle year 1898")
     assert guess("2030-2032").date is None
+    edge = guess("2023-2025")
+    assert edge.date == E(2024)
+    assert edge.alternatives == years(2023, 2024)
+    cut = guess("2024-2030")
+    assert cut.date is None
+    assert cut.alternatives == years(2024)
+    assert has_note(cut, "middle year 2027")
 
 
-def test_a_two_digit_range_must_be_unambiguous():
-    assert guess("Box 12-14").date is None
-    assert guess("slides 76-74").date is None
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Slides 30-36",
+        "tray 35-40",
+        "trays 50-60 Kodachrome",
+        "Box 12-14",
+        "slides 76-74",
+        "74-76",
+        "Carousel 5 slides 70-79",
+    ],
+)
+def test_two_bare_numbers_are_never_a_year_range(text):
+    result = guess(text)
+    assert (result.date, result.alternatives) == (None, ())
+    assert has_note(result, "no year")
+
+
+def test_a_slide_range_does_not_hide_the_real_year():
+    result = guess("Roll 35-40, Maine 1974")
+    assert result.date == E(1974)
+    assert result.alternatives == ()
+
+
+@pytest.mark.parametrize("text", ["1974-13", "1974-20", "1980-79", "1999-00", "1976-1974"])
+def test_a_range_that_ends_before_it_starts_is_not_swapped(text):
+    result = guess(text)
+    assert has_note(result, "ends before it starts")
+    assert not any(a.year < 1900 or a.year == 1913 for a in result.alternatives)
+    assert result.date is None or result.date.year == int(text[:4])
+
+
+def test_a_reversed_year_pair_is_a_conflict_not_a_range():
+    result = guess("1976-1974")
+    assert result.date is None
+    assert result.alternatives == years(1974, 1976)
+
+
+@pytest.mark.parametrize("text", ["1974-13", "1974-20", "1980-79", "1999-00"])
+def test_the_start_year_survives_a_refused_range(text):
+    assert guess(text).date == E(int(text[:4]))
 
 
 @pytest.mark.parametrize(
@@ -383,6 +436,87 @@ def test_random_strings_never_raise_and_stay_valid():
         assert len(result.alternatives) <= 15
         if result.date is not None:
             assert E.parse(result.date.text()) == result.date
+
+
+def test_lowercase_may_is_not_a_month_but_may_is():
+    assert guess("may 1974").date == E(1974)
+    assert guess("1974 may").date == E(1974)
+    assert guess("May 1974").date == E(1974, 5)
+    assert guess("MAY 1974").date == E(1974, 5)
+
+
+@pytest.mark.parametrize(
+    ("text", "month", "word"), [("Aunt May 1974", 5, "May"), ("Aunt Jan 1974", 1, "Jan")]
+)
+def test_a_name_that_is_also_a_month_is_read_as_a_month_and_says_so(text, month, word):
+    result = guess(text)
+    assert result.date == E(1974, month)
+    assert has_note(result, f'"{word}" was read as a month')
+
+
+def test_an_ordinary_month_has_no_notes():
+    assert guess("Dec 1983").notes == ()
+
+
+@pytest.mark.parametrize(
+    "text", ["abc1985def", "v1.1974", "555-123-1985", "(207) 555-1974", "x1985"]
+)
+def test_a_year_glued_to_other_characters_or_in_a_phone_number_is_not_a_year(text):
+    result = guess(text)
+    assert (result.date, result.alternatives) == (None, ())
+
+
+def test_a_house_number_style_year_is_kept_with_a_note():
+    result = guess("123 Main St 1985 Lane")
+    assert result.date == E(1985)
+    assert has_note(result, "a number in the text was read as a year")
+    assert not has_note(guess("Maine trip 1985"), "a number in the text")
+
+
+@pytest.mark.parametrize(
+    ("text", "date", "needle"),
+    [
+        ("1974/75", E(1974), "1974/75"),
+        ("1.1.1974", E(1974, 1), "dropped"),
+        ("31.12.1974", E(1974, 12), "dropped"),
+        ("2/30/1974", E(1974), "not a real date"),
+        ("Feb 30, 1974", E(1974), "not a real date"),
+        ("1974-02-30", E(1974), "not a real date"),
+        ("2/29/1975", E(1975), "not a real date"),
+        ("2/29/1976", E(1976, 2), "dropped"),
+        ("13/1974", E(1974), "13/1974"),
+    ],
+)
+def test_pieces_that_cannot_be_used_say_so(text, date, needle):
+    result = guess(text)
+    assert result.date == date
+    assert has_note(result, needle)
+
+
+def test_a_decade_before_1900_has_no_choices_and_says_so():
+    result = guess("1800s")
+    assert (result.date, result.alternatives) == (None, ())
+    assert has_note(result, "no choices", "before 1900")
+
+
+def test_only_the_first_5000_characters_are_read():
+    late = guess("x " * 2600 + "1974")
+    assert late.date is None
+    assert has_note(late, "only the first 5000 characters were read")
+    early = guess("1974 " + "x " * 5000)
+    assert early.date == E(1974)
+    assert has_note(early, "only the first 5000 characters were read")
+    assert not has_note(guess("1974 trip"), "5000")
+
+
+def test_a_megabyte_paste_is_fast():
+    import time
+
+    started = time.perf_counter()
+    result = guess("Dec 1983 trip " * 80000)
+    assert time.perf_counter() - started < 0.25
+    assert result.date == E(1983, 12)
+    assert len(result.description) <= MAX_DESCRIPTION
 
 
 @pytest.mark.parametrize("bad", [None, 5, b"1974", ["1974"]])
