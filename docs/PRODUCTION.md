@@ -146,7 +146,9 @@ ofscan batch free-held BATCH 1 --yes     # after you checked tray 1's JPEGs
 **Trays with fewer than four slides.** Add `--skip 4` (or `--skip 3,4`, `--skip 2`) to name the
 bare holder openings. They are not scanned (`--skip 4` commands `--slides 1-3`), for every tray
 of that command, and their slide numbers stay reserved: with `--skip 4`, tray 1 is 001-003 and
-tray 2 starts at 005. A bad list (empty, repeated, outside 1-4, or all four) is refused (exit 3).
+tray 2 starts at 005. Only single ASCII digits 1-4 are accepted (spaces around them are fine). A bad list (empty,
+repeated, outside 1-4, a range like `3-4`, `04`, non-ASCII or huge numbers, or all four) is
+refused (exit 3).
 
 ## 3. Review, export and swap trays
 

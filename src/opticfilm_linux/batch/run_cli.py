@@ -77,7 +77,9 @@ def _skipped(args: argparse.Namespace) -> tuple[int, ...]:
     parts = [part.strip() for part in args.skip.split(",")]
     if not all(parts):
         raise RunRefused("--skip names no openings; give e.g. --skip 4 or --skip 3,4")
-    if not all(part.isdecimal() and int(part) in ALL_POSITIONS for part in parts):
+    if not all(len(part) == 1 and part.isascii() and part.isdecimal() for part in parts) or any(
+        int(part) not in ALL_POSITIONS for part in parts
+    ):
         raise RunRefused(f"--skip {args.skip!r}: the holder has openings {span}")
     numbers = tuple(sorted(int(part) for part in parts))
     if len(set(numbers)) != len(numbers):

@@ -599,6 +599,11 @@ def test_without_skip_the_whole_holder_is_scanned(batch, synthetic_sweep_dir, mo
         ("x", "1-4"),
         ("1,2,3,4", "empty"),
         ("2,", "no openings"),
+        ("9" * 5000, "1-4"),
+        ("\u0664", "1-4"),
+        ("\uff11", "1-4"),
+        ("3-4", "1-4"),
+        ("04", "1-4"),
     ],
 )
 def test_bad_skip_is_refused_before_anything_is_written(
@@ -617,3 +622,11 @@ def test_help_explains_skip(capsys):
     assert raised.value.code == 0
     text = " ".join(capsys.readouterr().out.split())
     assert "--skip OPENINGS" in text and "bare" in text and "number" in text
+
+
+def test_skip_tolerates_spaces_around_an_opening(batch, tmp_path, monkeypatch):
+    sweep = _sweep_without(tmp_path, (3, 4))
+    scanner = FakeScanner(sweep)
+    monkeypatch.setattr(run_cli, "FakeScanner", lambda _sweep: scanner)
+    assert _run(batch, sweep, "--skip", " 3 , 4 ") == 0
+    assert [slides_arg(r.positions) for r in scanner.scan_requests] == ["1-2"]
