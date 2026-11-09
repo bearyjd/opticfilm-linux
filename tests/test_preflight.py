@@ -205,11 +205,29 @@ def test_process_opticfilm_script(ctx):
 def returns_within(fn, *args, timeout: float = 5.0):
     """Call fn(*args) in a daemon thread; fail fast instead of hanging if it blocks."""
     box: list = []
-    worker = threading.Thread(target=lambda: box.append(fn(*args)), daemon=True)
+    failure: list = []
+
+    def run() -> None:
+        try:
+            box.append(fn(*args))
+        except BaseException as exc:  # re-raised below; a daemon thread would only print it
+            failure.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
     worker.start()
     worker.join(timeout)
+    if failure:
+        raise failure[0]
     assert box, f"{fn.__name__} blocked for more than {timeout:g}s (is LOCK_NB missing?)"
     return box[0]
+
+
+def test_returns_within_reraises_the_functions_own_error():
+    def boom() -> None:
+        raise ValueError("probe failed")
+
+    with pytest.raises(ValueError, match="probe failed"):
+        returns_within(boom)
 
 
 def test_lock_probes_never_block_on_a_held_lock(tmp_path):
