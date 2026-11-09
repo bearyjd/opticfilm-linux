@@ -9,6 +9,14 @@ Exit 0 = GO (no FAIL), 1 = NO-GO. Runs only these read-only commands, nothing el
   <python> -c "import of135i"          (cwd = driver dir; never touches USB)
   <python> -m of135i doctor            (cwd = driver dir; the driver's read-only report)
 Never runs scan / load / eject. Close the app and stop the Eject watcher before running it.
+
+Limits (a GO is not proof the scanner is free):
+  * Run it on the same side as the app. A flatpak or distrobox app is invisible to this host's
+    /proc, and a separate /tmp or XDG_STATE_HOME hides its lock file, so "no app running" and
+    "locks are free" can be a false GO.
+  * The process probe matches only argv[0] or the interpreter's script / -m / -c position.
+    `uv run` and pipx shims are not matched.
+  * A lock file that cannot be tested (permissions, a symlink) is only a WARN, not a FAIL.
 """
 
 from __future__ import annotations

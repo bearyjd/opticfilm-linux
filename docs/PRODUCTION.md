@@ -350,6 +350,15 @@ FAIL). Checks:
   no `of135i`, `ofscan` or `opticfilm` (app) process is running.
 - No held `batch.lock` in the batch folder.
 
+Limits: a GO is not proof the scanner is free.
+
+- A flatpak or distrobox app is invisible to the host `/proc`, and a separate `/tmp` or
+  `XDG_STATE_HOME` hides its lock file, so "no app running" and "lock free" can be a false GO.
+  Run the script on the same side as the app, and close the app yourself.
+- The process check matches only the program name or the script, `-m` or `-c` target. `uv run`
+  and pipx shims are not matched.
+- A lock file the probe cannot test (permissions, a symlink) is only a WARN, not a FAIL.
+
 It runs only `systemctl --user is-active opticfilm-eject-watch.service` and, with the same
 Python that runs the script (`sys.executable`), `-c "import of135i"` and `-m of135i doctor`,
 never scan, load or eject. With `--skip-scanner` the `doctor` call is omitted and a GO ends with
