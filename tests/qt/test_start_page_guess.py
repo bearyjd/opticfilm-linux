@@ -250,3 +250,10 @@ def test_the_know_field_is_capped_at_20000_characters(page):
     page.set("newBatchKnow", "x" * 25000)
     assert len(page.find("newBatchKnow").property("text")) == 20000
     assert page.find("newBatchGuess").property("visible")
+
+
+@pytest.mark.parametrize("size", ((800, 600), (1280, 800), (1920, 1080)))
+def test_the_know_field_is_tall_enough_to_type_in(page, size):
+    page.root.resize(*size)
+    smoke._wait(page.bridge, lambda: page.find("newBatchKnow").property("height") > 0)
+    assert page.find("newBatchKnow").property("height") >= 48

@@ -113,7 +113,8 @@ Kirigami.ScrollablePage {
                     wrapMode: TextEdit.Wrap
                     Layout.fillWidth: true
                     Layout.maximumWidth: Theme.gu * 28
-                    Layout.preferredHeight: Theme.gu * 6
+                    // Kirigami.FormLayout sizes rows from implicitHeight and ignores Layout.preferredHeight
+                    implicitHeight: Theme.gu * 6
                     // a huge paste would make every keystroke slow
                     readonly property int maximumTextLength: 20000
                     onTextChanged: if (length > maximumTextLength) remove(maximumTextLength, length)
