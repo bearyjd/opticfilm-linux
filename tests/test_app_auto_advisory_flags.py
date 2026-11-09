@@ -5,6 +5,7 @@ import dataclasses
 import numpy as np
 import pytest
 
+from opticfilm_linux.app.jobs import _cleanup_hold_message
 from opticfilm_linux.app.state import _auto_fields
 from opticfilm_linux.batch import export as exports
 from opticfilm_linux.batch import review
@@ -153,3 +154,36 @@ def test_manifest_round_trip_has_no_new_field(store):
     _run(store)
     manifest = store.snapshot()
     assert from_json(to_json(manifest)) == manifest
+
+
+def test_dust_only_hold_message_does_not_ask_for_owner_review(store):
+    _run(store)
+    message = _cleanup_hold_message(store.snapshot())
+    assert "first-tray raw removal needs owner approval" in message
+    assert "flagged slides need owner review" not in message
+
+
+def test_non_advisory_flag_hold_message_asks_for_owner_review(store):
+    _set_flags(store, (Flag.TOO_DARK,), SlideStatus.NEEDS_LOOK)
+    assert "flagged slides need owner review" in _cleanup_hold_message(store.snapshot())
+
+
+def test_auto_flagged_needs_look_without_flags_still_holds_the_tray(store):
+    tray = store.snapshot().trays[0]
+    plain = dataclasses.replace(tray.slides[0], flags=(), status=SlideStatus.NEEDS_LOOK)
+    store.update_tray(1, slides=(plain, *tray.slides[1:]), auto_flagged=(1,))
+    _run(store)
+    tray = store.snapshot().trays[0]
+    assert tray.auto == "blocked" and tray.slides[0].status is SlideStatus.NEEDS_LOOK
+    assert not tray.slides[0].exported and not tray.raw_removed
+    assert "flagged slides need owner review" in _cleanup_hold_message(store.snapshot())
+
+
+def test_owner_needs_look_on_dust_slide_stays_out_of_export_and_keeps_raw(store):
+    review.set_slide_status(store, 1, 2, SlideStatus.NEEDS_LOOK)
+    _run(store)
+    tray = store.snapshot().trays[0]
+    assert tray.slides[1].status is SlideStatus.NEEDS_LOOK and not tray.slides[1].exported
+    assert tray.auto == "blocked" and "blocked by your decision" in tray.auto_error
+    assert not tray.raw_removed
+    assert store.sweep_dir(1, 1).exists()

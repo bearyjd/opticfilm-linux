@@ -185,6 +185,22 @@ def test_changing_the_text_resets_the_pick(page):
     assert page.date() == ("1983", 12)
 
 
+def test_editing_the_text_keeps_the_pick_while_the_parsed_date_is_unchanged(page):
+    page.set("newBatchKnow", KNOW)
+    page.pick("1974-07")
+    page.set("newBatchKnow", KNOW + ", slide box 2")
+    assert page.checked("1974-07")
+
+
+def test_a_pick_that_is_no_longer_offered_falls_back_to_the_default(page):
+    page.set("newBatchKnow", KNOW)
+    page.pick("1974-07")
+    # Same parsed date (1974), but "summer" is gone so the month chips are too
+    page.set("newBatchKnow", "Maine trip, 1974, Kodachrome, Grandma's camera")
+    page.click("newBatchGuessApply")
+    assert page.date() == ("1974", 0)
+
+
 def test_clearing_the_text_hides_the_suggestion(page):
     page.set("newBatchKnow", KNOW)
     page.set("newBatchKnow", "")
