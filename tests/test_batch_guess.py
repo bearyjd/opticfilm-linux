@@ -613,10 +613,49 @@ def test_an_approximate_year_is_the_year_with_a_note(text):
     assert has_note(result, "approximate")
 
 
-@pytest.mark.parametrize("text", ["1974-13-01", "1974-00", "1974-00-05"])
+@pytest.mark.parametrize("text", ["1974-13-01", "1974-00-05"])
 def test_an_invalid_month_is_not_used_and_says_so(text):
     result = guess(text)
     assert result.date == E(1974)
     assert result.alternatives == ()
     assert has_note(result, "month", "not valid")
     assert not has_note(result, "ends before it starts")
+
+
+@pytest.mark.parametrize("text", ["1999-00", "1974-00"])
+def test_a_dash_zero_zero_suffix_is_not_called_a_bad_month(text):
+    result = guess(text)
+    assert result.date == E(int(text[:4]))
+    assert result.alternatives == ()
+    assert has_note(result, "-00", "not read as a month or a year range")
+    assert not has_note(result, "not valid")
+
+
+@pytest.mark.parametrize("text", ["Feb 1-29 1975", "Apr 31-33 1975", "Apr 5-31 1975"])
+def test_an_impossible_day_range_says_so_and_keeps_the_year(text):
+    result = guess(text)
+    assert result.date == E(1975)
+    assert result.alternatives == ()
+    assert has_note(result, "day range", "not valid")
+
+
+@pytest.mark.parametrize("text", ["'99 to '03", "'99 - '01", "'99-'03"])
+def test_a_short_range_across_the_century_is_a_year_range(text):
+    result = guess(text)
+    first, last = 1999, 2000 + int(text[-2:])
+    assert result.alternatives == years(*range(first, last + 1))
+    assert result.date == E((first + last) // 2)
+    assert has_note(result, "chosen")
+
+
+def test_a_short_range_across_the_century_keeps_the_width_cap():
+    result = guess("'99 to '20")  # 22 years
+    assert result.date is None
+    assert has_note(result, "too wide")
+
+
+@pytest.mark.parametrize("text", ["'05 to '07", "'10 to '12"])
+def test_a_short_range_with_both_ends_ambiguous_is_still_ambiguous(text):
+    result = guess(text)
+    assert result.date is None
+    assert has_note(result, "ambiguous")
