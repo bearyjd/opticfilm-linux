@@ -6,6 +6,9 @@ Load & scan off. Leave auto-eject and Load & scan off until the last section.
 
 ## Before you start
 
+- [ ] Look at the scanner: a holder from an earlier session (tray 2) may still be loaded. If so,
+      eject it first (**Eject holder** in the app, or `of135i eject` in a real terminal), and
+      confirm it is released before anything else.
 - [ ] Update to main: `git -C <repo> checkout main && git -C <repo> pull`
 - [ ] Close the app, stop the watcher, run preflight (read-only; never scans, loads or ejects):
 ```sh
