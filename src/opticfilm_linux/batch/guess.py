@@ -219,9 +219,16 @@ def _add_day(found: _Found, y: int, month: int | None, day: int, token: str) -> 
 def _take_day_range(found: _Found, m: re.Match[str]) -> bool:
     month, first, last = _month_no(m["m"]), int(m["d1"]), int(m["d2"])
     year = int(m["y"])
-    if month is None or not 1 <= first < last <= _days_in(year, month):
+    if month is None:
         return False
     _note_name(found, m["m"])
+    if not 1 <= first < last <= _days_in(year, month):
+        found.singles.append((year, None))
+        found.notes.append(
+            f"{m.group(0)}: the day range {first}-{last} is not valid for "
+            f"{_MONTH_NAMES[month - 1]} {year}, so only the year was guessed"
+        )
+        return True
     found.singles.append((year, month))
     found.notes.append(
         f"the days ({first}-{last}) in {m.group(0)} were dropped; only year and month are kept"
@@ -242,8 +249,16 @@ def _take_month_span(found: _Found, hi: int, m: re.Match[str]) -> bool:
     return True
 
 
+def _century_end(first: int, yy: int, hi: int) -> int | None:
+    """The one year ending in yy that is not before ``first`` and not after ``hi``, if only one."""
+    fits = [c + yy for c in (1900, 2000) if first <= c + yy <= hi]
+    return fits[0] if len(fits) == 1 else None
+
+
 def _take_short_range(found: _Found, hi: int, m: re.Match[str]) -> bool:
     first, last = _short_year(int(m["a"]), hi), _short_year(int(m["b"]), hi)
+    if first is not None and last is None:
+        last = _century_end(first, int(m["b"]), hi)  # "'99 to '03" runs into the next century
     if first is None or last is None or last == first:
         return False  # "'74-'76" only; bare pairs like "35-40" are slide numbers
     if last < first:
@@ -333,7 +348,8 @@ def _scan_ranges(text: str, found: _Found, hi: int) -> str:
             if len(last) == 2 and int(last) == 0:
                 found.singles.append((first, None))
                 found.notes.append(
-                    f"{m.group(0)}: month 00 is not valid, so only the year {first} was guessed"
+                    f"{m.group(0)}: the suffix -00 was not read as a month or a year range, "
+                    f"so only the year {first} was guessed"
                 )
                 return True
             if end < first and kind == "range":
