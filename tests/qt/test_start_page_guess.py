@@ -257,3 +257,12 @@ def test_the_know_field_is_tall_enough_to_type_in(page, size):
     page.root.resize(*size)
     smoke._wait(page.bridge, lambda: page.find("newBatchKnow").property("height") > 0)
     assert page.find("newBatchKnow").property("height") >= 48
+
+
+def test_the_know_field_keeps_its_height_when_the_text_is_long(page):
+    know = page.find("newBatchKnow")
+    smoke._wait(page.bridge, lambda: know.property("height") > 0)
+    empty = know.property("height")
+    page.set("newBatchKnow", "\n".join(f"line {n} of a long note about the trip" for n in range(20)))
+    # The text scrolls inside the box; it must not grow and push the guess block down
+    assert know.property("height") == empty
