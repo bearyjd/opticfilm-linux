@@ -263,6 +263,7 @@ def test_the_know_field_keeps_its_height_when_the_text_is_long(page):
     know = page.find("newBatchKnow")
     smoke._wait(page.bridge, lambda: know.property("height") > 0)
     empty = know.property("height")
-    page.set("newBatchKnow", "\n".join(f"line {n} of a long note about the trip" for n in range(20)))
+    long_note = "\n".join(f"line {n} of a long note about the trip" for n in range(20))
+    page.set("newBatchKnow", long_note)
     # The text scrolls inside the box; it must not grow and push the guess block down
     assert know.property("height") == empty
