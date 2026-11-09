@@ -9,6 +9,20 @@ Exit 0 = GO (no FAIL), 1 = NO-GO. Runs only these read-only commands, nothing el
   <python> -c "import of135i"          (cwd = driver dir; never touches USB)
   <python> -m of135i doctor            (cwd = driver dir; the driver's read-only report)
 Never runs scan / load / eject. Close the app and stop the Eject watcher before running it.
+
+Limits (a GO is not proof the scanner is free):
+  * Run it on the same side as the app. A flatpak or distrobox app is invisible to this host's
+    /proc, and a separate /tmp or XDG_STATE_HOME hides its lock file, so "no app running" and
+    "locks are free" can be a false GO.
+  * The process probe matches only: argv[0] named of135i / ofscan / opticfilm; an interpreter
+    named python* whose first non-option argument is such a script; `-m of135i` or
+    `-m opticfilm_linux.app...`; or `-c` code containing `opticfilm_linux.app` (a `-c` that runs
+    of135i is not matched). An option that takes a separate argument (`python -W ignore -m ...`)
+    hides the `-m` that follows. `uv run` and pipx shims are not matched.
+  * A lock file that cannot be tested (permissions, I/O error) is only a WARN, not a FAIL; the
+    scanner-lock probe also treats a symlink as untestable. The batch-lock check takes an
+    exclusive lock for an instant, which can briefly make a real holder's own non-blocking
+    attempt fail.
 """
 
 from __future__ import annotations

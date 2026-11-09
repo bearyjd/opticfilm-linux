@@ -6,6 +6,7 @@ import fcntl
 import importlib.util
 import subprocess
 import sys
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -201,6 +202,43 @@ def test_process_opticfilm_script(ctx):
     assert res.status == pf.FAIL and "300" in res.detail
 
 
+def returns_within(fn, *args, timeout: float = 5.0):
+    """Call fn(*args) in a daemon thread; fail fast instead of hanging if it blocks."""
+    box: list = []
+    failure: list = []
+
+    def run() -> None:
+        try:
+            box.append(fn(*args))
+        except BaseException as exc:  # re-raised below; a daemon thread would only print it
+            failure.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if failure:
+        raise failure[0]
+    assert box, f"{fn.__name__} blocked for more than {timeout:g}s (is LOCK_NB missing?)"
+    return box[0]
+
+
+def test_returns_within_reraises_the_functions_own_error():
+    def boom() -> None:
+        raise ValueError("probe failed")
+
+    with pytest.raises(ValueError, match="probe failed"):
+        returns_within(boom)
+
+
+def test_lock_probes_never_block_on_a_held_lock(tmp_path):
+    lock = tmp_path / "held.lock"
+    lock.write_text("")
+    with open(lock) as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        assert returns_within(pf.probe_lock_held, lock) is True
+        assert returns_within(pf.lock_is_held, lock) is True
+
+
 def test_scanner_lock_probe(tmp_path):
     lock = tmp_path / "scanner.lock"
     assert pf.probe_lock_held(lock) is False  # absent: not created
@@ -210,7 +248,7 @@ def test_scanner_lock_probe(tmp_path):
     assert pf.probe_lock_held(lock) is False
     with open(lock) as holder:
         fcntl.flock(holder, fcntl.LOCK_EX)
-        assert pf.probe_lock_held(lock) is True
+        assert returns_within(pf.probe_lock_held, lock) is True
     assert pf.probe_lock_held(lock) is False  # our probe left no lock behind
     assert lock.read_text() == "pid 1\n" and lock.stat().st_mtime_ns == before.st_mtime_ns
 
