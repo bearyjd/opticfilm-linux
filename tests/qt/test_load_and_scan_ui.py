@@ -393,3 +393,25 @@ def test_close_anyway_closes_the_window_during_a_pending_scan(window):
     action.trigger(None)
     _wait(bridge, lambda: not root.isVisible(), timeout=20)
     assert scanner.scans == 0  # nothing was started by closing
+
+
+def test_a_scanner_problem_banner_offers_close_batch(window, monkeypatch):
+    from opticfilm_linux.app.state import Banner
+
+    bridge, root, _scanner, _prefs = window()
+    closed = []
+    monkeypatch.setattr(bridge._controller, "close_batch", lambda: closed.append(True))
+    problem = dataclasses.replace(
+        bridge._state,
+        banner=Banner("Scanner error. Your accepted slides are saved.", scanner_problem=True),
+        banner_can_close=True,
+    )
+    bridge._apply(problem)
+    QTest.qWait(50)
+    button = _item(root, "bannerCloseBatch")
+    assert button.property("visible")
+    button.click()
+    assert closed == [True]
+    bridge._apply(dataclasses.replace(problem, banner_can_close=False))
+    QTest.qWait(50)
+    assert not _item(root, "bannerCloseBatch").property("visible")

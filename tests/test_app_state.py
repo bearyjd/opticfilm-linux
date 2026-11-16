@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from opticfilm_linux.app.state import EMPTY_STATE, SlideCard, TrayRow, build_state
+from opticfilm_linux.app.state import EMPTY_STATE, Banner, SlideCard, TrayRow, build_state
 from opticfilm_linux.batch.model import (
     BatchManifest,
     Flag,
@@ -443,3 +443,29 @@ def test_interrupted_cleanup_row_has_actionable_guidance(auto, recoverable):
     assert state.trays[0].error == "Existing error. " + interrupted_cleanup_guidance(
         tray.number, recoverable=recoverable
     )
+
+
+def test_a_scanner_problem_banner_offers_close_batch_when_a_slide_is_accepted():
+    banner = Banner("Scanner error", scanner_problem=True)
+    assert _build(banner=banner).banner_can_close is True
+
+
+def test_a_scanner_problem_banner_offers_nothing_without_an_accepted_slide():
+    no_accepted = BatchManifest(
+        name="Trips",
+        trays=(
+            TrayRecord(
+                number=1,
+                stage=TrayStage.REVIEW,
+                slides=(SlideRecord(position=1, status=SlideStatus.NEEDS_LOOK),),
+            ),
+        ),
+    )
+    banner = Banner("Scanner error", scanner_problem=True)
+    assert _build(no_accepted, banner=banner).banner_can_close is False
+
+
+def test_other_banners_and_no_banner_offer_no_close_batch():
+    assert _build(banner=Banner("Could not export")).banner_can_close is False
+    assert _build().banner_can_close is False
+    assert EMPTY_STATE.banner_can_close is False

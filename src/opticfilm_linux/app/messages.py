@@ -36,6 +36,10 @@ _STAGES = {
     TrayStage.FAILED: "Failed",
 }
 
+SAFE_WITHOUT_SCANNER = (
+    "Your accepted slides are saved. Export and Close batch still work without the scanner."
+)
+
 _SCANNER = {
     ScannerStatus.UNKNOWN: "Scanner status unknown: scanning is not available yet",
     ScannerStatus.READY: "Scanner ready",
@@ -49,12 +53,12 @@ _SCANNER = {
         "The scanner reports a problem. If a scan just failed or stopped, power-cycle it "
         "(off until the lights go out, then on), eject and load the holder again. If the app "
         'says the scanner driver was not found, see "How to load the scanner" / the README '
-        "(OPTICFILM_DRIVER_DIR)."
+        "(OPTICFILM_DRIVER_DIR). " + SAFE_WITHOUT_SCANNER
     ),
     ScannerStatus.INTERRUPTED: (
         "A scan or holder move was cut off, so the scanner's state is unknown. Power-cycle it "
         "(off until the lights go out, then on), load the holder again, press Confirm scanner "
-        "reset, then rescan the interrupted tray."
+        "reset, then rescan the interrupted tray. " + SAFE_WITHOUT_SCANNER
     ),
 }
 
@@ -75,6 +79,11 @@ def stage_text(stage: TrayStage) -> str:
 
 def scanner_text(status: ScannerStatus) -> str:
     return _SCANNER[status]
+
+
+def scanner_problem_text(message: str) -> str:
+    """The banner for a scanner that failed or stopped answering: the work is not at risk."""
+    return f"{message}. {SAFE_WITHOUT_SCANNER}"
 
 
 def holder_latch_text(latch: HolderLatch) -> str:

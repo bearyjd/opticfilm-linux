@@ -34,7 +34,7 @@ from opticfilm_linux.app.lifecycle_commands import (
     _check_export_directory as _check_export_directory,
 )
 from opticfilm_linux.app.load_and_scan import LOAD_READY_TIMEOUT_S, LoadAndScanCommands
-from opticfilm_linux.app.messages import failure_text
+from opticfilm_linux.app.messages import failure_text, scanner_problem_text
 from opticfilm_linux.app.preview_tokens import PreviewTokens
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
 from opticfilm_linux.app.sandbox import host_terminal_hint
@@ -447,7 +447,7 @@ class Controller(
             self._cancel_auto = threading.Event()
 
     def _scanner_problem(self, message: str, detail: str) -> None:
-        self._set(_banner=Banner(message, detail))
+        self._set(_banner=Banner(scanner_problem_text(message), detail, scanner_problem=True))
 
     def _stop_jobs(self) -> None:
         """Cancel a running export or free-space job and wait until every job has ended."""

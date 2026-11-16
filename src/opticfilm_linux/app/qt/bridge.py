@@ -297,6 +297,7 @@ class Bridge(WorkflowBridge):
     hasBanner = _p(bool, changed, lambda s, _: s.banner is not None)  # noqa: N815
     bannerMessage = _p(str, changed, lambda s, _: s.banner.message if s.banner else "")  # noqa: N815
     bannerDetail = _p(str, changed, lambda s, _: s.banner.detail if s.banner else "")  # noqa: N815
+    bannerCanClose = _p(bool, changed, lambda s, _: s.banner_can_close)  # noqa: N815
     bannerLocked = _p(  # noqa: N815
         bool, changed, lambda s, _: bool(s.banner and s.banner.detail.startswith(LOCKED_PREFIX))
     )

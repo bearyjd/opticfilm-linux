@@ -60,6 +60,13 @@ Card {
                 onClicked: bridge.dismissBanner()
             }
             PillButton {
+                objectName: "bannerCloseBatch"
+                visible: bridge.bannerCanClose
+                text: qsTr("Close batch")
+                icon.name: "window-close"
+                onClicked: bridge.closeBatch()
+            }
+            PillButton {
                 objectName: "bannerReadonly"
                 visible: bridge.bannerLocked
                 text: qsTr("Open read-only")
