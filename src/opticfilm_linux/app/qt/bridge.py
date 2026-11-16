@@ -624,6 +624,10 @@ class Bridge(WorkflowBridge):
         return self._controller.shutdown_decision()
 
     @Slot()
+    def closeAnyway(self) -> None:  # noqa: N802
+        self._controller.close_anyway()
+
+    @Slot()
     def shutdown(self) -> None:
         self._timer.stop()
         self._destination.close()

@@ -440,6 +440,11 @@ class DriverScanner:
         self._last_address: str | None = None
         self.scan_diagnostics: tuple[str, ...] | None = None
 
+    def abort_running(self) -> None:
+        """Stop every driver this program started, by the normal stop path (never pkill). The
+        scan waiting on one then fails as interrupted and leaves the durable mark."""
+        _stop_all_drivers()
+
     @property
     def usb_address(self) -> tuple[int, int] | None:
         """Parse bounded, already-recorded output lazily; never run or read the driver."""

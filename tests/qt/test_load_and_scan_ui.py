@@ -375,3 +375,21 @@ def test_wait_then_close_during_the_load_wait_does_not_reopen_and_closes_after(w
     scanner.current = ScannerStatus.READY
     _wait(bridge, lambda: not root.isVisible(), timeout=20)
     assert scanner.scans == 1
+
+
+def test_close_anyway_closes_the_window_during_a_pending_scan(window):
+    bridge, root, scanner, _prefs = window()
+    bridge.setLoadAndScan(True)
+    _released(bridge, scanner)
+    scanner.after_load = ScannerStatus.NOT_READY  # held in waiting_ready
+    _wait(bridge, lambda: bridge.canLoadAndScan)
+    bridge.loadAndScan()
+    _wait(bridge, lambda: bridge.loadScanPhase == "waiting_ready")
+    root.close()
+    QTest.qWait(50)
+    assert _item(root, "waitDialog").property("visible")
+    action = root.findChild(QObject, "closeAnywayAction")
+    assert action is not None
+    action.trigger(None)
+    _wait(bridge, lambda: not root.isVisible(), timeout=20)
+    assert scanner.scans == 0  # nothing was started by closing

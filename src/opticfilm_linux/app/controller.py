@@ -265,6 +265,20 @@ class Controller(
             return "scan_running"
         return "ok"
 
+    def close_anyway(self) -> None:
+        """The owner's way out of a scan that will not finish: stop the driver's process group
+        by the normal stop path, and mark the holder UNKNOWN as a failed scan does. The batch
+        is already on disk (every accept and edit is persisted), so nothing is deleted."""
+        session = self._session
+        scanner = session.scanner if session is not None else None
+        stop = getattr(scanner, "abort_running", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:  # noqa: BLE001 - closing must go on; the marker stays for the owner
+                log.warning("could not stop the scanner driver on close", exc_info=True)
+        self._remember_holder_latch(HolderLatch.UNKNOWN, scanner)
+
     def shutdown(self) -> None:
         """Cancel an export, finish the job running now, drop queued work, release the batch."""
         self._closing.set()

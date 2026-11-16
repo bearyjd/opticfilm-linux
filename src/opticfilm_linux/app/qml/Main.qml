@@ -38,6 +38,7 @@ Kirigami.ApplicationWindow {
     }
 
     property bool closeWhenIdle: false
+    property bool forceClose: false
     property bool firstLoadQuitConfirmed: false
 
     title: bridge.hasBatch ? bridge.batchName + " — OpticFilm Linux" : "OpticFilm Linux"
@@ -122,7 +123,7 @@ Kirigami.ApplicationWindow {
         if (decision === "first_load_running" && !root.firstLoadQuitConfirmed) {
             close.accepted = false;
             firstLoadQuitDialog.open();
-        } else if (decision === "scan_running") {
+        } else if (decision === "scan_running" && !root.forceClose) {
             close.accepted = false;
             waitDialog.open();
         }
@@ -147,7 +148,7 @@ Kirigami.ApplicationWindow {
         objectName: "waitDialog"
 
         title: qsTr("A scan is running")
-        subtitle: qsTr("A scan cannot be stopped safely. Wait for it to finish and then close, or keep working.")
+        subtitle: qsTr("A scan cannot be stopped safely. Wait for it to finish and then close, or keep working. Your accepted slides are already saved. The scanner will need a power-cycle check.")
         standardButtons: Kirigami.Dialog.NoButton
         customFooterActions: [
             Kirigami.Action {
@@ -156,6 +157,17 @@ Kirigami.ApplicationWindow {
                 onTriggered: {
                     root.closeWhenIdle = true;
                     waitDialog.close();
+                }
+            },
+            Kirigami.Action {
+                text: qsTr("Close anyway")
+                objectName: "closeAnywayAction"
+                icon.name: "window-close"
+                onTriggered: {
+                    waitDialog.close();
+                    bridge.closeAnyway();
+                    root.forceClose = true;
+                    root.close();
                 }
             },
             Kirigami.Action {
