@@ -2,8 +2,10 @@
 
 import threading
 
-from controller_helpers import open_new, wait_until
+from controller_helpers import open_new, scan_when_ready, wait_all_in_review, wait_until
 from opticfilm_linux.app.controller import Controller
+from opticfilm_linux.batch.model import SlideStatus
+from opticfilm_linux.batch.store import BatchStore
 from opticfilm_linux.scanner.fake import FakeScanner
 from opticfilm_linux.scanner.holder_latch import HolderLatch
 
@@ -42,11 +44,47 @@ def test_close_anyway_stops_the_driver_and_marks_the_holder_unknown(sweep600_dir
         controller.shutdown()
 
 
-def test_close_anyway_keeps_the_batch_on_disk(sweep600_dir, tmp_path):
-    controller, _gate, _stops = _hung_scan(sweep600_dir, tmp_path)
+def test_close_anyway_keeps_the_accepted_slides_on_disk(sweep600_dir, tmp_path):
+    gate, stops = threading.Event(), []
+    gate.set()  # the first scan runs through
+    controller = Controller(lambda _dpi: StoppableScanner(sweep600_dir, gate, stops))
+    open_new(controller, tmp_path / "b")
+    scan_when_ready(controller)
+    wait_all_in_review(controller, 1)
+    controller.accept_all()
+    wait_until(controller, lambda: any(s.status is SlideStatus.ACCEPTED for s in controller.state().slides),
+    )
+    before = BatchStore.open(tmp_path / "b", readonly=True)
+    expected = before.snapshot().trays[0]
+    before.close()
+    gate.clear()  # the next scan hangs
+    wait_until(controller, lambda: controller.state().can_scan)
+    controller.scan()
+    wait_until(controller, lambda: controller.shutdown_decision() == "scan_running")
     controller.close_anyway()
     controller.shutdown()
-    assert (tmp_path / "b").is_dir() and any((tmp_path / "b").iterdir())
+    after = BatchStore.open(tmp_path / "b", readonly=True)
+    manifest = after.snapshot()
+    after.close()
+    assert manifest.name == "Test"
+    assert manifest.trays[0] == expected
+    assert any(s.status is SlideStatus.ACCEPTED for s in manifest.trays[0].slides)
+
+
+def test_close_anyway_does_nothing_once_the_scan_has_ended(sweep600_dir, tmp_path):
+    gate, stops = threading.Event(), []
+    gate.set()
+    controller = Controller(lambda _dpi: StoppableScanner(sweep600_dir, gate, stops))
+    try:
+        open_new(controller, tmp_path / "b")
+        scan_when_ready(controller)
+        wait_all_in_review(controller, 1)
+        controller._remember_holder_latch(HolderLatch.LATCHED)
+        controller.close_anyway()
+        assert stops == []
+        assert controller._holder_latch is HolderLatch.LATCHED
+    finally:
+        controller.shutdown()
 
 
 def test_close_anyway_survives_a_scanner_that_cannot_be_stopped(sweep600_dir, tmp_path, caplog):

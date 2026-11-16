@@ -306,7 +306,7 @@ def _stop_group(proc: subprocess.Popen) -> None:
 @atexit.register
 def _stop_all_drivers() -> None:
     with _LIVE_LOCK:
-        running = list(_LIVE)
+        running = [proc for proc in _LIVE if proc.poll() is None]  # never signal a reaped pid
     for proc in running:
         _stop_group(proc)
 

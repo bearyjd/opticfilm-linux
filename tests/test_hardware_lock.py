@@ -144,3 +144,23 @@ def test_a_driver_that_survives_sigkill_does_not_hold_the_stop_forever(monkeypat
         driver_module._stop_group(Proc())  # type: ignore[arg-type]  # must return, not raise
     assert signal.SIGKILL in sent
     assert "4343" in caplog.text
+
+
+def test_stopping_all_drivers_skips_one_that_already_exited(monkeypatch):
+    sent: list[int] = []
+
+    class Exited:
+        pid = 4545
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(driver_module.os, "killpg", lambda pid, sig: sent.append(sig))
+    with driver_module._LIVE_LOCK:
+        driver_module._LIVE.add(Exited())  # type: ignore[arg-type]
+    try:
+        driver_module._stop_all_drivers()
+    finally:
+        with driver_module._LIVE_LOCK:
+            driver_module._LIVE.clear()
+    assert sent == []

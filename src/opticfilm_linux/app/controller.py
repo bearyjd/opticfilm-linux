@@ -268,7 +268,10 @@ class Controller(
     def close_anyway(self) -> None:
         """The owner's way out of a scan that will not finish: stop the driver's process group
         by the normal stop path, and mark the holder UNKNOWN as a failed scan does. The batch
-        is already on disk (every accept and edit is persisted), so nothing is deleted."""
+        is already on disk (every accept and edit is persisted); the frames of the scan being
+        stopped are discarded. If the scan has already ended there is nothing to stop."""
+        if self.shutdown_decision() == "ok":
+            return
         session = self._session
         scanner = session.scanner if session is not None else None
         stop = getattr(scanner, "abort_running", None)
