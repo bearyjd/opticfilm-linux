@@ -43,10 +43,39 @@ def test_a_doctor_that_did_not_answer_is_kept(tmp_path):
     assert "half a report" in _failure_log(tmp_path).read_text()
 
 
-def test_a_report_that_cannot_be_read_as_a_status_is_kept(tmp_path):
+def test_a_scanner_that_is_not_connected_never_writes(tmp_path):
     scanner = _scanner(tmp_path, lambda *a, **k: _Result(1, "Traceback: no device\n"))
     assert scanner.status() is ScannerStatus.NOT_CONNECTED
-    assert "no device" in _failure_log(tmp_path).read_text()
+    assert not _failure_log(tmp_path).exists()
+
+
+def test_the_same_failure_output_twice_writes_once(tmp_path, monkeypatch):
+    scanner = _scanner(tmp_path, lambda *a, **k: _Result(0, ERROR_REPORT))
+    scanner.status()
+    first = _failure_log(tmp_path).stat().st_mtime_ns
+    writes = []
+    monkeypatch.setattr(driver_module.os, "replace", lambda *a: writes.append(a))
+    scanner._status_cache = None
+    scanner.status()
+    assert writes == [] and _failure_log(tmp_path).stat().st_mtime_ns == first
+
+
+def test_a_different_error_after_an_earlier_one_does_write(tmp_path):
+    outputs = iter([ERROR_REPORT, ERROR_REPORT, "reg 0x01 = 0x31\nanother fault\n"])
+    scanner = _scanner(tmp_path, lambda *a, **k: _Result(0, next(outputs)))
+    for _ in range(3):
+        scanner._status_cache = None
+        scanner.status()
+    assert "another fault" in _failure_log(tmp_path).read_text()
+
+
+def test_the_temporary_file_is_synced_before_it_replaces_the_log(tmp_path, monkeypatch):
+    order = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(driver_module.os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd)))
+    monkeypatch.setattr(driver_module.os, "replace", lambda *a: (order.append("replace"), real_replace(*a)))
+    _scanner(tmp_path, lambda *a, **k: _Result(0, ERROR_REPORT)).status()
+    assert order == ["fsync", "replace"]
 
 
 def test_a_healthy_doctor_writes_nothing(tmp_path):

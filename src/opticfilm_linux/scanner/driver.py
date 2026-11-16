@@ -14,6 +14,7 @@ The driver must already have *loaded* the holder (an interactive step: ``of135i 
 import atexit
 import dataclasses
 import fcntl
+import hashlib
 import logging
 import os
 import re
@@ -444,6 +445,7 @@ class DriverScanner:
         self._failed_address: str | None = None  # the USB address it failed on
         self._last_address: str | None = None
         self.scan_diagnostics: tuple[str, ...] | None = None
+        self._doctor_failure_digest: str | None = None  # the last failure written, not rewritten
 
     def abort_running(self) -> None:
         """Stop every driver this program started, by the normal stop path (never pkill). The
@@ -743,7 +745,7 @@ class DriverScanner:
         if result.returncode != 0 and status is ScannerStatus.READY:
             self._keep_doctor_failure(result.output)
             return StatusReading(ScannerStatus.ERROR)  # a failing report is not a ready scanner
-        if status in (ScannerStatus.ERROR, ScannerStatus.NOT_CONNECTED):
+        if status is ScannerStatus.ERROR:  # not NOT_CONNECTED: a switched-off scanner is routine
             self._keep_doctor_failure(result.output)
         if self._needs_power_cycle:
             address = re.search(r"addr=(\d+)", result.output)
@@ -766,14 +768,20 @@ class DriverScanner:
             return
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         body = output.encode("utf-8", errors="replace")[-DOCTOR_TAIL_BYTES:]
+        digest = hashlib.sha256(body).hexdigest()
+        if digest == self._doctor_failure_digest:
+            return  # the same failure again: keep the first timestamp, do no I/O
         temporary = None
         try:
             directory.mkdir(parents=True, exist_ok=True)
             handle, temporary = tempfile.mkstemp(dir=directory, prefix=".doctor-failure-")
             with os.fdopen(handle, "wb") as sink:
                 sink.write(f"# doctor failed {stamp}\n".encode() + body)
+                sink.flush()
+                os.fsync(sink.fileno())
             os.replace(temporary, directory / DOCTOR_FAILURE_LOG)
             temporary = None
+            self._doctor_failure_digest = digest
         except OSError:
             log.warning("could not keep the failed doctor output in %s", directory, exc_info=True)
         finally:
