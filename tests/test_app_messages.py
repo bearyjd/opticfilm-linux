@@ -5,12 +5,14 @@ import pytest
 
 from opticfilm_linux.app.messages import (
     POWER_CYCLE_ADVICE,
+    SAFE_WITHOUT_SCANNER,
     bytes_text,
     failure_text,
     flag_text,
     holder_failed_text,
     load_command,
     runner_note,
+    scanner_problem_text,
     scanner_text,
     slide_status_text,
     stage_text,
@@ -59,6 +61,36 @@ def test_flag_sentences(flag, text):
 )
 def test_scanner_sentences(status, text):
     assert scanner_text(status) == text
+
+
+def test_the_safe_sentence_names_what_still_works():
+    assert SAFE_WITHOUT_SCANNER == (
+        "Your accepted slides are saved. Export and Close batch still work without the scanner."
+    )
+
+
+@pytest.mark.parametrize("status", [ScannerStatus.ERROR, ScannerStatus.INTERRUPTED])
+def test_a_scanner_trouble_text_says_the_work_is_safe_when_a_batch_is_open(status):
+    assert scanner_text(status, batch_open=True).endswith(SAFE_WITHOUT_SCANNER)
+
+
+@pytest.mark.parametrize("status", [ScannerStatus.ERROR, ScannerStatus.INTERRUPTED])
+def test_a_scanner_trouble_text_makes_no_claim_without_a_batch(status):
+    assert SAFE_WITHOUT_SCANNER not in scanner_text(status)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [s for s in ScannerStatus if s not in (ScannerStatus.ERROR, ScannerStatus.INTERRUPTED)],
+)
+def test_a_healthy_or_plain_status_text_does_not_say_it(status):
+    assert SAFE_WITHOUT_SCANNER not in scanner_text(status, batch_open=True)
+
+
+@pytest.mark.parametrize("message", ["Scanner error", "Scanner not responding"])
+def test_a_scanner_problem_banner_says_the_work_is_safe(message):
+    text = scanner_problem_text(message)
+    assert text.startswith(message) and text.endswith(SAFE_WITHOUT_SCANNER)
 
 
 def test_every_stage_has_words():

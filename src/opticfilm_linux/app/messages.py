@@ -36,6 +36,10 @@ _STAGES = {
     TrayStage.FAILED: "Failed",
 }
 
+SAFE_WITHOUT_SCANNER = (
+    "Your accepted slides are saved. Export and Close batch still work without the scanner."
+)
+
 _SCANNER = {
     ScannerStatus.UNKNOWN: "Scanner status unknown: scanning is not available yet",
     ScannerStatus.READY: "Scanner ready",
@@ -73,8 +77,17 @@ def stage_text(stage: TrayStage) -> str:
     return _STAGES[stage]
 
 
-def scanner_text(status: ScannerStatus) -> str:
-    return _SCANNER[status]
+def scanner_text(status: ScannerStatus, batch_open: bool = False) -> str:
+    """The status line. With a batch open, a scanner in trouble also says the work is safe."""
+    text = _SCANNER[status]
+    if batch_open and status in (ScannerStatus.ERROR, ScannerStatus.INTERRUPTED):
+        return f"{text} {SAFE_WITHOUT_SCANNER}"
+    return text
+
+
+def scanner_problem_text(message: str) -> str:
+    """The banner for a scanner that failed or stopped answering: the work is not at risk."""
+    return f"{message}. {SAFE_WITHOUT_SCANNER}"
 
 
 def holder_latch_text(latch: HolderLatch) -> str:

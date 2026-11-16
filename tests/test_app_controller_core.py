@@ -105,6 +105,9 @@ def test_scanner_status_exception_shows_error(sweep600_dir, tmp_path):
         broken.set()
         wait_until(c, lambda: c.state().scanner is ScannerStatus.ERROR)
         assert not c.state().can_scan and c.state().banner is not None
+        banner = c.state().banner
+        assert banner.scanner_problem
+        assert banner.message.endswith("Export and Close batch still work without the scanner.")
     finally:
         c.shutdown()
 

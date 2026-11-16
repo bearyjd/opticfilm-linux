@@ -34,7 +34,7 @@ from opticfilm_linux.app.lifecycle_commands import (
     _check_export_directory as _check_export_directory,
 )
 from opticfilm_linux.app.load_and_scan import LOAD_READY_TIMEOUT_S, LoadAndScanCommands
-from opticfilm_linux.app.messages import failure_text
+from opticfilm_linux.app.messages import failure_text, scanner_problem_text
 from opticfilm_linux.app.preview_tokens import PreviewTokens
 from opticfilm_linux.app.recovery_checks import RecoveryChecks
 from opticfilm_linux.app.sandbox import host_terminal_hint
@@ -265,6 +265,23 @@ class Controller(
             return "scan_running"
         return "ok"
 
+    def close_anyway(self) -> None:
+        """The owner's way out of a scan that will not finish: stop the driver's process group
+        by the normal stop path, and mark the holder UNKNOWN as a failed scan does. The batch
+        is already on disk (every accept and edit is persisted); the frames of the scan being
+        stopped are discarded. If the scan has already ended there is nothing to stop."""
+        if self.shutdown_decision() == "ok":
+            return
+        session = self._session
+        scanner = session.scanner if session is not None else None
+        stop = getattr(scanner, "abort_running", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:  # noqa: BLE001 - closing must go on; the marker stays for the owner
+                log.warning("could not stop the scanner driver on close", exc_info=True)
+        self._remember_holder_latch(HolderLatch.UNKNOWN, scanner)
+
     def shutdown(self) -> None:
         """Cancel an export, finish the job running now, drop queued work, release the batch."""
         self._closing.set()
@@ -433,7 +450,7 @@ class Controller(
             self._cancel_auto = threading.Event()
 
     def _scanner_problem(self, message: str, detail: str) -> None:
-        self._set(_banner=Banner(message, detail))
+        self._set(_banner=Banner(scanner_problem_text(message), detail, scanner_problem=True))
 
     def _stop_jobs(self) -> None:
         """Cancel a running export or free-space job and wait until every job has ended."""

@@ -14,6 +14,7 @@ The driver must already have *loaded* the holder (an interactive step: ``of135i 
 import atexit
 import dataclasses
 import fcntl
+import hashlib
 import logging
 import os
 import re
@@ -58,9 +59,11 @@ OUTPUT_TAIL_BYTES = 64 * 1024  # all that is kept in memory of a driver run; the
 KEEP_LOGS = 30
 PROTECT_LOG_S = 3600  # a log this recent may belong to a scan still running: never pruned
 DOCTOR_TAIL_BYTES = 1 << 20
+DOCTOR_FAILURE_LOG = "doctor-last-failure.log"  # the one file the last failed status check fills
 HEAD_BYTES = 8192  # the driver prints the USB address it opened on its first lines
 LOCK_POLL_S = 0.2
 LOCK_WAIT_S = STATUS_TIMEOUT_S + 2  # outlasts one status check by the app, never a scan
+KILL_WAIT_S = 10.0  # how long to wait for a SIGKILLed driver before giving up on it
 STOP_GRACE_S = 10.0  # how long a driver that was interrupted gets before it is killed
 PROBE_TIMEOUT_S = 10
 SPACE_MARGIN = 1.25  # the sweep needs this much free disk, beside the driver's own frames
@@ -264,6 +267,15 @@ _SIGNALLED: set[subprocess.Popen] = set()  # drivers this program told to stop: 
 _LIVE_LOCK = threading.RLock()  # re-entrant: the SIGTERM handler may interrupt a holder
 
 
+def _wait_after_kill(proc: subprocess.Popen) -> None:
+    """Wait a bounded time for a killed driver; one that will not die (stuck in the kernel)
+    is given up on, its interrupted marker kept, so the stop path never hangs."""
+    try:
+        proc.wait(timeout=KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        log.warning("driver process %s did not exit after SIGKILL; giving up waiting", proc.pid)
+
+
 def _stop_group(proc: subprocess.Popen) -> None:
     """Stop the driver and any helper it started: interrupt first (the driver handles Ctrl-C and
     fails closed), kill after a grace period, then sweep up stragglers in the process group.
@@ -281,7 +293,7 @@ def _stop_group(proc: subprocess.Popen) -> None:
                 continue
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
+                _wait_after_kill(proc)
                 break
     except (ProcessLookupError, PermissionError):
         pass
@@ -294,7 +306,7 @@ def _stop_group(proc: subprocess.Popen) -> None:
 @atexit.register
 def _stop_all_drivers() -> None:
     with _LIVE_LOCK:
-        running = list(_LIVE)
+        running = [proc for proc in _LIVE if proc.poll() is None]  # never signal a reaped pid
     for proc in running:
         _stop_group(proc)
 
@@ -314,7 +326,11 @@ def _read_tail(path: Path, limit: int = OUTPUT_TAIL_BYTES) -> str:
 def _prune_logs(directory: Path) -> None:
     """Keep the newest logs; older ones go, but nothing recent (it may still be written to)."""
     now = time.time()
-    logs = sorted(directory.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    logs = sorted(
+        (p for p in directory.glob("*.log") if p.name != DOCTOR_FAILURE_LOG),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     for old in logs[KEEP_LOGS:]:
         if now - old.stat().st_mtime > PROTECT_LOG_S:
             old.unlink(missing_ok=True)
@@ -429,6 +445,12 @@ class DriverScanner:
         self._failed_address: str | None = None  # the USB address it failed on
         self._last_address: str | None = None
         self.scan_diagnostics: tuple[str, ...] | None = None
+        self._doctor_failure_digest: str | None = None  # the last failure written, not rewritten
+
+    def abort_running(self) -> None:
+        """Stop every driver this program started, by the normal stop path (never pkill). The
+        scan waiting on one then fails as interrupted and leaves the durable mark."""
+        _stop_all_drivers()
 
     @property
     def usb_address(self) -> tuple[int, int] | None:
@@ -716,11 +738,15 @@ class DriverScanner:
         try:
             self._require_driver()
             result = self._run(["doctor"], STATUS_TIMEOUT_S, keep_log=False, tail=DOCTOR_TAIL_BYTES)
-        except ScanError:
+        except ScanError as exc:
+            self._keep_doctor_failure(str(exc))
             return StatusReading(ScannerStatus.ERROR)
         status = parse_doctor(result.output)
         if result.returncode != 0 and status is ScannerStatus.READY:
+            self._keep_doctor_failure(result.output)
             return StatusReading(ScannerStatus.ERROR)  # a failing report is not a ready scanner
+        if status is ScannerStatus.ERROR:  # not NOT_CONNECTED: a switched-off scanner is routine
+            self._keep_doctor_failure(result.output)
         if self._needs_power_cycle:
             address = re.search(r"addr=(\d+)", result.output)
             moved = bool(
@@ -733,6 +759,34 @@ class DriverScanner:
         if status not in BUTTON_STATUSES:
             return StatusReading(status)  # a press seen with anything else going on is not acted on
         return StatusReading(status, parse_doctor_button(result.output))
+
+    def _keep_doctor_failure(self, output: str) -> None:
+        """Evidence for a lost scanner: the last failed status output, in one file that is
+        replaced each time (never grows). Never raises: a missing log must not hide the status."""
+        directory = self._config.log_dir
+        if directory is None:
+            return
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        body = output.encode("utf-8", errors="replace")[-DOCTOR_TAIL_BYTES:]
+        digest = hashlib.sha256(body).hexdigest()
+        if digest == self._doctor_failure_digest:
+            return  # the same failure again: keep the first timestamp, do no I/O
+        temporary = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            handle, temporary = tempfile.mkstemp(dir=directory, prefix=".doctor-failure-")
+            with os.fdopen(handle, "wb") as sink:
+                sink.write(f"# doctor failed {stamp}\n".encode() + body)
+                sink.flush()
+                os.fsync(sink.fileno())
+            os.replace(temporary, directory / DOCTOR_FAILURE_LOG)
+            temporary = None
+            self._doctor_failure_digest = digest
+        except OSError:
+            log.warning("could not keep the failed doctor output in %s", directory, exc_info=True)
+        finally:
+            if temporary is not None:
+                Path(temporary).unlink(missing_ok=True)
 
     def _run(
         self, args: Sequence[str], timeout: int, keep_log: bool, tail: int = OUTPUT_TAIL_BYTES

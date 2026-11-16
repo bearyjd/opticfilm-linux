@@ -70,6 +70,7 @@ class TrayRow:
 class Banner:
     message: str
     detail: str = ""
+    scanner_problem: bool = False  # the scanner failed or stopped answering: work is safe
     key_refusal: bool = False  # a tray key was refused: low priority, replaceable, self-clearing
 
 
@@ -256,6 +257,7 @@ class AppState:
     metadata_updating: bool = False  # an update of exported JPEGs is running now
     can_load_and_scan: bool = False  # the setting is on and Load & scan may start now
     load_scan_phase: Literal["idle", "loading", "waiting_ready", "scanning", "failed"] = "idle"
+    banner_can_close: bool = False  # a scanner problem banner may offer Close batch
 
 
 EMPTY_STATE = AppState(
@@ -379,7 +381,7 @@ def _scanner_fields(
     idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return {
         "scanner": scanner,
-        "scanner_text": scanner_text(scanner),
+        "scanner_text": scanner_text(scanner, batch_open=manifest is not None),
         "can_scan": manifest is not None
         and scanner is ScannerStatus.READY
         and holder_latch is not HolderLatch.RELEASED
@@ -498,9 +500,20 @@ def build_state(
         readonly=readonly,
         trays=_sheet_trays(manifest, rows, preview_tokens, updating, pending),
         banner=banner,
+        banner_can_close=_banner_can_close(manifest, banner),
         export=export,
         free_space=free_space,
         can_finish_box=_can_finish_box(manifest, busy, runner_busy, updating),
+    )
+
+
+def _banner_can_close(manifest: BatchManifest | None, banner: Banner | None) -> bool:
+    """A scanner problem with accepted slides: the owner may close the batch and carry on."""
+    return (
+        manifest is not None
+        and banner is not None
+        and banner.scanner_problem
+        and any(s.status is SlideStatus.ACCEPTED for t in manifest.trays for s in t.slides)
     )
 
 

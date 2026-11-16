@@ -375,3 +375,49 @@ def test_wait_then_close_during_the_load_wait_does_not_reopen_and_closes_after(w
     scanner.current = ScannerStatus.READY
     _wait(bridge, lambda: not root.isVisible(), timeout=20)
     assert scanner.scans == 1
+
+
+def test_close_anyway_closes_the_window_during_a_pending_scan(window, monkeypatch):
+    bridge, root, scanner, _prefs = window()
+    bridge.setLoadAndScan(True)
+    _released(bridge, scanner)
+    scanner.after_load = ScannerStatus.NOT_READY  # held in waiting_ready
+    _wait(bridge, lambda: bridge.canLoadAndScan)
+    bridge.loadAndScan()
+    _wait(bridge, lambda: bridge.loadScanPhase == "waiting_ready")
+    root.close()
+    QTest.qWait(50)
+    assert _item(root, "waitDialog").property("visible")
+    seen = []
+    monkeypatch.setattr(  # the window must still be up when the driver is stopped
+        bridge._controller, "close_anyway", lambda: seen.append(root.isVisible())
+    )
+    action = root.findChild(QObject, "closeAnywayAction")
+    assert action is not None
+    action.trigger(None)
+    _wait(bridge, lambda: not root.isVisible(), timeout=20)
+    assert seen == [True]  # stopped first, then closed
+    assert not root.property("forceClose")  # used once, not left set
+    assert scanner.scans == 0  # nothing was started by closing
+
+
+def test_a_scanner_problem_banner_offers_close_batch(window, monkeypatch):
+    from opticfilm_linux.app.state import Banner
+
+    bridge, root, _scanner, _prefs = window()
+    closed = []
+    monkeypatch.setattr(bridge._controller, "close_batch", lambda: closed.append(True))
+    problem = dataclasses.replace(
+        bridge._state,
+        banner=Banner("Scanner error. Your accepted slides are saved.", scanner_problem=True),
+        banner_can_close=True,
+    )
+    bridge._apply(problem)
+    QTest.qWait(50)
+    button = _item(root, "bannerCloseBatch")
+    assert button.property("visible")
+    button.click()
+    assert closed == [True]
+    bridge._apply(dataclasses.replace(problem, banner_can_close=False))
+    QTest.qWait(50)
+    assert not _item(root, "bannerCloseBatch").property("visible")

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from opticfilm_linux.app.state import EMPTY_STATE, SlideCard, TrayRow, build_state
+from opticfilm_linux.app.state import EMPTY_STATE, Banner, SlideCard, TrayRow, build_state
 from opticfilm_linux.batch.model import (
     BatchManifest,
     Flag,
@@ -443,3 +443,52 @@ def test_interrupted_cleanup_row_has_actionable_guidance(auto, recoverable):
     assert state.trays[0].error == "Existing error. " + interrupted_cleanup_guidance(
         tray.number, recoverable=recoverable
     )
+
+
+def test_a_scanner_problem_banner_offers_close_batch_when_a_slide_is_accepted():
+    banner = Banner("Scanner error", scanner_problem=True)
+    assert _build(banner=banner).banner_can_close is True
+
+
+def test_a_scanner_problem_banner_offers_nothing_without_an_accepted_slide():
+    no_accepted = BatchManifest(
+        name="Trips",
+        trays=(
+            TrayRecord(
+                number=1,
+                stage=TrayStage.REVIEW,
+                slides=(SlideRecord(position=1, status=SlideStatus.NEEDS_LOOK),),
+            ),
+        ),
+    )
+    banner = Banner("Scanner error", scanner_problem=True)
+    assert _build(no_accepted, banner=banner).banner_can_close is False
+
+
+def test_other_banners_and_no_banner_offer_no_close_batch():
+    assert _build(banner=Banner("Could not export")).banner_can_close is False
+    assert _build().banner_can_close is False
+    assert EMPTY_STATE.banner_can_close is False
+
+
+def test_the_scanner_error_text_claims_the_work_is_safe_only_with_a_batch_open():
+    from opticfilm_linux.app.messages import SAFE_WITHOUT_SCANNER
+
+    with_batch = _build(scanner=ScannerStatus.ERROR)
+    without = build_state(
+        None,
+        preview_tokens={},
+        scanner=ScannerStatus.ERROR,
+        scan_pending=False,
+        readonly=False,
+        selected=None,
+        updating=frozenset(),
+        progress={},
+        scan_started={},
+        now=0.0,
+        banner=None,
+        export=None,
+        free_space=None,
+    )
+    assert with_batch.scanner_text.endswith(SAFE_WITHOUT_SCANNER)
+    assert SAFE_WITHOUT_SCANNER not in without.scanner_text

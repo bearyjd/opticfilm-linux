@@ -573,3 +573,33 @@ def test_no_home_folder_counts_as_interrupted_and_refuses_to_start(monkeypatch):
     assert interrupted.is_pending()
     with pytest.raises(interrupted.ScannerRefused, match="refusing"):
         interrupted.begin("scan")
+
+
+def test_abort_running_stops_a_hung_scan_and_leaves_the_interrupted_mark(
+    make, tmp_path, monkeypatch
+):
+    """The window's 'Close anyway': the owner stops a hung driver by the normal stop path."""
+    pids_file = tmp_path / "pids.json"
+    monkeypatch.setenv("FAKE_DRIVER_MODE", "hang")
+    monkeypatch.setenv("FAKE_DRIVER_PIDS", str(pids_file))
+    monkeypatch.setattr(driver_module, "STOP_GRACE_S", 5.0)
+    scanner = make()
+    outcome: list[BaseException] = []
+
+    def scan() -> None:
+        try:
+            scanner.scan_holder(ScanSettings(dpi=600))
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+            outcome.append(exc)
+
+    thread = threading.Thread(target=scan)
+    thread.start()
+    try:
+        _wait_for(pids_file)
+        time.sleep(0.3)
+        scanner.abort_running()
+        thread.join(30)
+    finally:
+        _kill_leftovers(pids_file)
+    assert outcome and isinstance(outcome[0], ScanInterrupted)
+    assert interrupted.is_pending()
