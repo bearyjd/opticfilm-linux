@@ -52,9 +52,16 @@ def test_close_anyway_keeps_the_accepted_slides_on_disk(sweep600_dir, tmp_path):
     scan_when_ready(controller)
     wait_all_in_review(controller, 1)
     controller.accept_all()
+    # The scan already auto-accepted clean slides, so "accepted" says nothing about the command:
+    # wait for the owner's decision itself to be recorded on every deliverable slide.
+    store = controller._session.store
     wait_until(
         controller,
-        lambda: any(s.status is SlideStatus.ACCEPTED for s in controller.state().slides),
+        lambda: all(
+            s.owner_decided or s.status in (SlideStatus.BLANK, SlideStatus.SKIPPED)
+            for t in store.snapshot().trays
+            for s in t.slides
+        ),
     )
     before = BatchStore.open(tmp_path / "b", readonly=True)
     expected = before.snapshot().trays[0]
