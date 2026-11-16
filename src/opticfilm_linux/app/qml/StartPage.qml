@@ -51,9 +51,11 @@ Kirigami.ScrollablePage {
     }
     // The Name this page last filled in itself; a Name that still equals it is a guess, not typed
     property string guessedName: ""
+    // Set once the form's fields exist; property handlers can fire while the page is still loading
+    property bool formReady: false
     // Fills the Name only while it is empty or still our own earlier guess
     function fillName() {
-        if (nameField.text !== "" && nameField.text !== guessedName)
+        if (!formReady || (nameField.text !== "" && nameField.text !== guessedName))
             return;
         const parts = decodeURIComponent(parentFolder.toString()).split("/").filter(part => part !== "");
         guessedName = bridge.guessBatchName(knowField.text, parts.length > 0 ? parts[parts.length - 1] : "");
@@ -77,6 +79,7 @@ Kirigami.ScrollablePage {
     Component.onCompleted: {
         exportFolder = bridge.lastExportFolder;
         prefillFromLastBatch();
+        formReady = true;
     }
     background: Rectangle {
         color: Theme.window

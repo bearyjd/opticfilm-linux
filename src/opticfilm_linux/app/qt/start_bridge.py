@@ -171,7 +171,6 @@ class StartBridge(SelectionBridge):
         folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
         self._pending.clear()
         self._opening = self._last_attempt = folder
-        # Remembered as the next batch's guesses once the controller reports the batch open.
         self._pending_layout = (collection, album, section, section_size, box)
         self._controller.new_batch(
             folder,
