@@ -61,6 +61,7 @@ DOCTOR_TAIL_BYTES = 1 << 20
 HEAD_BYTES = 8192  # the driver prints the USB address it opened on its first lines
 LOCK_POLL_S = 0.2
 LOCK_WAIT_S = STATUS_TIMEOUT_S + 2  # outlasts one status check by the app, never a scan
+KILL_WAIT_S = 10.0  # how long to wait for a SIGKILLed driver before giving up on it
 STOP_GRACE_S = 10.0  # how long a driver that was interrupted gets before it is killed
 PROBE_TIMEOUT_S = 10
 SPACE_MARGIN = 1.25  # the sweep needs this much free disk, beside the driver's own frames
@@ -264,6 +265,15 @@ _SIGNALLED: set[subprocess.Popen] = set()  # drivers this program told to stop: 
 _LIVE_LOCK = threading.RLock()  # re-entrant: the SIGTERM handler may interrupt a holder
 
 
+def _wait_after_kill(proc: subprocess.Popen) -> None:
+    """Wait a bounded time for a killed driver; one that will not die (stuck in the kernel)
+    is given up on, its interrupted marker kept, so the stop path never hangs."""
+    try:
+        proc.wait(timeout=KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        log.warning("driver process %s did not exit after SIGKILL; giving up waiting", proc.pid)
+
+
 def _stop_group(proc: subprocess.Popen) -> None:
     """Stop the driver and any helper it started: interrupt first (the driver handles Ctrl-C and
     fails closed), kill after a grace period, then sweep up stragglers in the process group.
@@ -281,7 +291,7 @@ def _stop_group(proc: subprocess.Popen) -> None:
                 continue
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
+                _wait_after_kill(proc)
                 break
     except (ProcessLookupError, PermissionError):
         pass
