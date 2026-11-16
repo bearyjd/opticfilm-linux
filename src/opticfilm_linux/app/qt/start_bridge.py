@@ -8,6 +8,7 @@ from PySide6.QtCore import QUrl, Slot
 
 from opticfilm_linux.app.prefs import batch_subfolder
 from opticfilm_linux.app.qt.selection import SelectionBridge
+from opticfilm_linux.batch.batch_name import guess_batch_name
 from opticfilm_linux.batch.guess import guess_batch
 from opticfilm_linux.batch.metadata import EstimatedDate
 from opticfilm_linux.batch.slots import slot_orientations
@@ -170,6 +171,7 @@ class StartBridge(SelectionBridge):
         folder = batch_subfolder(Path(QUrl(parent_url).toLocalFile()), name)
         self._pending.clear()
         self._opening = self._last_attempt = folder
+        self._pending_layout = (collection, album, section, section_size, box)
         self._controller.new_batch(
             folder,
             name.strip() or folder.name,
@@ -204,6 +206,11 @@ class StartBridge(SelectionBridge):
             "alternatives": [a.text() for a in guess.alternatives],
             "notes": list(guess.notes),
         }
+
+    @Slot(str, str, result=str)
+    def guessBatchName(self, text: str, folder_name: str) -> str:  # noqa: N802
+        """A proposed Name: the first phrase of the notes, else the folder's name; a pure guess."""
+        return guess_batch_name(text, folder_name)
 
     @Slot(str, result=str)
     def validateDate(self, text: str) -> str:  # noqa: N802

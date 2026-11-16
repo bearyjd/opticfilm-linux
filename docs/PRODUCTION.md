@@ -81,6 +81,14 @@ Date with the suggested year or year and month. It only fills fields you left em
 overwrite something you typed, use the separate **Replace my description** or **Replace my
 date** button. Nothing is saved until you press Create batch, and you can edit every field.
 
+The card also starts with guesses, all editable and never over something you typed: Collection,
+Album, Section and Slides per section come from your previous batch, and Box is the previous
+box plus one (1 on a first run). Name is the first phrase of the notes (it ends at the first
+comma, semicolon, new line, spaced dash, or a period followed by a capital letter, so `St. Louis`
+stays whole), else the chosen folder's name. It follows both your notes and the folder you pick,
+but only while it is empty or still the page's own last guess; once you edit it, it is yours.
+Clearing it lets the page fill it again.
+
 What it guesses (plain rules, English only, no network, no AI):
 
 - One year from 1900 to two years ago, as `1974` or `'74` (only when `'74` cannot also be 2074).

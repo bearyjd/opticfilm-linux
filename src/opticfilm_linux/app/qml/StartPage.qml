@@ -24,6 +24,7 @@ Kirigami.ScrollablePage {
     // and the chip is still offered (a rewrite can keep the date but drop its alternatives)
     property string guessDate: ""
     onGuessChanged: {
+        fillName();
         if (guess.date !== guessDate || (pendingDate !== "" && pendingDate !== guess.date && guess.alternatives.indexOf(pendingDate) < 0)) {
             guessDate = guess.date;
             pendingDate = guess.date;
@@ -46,9 +47,46 @@ Kirigami.ScrollablePage {
             descriptionField.text = guess.description;
         if (pendingDate !== "" && dateField.dateText === "")
             dateField.setDate(pendingDate);
+        fillName();
+    }
+    // The Name this page last filled in itself; a Name that still equals it is a guess, not typed
+    property string guessedName: ""
+    // Set once the form's fields exist; property handlers can fire while the page is still loading
+    property bool formReady: false
+    // True once the page has filled something in itself; shows the hint under the form
+    property bool prefilled: false
+    // Fills the Name only while it is empty or still our own earlier guess
+    function fillName() {
+        if (!formReady || (nameField.text !== "" && nameField.text !== guessedName))
+            return;
+        const parts = decodeURIComponent(parentFolder.toString()).split("/").filter(part => part !== "");
+        guessedName = bridge.guessBatchName(knowField.text, parts.length > 0 ? parts[parts.length - 1] : "");
+        nameField.text = guessedName;
+        if (guessedName !== "")
+            prefilled = true;
+    }
+    onParentFolderChanged: fillName()
+    // Starts from the previous batch's filing fields, only where a field is still at its default
+    function prefillFromLastBatch() {
+        if (collectionField.text === "")
+            collectionField.text = bridge.lastCollection;
+        if (albumField.text === "")
+            albumField.text = bridge.lastAlbum;
+        if (sectionField.text === "a" && bridge.lastSection !== "")
+            sectionField.text = bridge.lastSection;
+        if (sectionSizeField.value === 140 && bridge.lastSectionSize > 0)
+            sectionSizeField.value = bridge.lastSectionSize;
+        if (boxField.value === 1)
+            boxField.value = bridge.nextBox;
+        if (bridge.nextBox > 1)
+            prefilled = true;
     }
     onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
-    Component.onCompleted: exportFolder = bridge.lastExportFolder
+    Component.onCompleted: {
+        exportFolder = bridge.lastExportFolder;
+        prefillFromLastBatch();
+        formReady = true;
+    }
     background: Rectangle {
         color: Theme.window
     }
@@ -200,6 +238,15 @@ Kirigami.ScrollablePage {
                         }
                     }
                 }
+                QQC2.Label {
+                    objectName: "newBatchPrefillHint"
+                    visible: page.prefilled
+                    font.pixelSize: Theme.fontBody
+                    text: qsTr("Filled from your last batch and your notes; edit anything.")
+                    color: Theme.muted
+                    wrapMode: Text.WordWrap
+                    Layout.maximumWidth: Theme.gu * 24
+                }
                 QQC2.TextField {
                     id: nameField
                     objectName: "newBatchName"
@@ -273,6 +320,7 @@ Kirigami.ScrollablePage {
                 }
                 QQC2.TextField {
                     id: albumField
+                    objectName: "newBatchAlbum"
                     Kirigami.FormData.label: qsTr("Album:")
                     placeholderText: qsTr("Optional")
                 }

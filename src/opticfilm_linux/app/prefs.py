@@ -24,6 +24,13 @@ THEMES = ("dark", "light")
 EXPORT_FOLDER_KEY = "export_folder"
 EXPORT_FORMAT_KEY = "export_format"
 EXPORT_JPEG_SIZE_KEY = "export_jpeg_size"
+LAST_COLLECTION_KEY = "last_collection"
+LAST_ALBUM_KEY = "last_album"
+LAST_SECTION_KEY = "last_section"
+LAST_SECTION_SIZE_KEY = "last_section_size"
+LAST_BOX_KEY = "last_box"
+MAX_BOX = 999999  # the New batch Box field's upper limit
+MAX_SECTION_SIZE = 999  # and Slides per section's
 AUTO_EJECT_KEY = "workflow/auto_eject"
 SKIP_EMPTY_KEY = "workflow/skip_empty"
 AUTO_EXPORT_KEY = "workflow/auto_export_default"
@@ -111,6 +118,45 @@ def export_defaults(prefs: Prefs) -> ExportDefaults:
         format=cast(Format, fmt) if fmt in ("jpeg", "png8", "tiff16") else "jpeg",
         jpeg_size=cast(JpegSize, size) if size in ("full", "3600") else "3600",
     )
+
+
+@dataclass(frozen=True)
+class LayoutDefaults:
+    """Guesses for a new batch's filing fields from the previous batch; all editable."""
+
+    collection: str = ""
+    album: str = ""
+    section: str = ""
+    section_size: int = 0  # 0: none remembered, keep the form's own default
+    next_box: int = 1
+
+
+def _positive_int(text: str | None) -> int:
+    try:
+        value = int(text or "")
+    except ValueError:
+        return 0
+    return max(value, 0)
+
+
+def layout_defaults(prefs: Prefs) -> LayoutDefaults:
+    return LayoutDefaults(
+        collection=prefs.get(LAST_COLLECTION_KEY, "") or "",
+        album=prefs.get(LAST_ALBUM_KEY, "") or "",
+        section=prefs.get(LAST_SECTION_KEY, "") or "",
+        section_size=min(_positive_int(prefs.get(LAST_SECTION_SIZE_KEY)), MAX_SECTION_SIZE),
+        next_box=min(_positive_int(prefs.get(LAST_BOX_KEY)) + 1, MAX_BOX),
+    )
+
+
+def remember_layout(
+    prefs: Prefs, collection: str, album: str, section: str, section_size: int, box: int
+) -> None:
+    prefs.set(LAST_COLLECTION_KEY, collection)
+    prefs.set(LAST_ALBUM_KEY, album)
+    prefs.set(LAST_SECTION_KEY, section)
+    prefs.set(LAST_SECTION_SIZE_KEY, str(section_size))
+    prefs.set(LAST_BOX_KEY, str(box))
 
 
 def remember_export(prefs: Prefs, folder: str, fmt: Format, jpeg_size: JpegSize) -> None:
