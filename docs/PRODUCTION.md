@@ -83,9 +83,11 @@ date** button. Nothing is saved until you press Create batch, and you can edit e
 
 The card also starts with guesses, all editable and never over something you typed: Collection,
 Album, Section and Slides per section come from your previous batch, and Box is the previous
-box plus one (1 on a first run). Name is the first phrase of the notes (up to the first comma,
-period, semicolon or spaced dash), else the chosen folder's name; it keeps following your notes
-only while you have not edited it.
+box plus one (1 on a first run). Name is the first phrase of the notes (it ends at the first
+comma, semicolon, new line, spaced dash, or a period followed by a capital letter, so `St. Louis`
+stays whole), else the chosen folder's name. It follows both your notes and the folder you pick,
+but only while it is empty or still the page's own last guess; once you edit it, it is yours.
+Clearing it lets the page fill it again.
 
 What it guesses (plain rules, English only, no network, no AI):
 

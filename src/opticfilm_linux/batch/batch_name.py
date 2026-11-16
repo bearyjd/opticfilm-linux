@@ -13,9 +13,7 @@ MAX_NAME = 60
 # A phrase ends at a comma, semicolon, newline, spaced dash, or a sentence-ending period.
 _BOUNDARY = re.compile(r"[,;\r\n.]|\s[-–—]\s")
 _FOLDER_SEPARATORS = re.compile(r"[_\-/\\]+")
-_ABBREVIATIONS = frozenset(
-    "st mt dr mr mrs ms jr sr ft ave rd co vs etc no".split()
-)
+_ABBREVIATIONS = frozenset("st mt dr mr mrs ms jr sr ft ave rd co vs etc no".split())
 _ZWJ = "‍"
 
 
@@ -30,11 +28,7 @@ def _ends_sentence(text: str, at: int) -> bool:
     rest = text[at + 1 :]
     if not rest.strip():
         return True
-    return (
-        rest[0].isspace()
-        and rest.lstrip()[0].isupper()
-        and not _is_abbreviation(text[:at])
-    )
+    return rest[0].isspace() and rest.lstrip()[0].isupper() and not _is_abbreviation(text[:at])
 
 
 def _first_phrase(text: str) -> str:
