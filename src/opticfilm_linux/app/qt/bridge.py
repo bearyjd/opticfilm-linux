@@ -21,10 +21,12 @@ from opticfilm_linux.app.prefs import (
     Prefs,
     export_defaults,
     forget_batch,
+    layout_defaults,
     read_theme,
     recent_batches,
     remember_batch,
     remember_export,
+    remember_layout,
     remember_theme,
 )
 from opticfilm_linux.app.qt.destination import DestinationCheck
@@ -141,6 +143,7 @@ class Bridge(WorkflowBridge):
         self._pending: dict[tuple[int, int], dict[str, float]] = {}
         self._opening: Path | None = None
         self._last_attempt: Path | None = None
+        self._pending_layout: tuple[str, str, str, int, int] | None = None
         self._pending_export: tuple[int, str, str, str] | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
@@ -218,6 +221,9 @@ class Bridge(WorkflowBridge):
         if state.batch_name is not None and self._opening is not None:
             remember_batch(self._prefs, self._opening)
             self._opening = None
+            if self._pending_layout is not None:
+                remember_layout(self._prefs, *self._pending_layout)
+                self._pending_layout = None
         self.changed.emit()
         if replaced:
             self.batchReplaced.emit()
@@ -345,6 +351,13 @@ class Bridge(WorkflowBridge):
     lastExportJpegSize = _p(  # noqa: N815
         str, changed, lambda _s, b: export_defaults(b._prefs).jpeg_size
     )
+    lastCollection = _p(str, changed, lambda _s, b: layout_defaults(b._prefs).collection)  # noqa: N815
+    lastAlbum = _p(str, changed, lambda _s, b: layout_defaults(b._prefs).album)  # noqa: N815
+    lastSection = _p(str, changed, lambda _s, b: layout_defaults(b._prefs).section)  # noqa: N815
+    lastSectionSize = _p(  # noqa: N815
+        int, changed, lambda _s, b: layout_defaults(b._prefs).section_size
+    )
+    nextBox = _p(int, changed, lambda _s, b: layout_defaults(b._prefs).next_box)  # noqa: N815
     recentBatches = _p(  # noqa: N815
         "QVariantList",
         changed,
@@ -368,6 +381,7 @@ class Bridge(WorkflowBridge):
     @Slot(str, bool)
     def openBatch(self, path: str, readonly: bool) -> None:  # noqa: N802
         self._pending.clear()
+        self._pending_layout = None
         self._opening = self._last_attempt = Path(path)
         self._controller.open_batch(Path(path), readonly=readonly)
 
