@@ -9,6 +9,12 @@ Load & scan off. Leave auto-eject and Load & scan off until the last section.
 - [ ] Look at the scanner: a holder from an earlier session (tray 2) may still be loaded. If so,
       eject it first (**Eject holder** in the app, or `of135i eject` in a real terminal), and
       confirm it is released before anything else.
+- [ ] Running the driver by hand (`of135i load`, `eject`, a one-off `scan`)? The host `python3` on
+      this machine has no `pyusb`, so `python3 -m of135i ...` stops with
+      `ModuleNotFoundError: No module named 'usb'` before it touches the scanner. Run it inside the
+      dev container (`distrobox enter dev`, then `cd <repo>/.local-research/publish/driver-latest`,
+      `export OF135I_DIR=$PWD`, `python3 -c "import usb, numpy"` to check) in a real terminal. The
+      app does not need this; it starts the driver itself. (Found 2026-11-15.)
 - [ ] Update to main: `git -C <repo> checkout main && git -C <repo> pull`
 - [ ] Close the app, stop the watcher, run preflight (read-only; never scans, loads or ejects):
 ```sh
