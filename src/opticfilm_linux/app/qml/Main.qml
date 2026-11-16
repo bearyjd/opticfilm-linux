@@ -120,10 +120,12 @@ Kirigami.ApplicationWindow {
 
     onClosing: function (close) {
         const decision = bridge.closeRequested();
+        const forced = root.forceClose;
+        root.forceClose = false;  // Close anyway applies to this close only
         if (decision === "first_load_running" && !root.firstLoadQuitConfirmed) {
             close.accepted = false;
             firstLoadQuitDialog.open();
-        } else if (decision === "scan_running" && !root.forceClose) {
+        } else if (decision === "scan_running" && !forced) {
             close.accepted = false;
             waitDialog.open();
         }
@@ -148,7 +150,7 @@ Kirigami.ApplicationWindow {
         objectName: "waitDialog"
 
         title: qsTr("A scan is running")
-        subtitle: qsTr("A scan cannot be stopped safely. Wait for it to finish and then close, or keep working. Your accepted slides are already saved. The scanner will need a power-cycle check.")
+        subtitle: qsTr("A scan cannot be stopped safely. Wait for it to finish and then close, or keep working. Close anyway stops the scan; the tray being scanned must be rescanned. Accepted slides are already saved. The scanner will need a power-cycle check. Closing may take up to 20 seconds.")
         standardButtons: Kirigami.Dialog.NoButton
         customFooterActions: [
             Kirigami.Action {

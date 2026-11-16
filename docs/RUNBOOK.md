@@ -121,8 +121,9 @@ been tested with the fake device; propagation through distrobox/podman is unveri
 `~/.local/state/opticfilm-linux/logs/doctor-last-failure.log` (one file, overwritten, written
 only on failure); read it before power-cycling. Accepted slides are always already saved, and
 Export and Close batch work without the scanner. If a scan hangs, closing the window offers
-**Close anyway**: it stops the driver the normal way, marks the holder state unknown, deletes
-nothing and closes. The scanner then needs a power-cycle check as above.
+**Close anyway**: it stops the driver the normal way, marks the holder state unknown and closes
+(this can take up to 20 seconds). Close anyway stops the scan; the tray being scanned must be
+rescanned. Accepted slides are already saved. The scanner then needs a power-cycle check as above.
 
 ## Common problems
 

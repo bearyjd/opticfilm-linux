@@ -55,7 +55,7 @@ def test_flag_sentences(flag, text):
             "The scanner reports a problem. If a scan just failed or stopped, power-cycle it "
             "(off until the lights go out, then on), eject and load the holder again. If the app "
             'says the scanner driver was not found, see "How to load the scanner" / the README '
-            "(OPTICFILM_DRIVER_DIR). " + SAFE_WITHOUT_SCANNER,
+            "(OPTICFILM_DRIVER_DIR).",
         ),
     ],
 )
@@ -70,8 +70,13 @@ def test_the_safe_sentence_names_what_still_works():
 
 
 @pytest.mark.parametrize("status", [ScannerStatus.ERROR, ScannerStatus.INTERRUPTED])
-def test_a_scanner_trouble_text_says_the_work_is_safe(status):
-    assert scanner_text(status).endswith(SAFE_WITHOUT_SCANNER)
+def test_a_scanner_trouble_text_says_the_work_is_safe_when_a_batch_is_open(status):
+    assert scanner_text(status, batch_open=True).endswith(SAFE_WITHOUT_SCANNER)
+
+
+@pytest.mark.parametrize("status", [ScannerStatus.ERROR, ScannerStatus.INTERRUPTED])
+def test_a_scanner_trouble_text_makes_no_claim_without_a_batch(status):
+    assert SAFE_WITHOUT_SCANNER not in scanner_text(status)
 
 
 @pytest.mark.parametrize(
@@ -79,7 +84,7 @@ def test_a_scanner_trouble_text_says_the_work_is_safe(status):
     [s for s in ScannerStatus if s not in (ScannerStatus.ERROR, ScannerStatus.INTERRUPTED)],
 )
 def test_a_healthy_or_plain_status_text_does_not_say_it(status):
-    assert SAFE_WITHOUT_SCANNER not in scanner_text(status)
+    assert SAFE_WITHOUT_SCANNER not in scanner_text(status, batch_open=True)
 
 
 @pytest.mark.parametrize("message", ["Scanner error", "Scanner not responding"])

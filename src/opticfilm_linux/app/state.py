@@ -381,7 +381,7 @@ def _scanner_fields(
     idle = manifest is not None and holder_control and not (holder_busy or scan_pending or readonly)
     return {
         "scanner": scanner,
-        "scanner_text": scanner_text(scanner),
+        "scanner_text": scanner_text(scanner, batch_open=manifest is not None),
         "can_scan": manifest is not None
         and scanner is ScannerStatus.READY
         and holder_latch is not HolderLatch.RELEASED

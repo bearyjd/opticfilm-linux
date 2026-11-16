@@ -72,8 +72,12 @@ def test_a_different_error_after_an_earlier_one_does_write(tmp_path):
 def test_the_temporary_file_is_synced_before_it_replaces_the_log(tmp_path, monkeypatch):
     order = []
     real_fsync, real_replace = os.fsync, os.replace
-    monkeypatch.setattr(driver_module.os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd)))
-    monkeypatch.setattr(driver_module.os, "replace", lambda *a: (order.append("replace"), real_replace(*a)))
+    monkeypatch.setattr(
+        driver_module.os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd))
+    )
+    monkeypatch.setattr(
+        driver_module.os, "replace", lambda *a: (order.append("replace"), real_replace(*a))
+    )
     _scanner(tmp_path, lambda *a, **k: _Result(0, ERROR_REPORT)).status()
     assert order == ["fsync", "replace"]
 

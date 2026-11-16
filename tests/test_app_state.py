@@ -469,3 +469,26 @@ def test_other_banners_and_no_banner_offer_no_close_batch():
     assert _build(banner=Banner("Could not export")).banner_can_close is False
     assert _build().banner_can_close is False
     assert EMPTY_STATE.banner_can_close is False
+
+
+def test_the_scanner_error_text_claims_the_work_is_safe_only_with_a_batch_open():
+    from opticfilm_linux.app.messages import SAFE_WITHOUT_SCANNER
+
+    with_batch = _build(scanner=ScannerStatus.ERROR)
+    without = build_state(
+        None,
+        preview_tokens={},
+        scanner=ScannerStatus.ERROR,
+        scan_pending=False,
+        readonly=False,
+        selected=None,
+        updating=frozenset(),
+        progress={},
+        scan_started={},
+        now=0.0,
+        banner=None,
+        export=None,
+        free_space=None,
+    )
+    assert with_batch.scanner_text.endswith(SAFE_WITHOUT_SCANNER)
+    assert SAFE_WITHOUT_SCANNER not in without.scanner_text

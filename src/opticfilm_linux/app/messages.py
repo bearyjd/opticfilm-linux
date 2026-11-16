@@ -53,12 +53,12 @@ _SCANNER = {
         "The scanner reports a problem. If a scan just failed or stopped, power-cycle it "
         "(off until the lights go out, then on), eject and load the holder again. If the app "
         'says the scanner driver was not found, see "How to load the scanner" / the README '
-        "(OPTICFILM_DRIVER_DIR). " + SAFE_WITHOUT_SCANNER
+        "(OPTICFILM_DRIVER_DIR)."
     ),
     ScannerStatus.INTERRUPTED: (
         "A scan or holder move was cut off, so the scanner's state is unknown. Power-cycle it "
         "(off until the lights go out, then on), load the holder again, press Confirm scanner "
-        "reset, then rescan the interrupted tray. " + SAFE_WITHOUT_SCANNER
+        "reset, then rescan the interrupted tray."
     ),
 }
 
@@ -77,8 +77,12 @@ def stage_text(stage: TrayStage) -> str:
     return _STAGES[stage]
 
 
-def scanner_text(status: ScannerStatus) -> str:
-    return _SCANNER[status]
+def scanner_text(status: ScannerStatus, batch_open: bool = False) -> str:
+    """The status line. With a batch open, a scanner in trouble also says the work is safe."""
+    text = _SCANNER[status]
+    if batch_open and status in (ScannerStatus.ERROR, ScannerStatus.INTERRUPTED):
+        return f"{text} {SAFE_WITHOUT_SCANNER}"
+    return text
 
 
 def scanner_problem_text(message: str) -> str:

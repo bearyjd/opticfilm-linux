@@ -377,7 +377,7 @@ def test_wait_then_close_during_the_load_wait_does_not_reopen_and_closes_after(w
     assert scanner.scans == 1
 
 
-def test_close_anyway_closes_the_window_during_a_pending_scan(window):
+def test_close_anyway_closes_the_window_during_a_pending_scan(window, monkeypatch):
     bridge, root, scanner, _prefs = window()
     bridge.setLoadAndScan(True)
     _released(bridge, scanner)
@@ -388,10 +388,16 @@ def test_close_anyway_closes_the_window_during_a_pending_scan(window):
     root.close()
     QTest.qWait(50)
     assert _item(root, "waitDialog").property("visible")
+    seen = []
+    monkeypatch.setattr(  # the window must still be up when the driver is stopped
+        bridge._controller, "close_anyway", lambda: seen.append(root.isVisible())
+    )
     action = root.findChild(QObject, "closeAnywayAction")
     assert action is not None
     action.trigger(None)
     _wait(bridge, lambda: not root.isVisible(), timeout=20)
+    assert seen == [True]  # stopped first, then closed
+    assert not root.property("forceClose")  # used once, not left set
     assert scanner.scans == 0  # nothing was started by closing
 
 
