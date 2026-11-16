@@ -82,3 +82,27 @@ def test_random_strings_never_raise():
         assert isinstance(result, str) and len(result) <= MAX_NAME
         assert result == result.strip()
         assert not set(result) & set("/\\\x00\u202e\ud800")
+
+
+@pytest.mark.parametrize(
+    ("text", "folder"),
+    [
+        ("...", "x"),
+        ("..", "x"),
+        (".hidden", "x"),
+        ("../..", "x"),
+        ("..\\..", "x"),
+        (". . .", "x"),
+        (" .x", "x"),
+        ("", ".."),
+        ("", "..."),
+    ],
+)
+def test_a_name_never_starts_with_a_dot_so_it_cannot_become_the_parent_folder(text, folder):
+    result = guess_batch_name(text, folder)
+    assert not result.startswith(".")
+    assert result in ("", result.strip())
+
+
+def test_a_name_that_starts_with_dots_keeps_the_rest():
+    assert guess_batch_name(".hidden roll", "x") == "hidden roll"

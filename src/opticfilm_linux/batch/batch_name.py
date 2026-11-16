@@ -50,7 +50,7 @@ def _clean(text: str) -> str:
         for ch in text.replace("/", " ").replace("\\", " ")
         if ch.isspace() or ch == _ZWJ or unicodedata.category(ch) not in ("Cc", "Cf", "Cs")
     )
-    return " ".join(kept.split())
+    return " ".join(kept.split()).lstrip(". ")  # no leading dots: '..' must not name a folder
 
 
 def _is_joiner(ch: str) -> bool:
