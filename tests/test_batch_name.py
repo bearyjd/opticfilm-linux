@@ -25,16 +25,47 @@ from opticfilm_linux.batch.batch_name import MAX_NAME, guess_batch_name
         ("  , ; ", "  Mimi__Foundry - Work ", "Mimi Foundry Work"),
         ("", "", ""),
         ("  ", " _- ", ""),
+        ("St. Louis trip 1974", "x", "St. Louis trip 1974"),
+        ("Mt. Desert Island, Maine", "x", "Mt. Desert Island"),
+        ("Dr. Smith. Dinner party", "x", "Dr. Smith"),
+        ("J. Smith wedding", "x", "J. Smith wedding"),
+        ("Lake trip.", "x", "Lake trip"),
+        ("Lake trip. summer 1974", "x", "Lake trip. summer 1974"),
+        ("Christmas 12/25/74", "x", "Christmas 12 25 74"),
+        ("Mom/Dad 1974", "x", "Mom Dad 1974"),
+        ("a\\b", "x", "a b"),
+        (", Maine", "x", "Maine"),
+        ("   \t\n ", "", ""),
+        ("   \t\n ", "Mimi_Work", "Mimi Work"),
+        ("\u202eMaine\u202c trip", "x", "Maine trip"),
+        ("Ma\x00ine trip", "x", "Maine trip"),
+        ("lone \ud800 surrogate", "x", "lone surrogate"),
+        ("", "a/b\\c", "a b c"),
     ],
 )
 def test_phrases_and_folder_fallback(text, folder, expected):
     assert guess_batch_name(text, folder) == expected
 
 
-def test_a_5000_char_paste_is_capped():
+def test_a_5000_char_paste_is_cut_at_a_word_boundary():
     result = guess_batch_name("word " * 1000, "folder")
-    assert 0 < len(result) <= MAX_NAME
-    assert result == result.strip()
+    assert result == " ".join(["word"] * 12)[:59] and len(result) <= MAX_NAME
+
+
+def test_a_word_longer_than_the_cap_is_cut_hard():
+    assert guess_batch_name("x" * 5000, "") == "x" * MAX_NAME
+
+
+def test_the_cap_never_splits_a_combining_sequence():
+    assert guess_batch_name("a" * 59 + "e\u0301", "") == "a" * 59
+
+
+def test_the_cap_never_splits_a_zwj_emoji():
+    family = "\U0001f468\u200d\U0001f469\u200d\U0001f467"
+    result = guess_batch_name("a" * 59 + family, "")
+    assert result == "a" * 59
+    result = guess_batch_name("a" * 58 + family, "")
+    assert not result.endswith("\u200d") and len(result) <= MAX_NAME
 
 
 def test_a_long_folder_name_is_capped():
@@ -50,3 +81,4 @@ def test_random_strings_never_raise():
         result = guess_batch_name(text, folder)
         assert isinstance(result, str) and len(result) <= MAX_NAME
         assert result == result.strip()
+        assert not set(result) & set("/\\\x00\u202e\ud800")

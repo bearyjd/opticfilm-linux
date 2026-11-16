@@ -30,6 +30,7 @@ LAST_SECTION_KEY = "last_section"
 LAST_SECTION_SIZE_KEY = "last_section_size"
 LAST_BOX_KEY = "last_box"
 MAX_BOX = 999999  # the New batch Box field's upper limit
+MAX_SECTION_SIZE = 999  # and Slides per section's
 AUTO_EJECT_KEY = "workflow/auto_eject"
 SKIP_EMPTY_KEY = "workflow/skip_empty"
 AUTO_EXPORT_KEY = "workflow/auto_export_default"
@@ -143,7 +144,7 @@ def layout_defaults(prefs: Prefs) -> LayoutDefaults:
         collection=prefs.get(LAST_COLLECTION_KEY, "") or "",
         album=prefs.get(LAST_ALBUM_KEY, "") or "",
         section=prefs.get(LAST_SECTION_KEY, "") or "",
-        section_size=_positive_int(prefs.get(LAST_SECTION_SIZE_KEY)),
+        section_size=min(_positive_int(prefs.get(LAST_SECTION_SIZE_KEY)), MAX_SECTION_SIZE),
         next_box=min(_positive_int(prefs.get(LAST_BOX_KEY)) + 1, MAX_BOX),
     )
 

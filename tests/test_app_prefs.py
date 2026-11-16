@@ -156,3 +156,15 @@ def test_a_corrupt_stored_box_or_size_falls_back_to_the_first_run_values(junk):
     prefs.set(preferences.LAST_SECTION_SIZE_KEY, junk)
     defaults = layout_defaults(prefs)
     assert (defaults.section_size, defaults.next_box) == (0, 1)
+
+
+def test_a_huge_stored_box_is_capped_at_the_form_limit():
+    prefs = MemoryPrefs()
+    prefs.set(preferences.LAST_BOX_KEY, "99999999")
+    assert layout_defaults(prefs).next_box == preferences.MAX_BOX == 999999
+
+
+def test_a_huge_stored_section_size_is_capped_at_the_form_limit():
+    prefs = MemoryPrefs()
+    prefs.set(preferences.LAST_SECTION_SIZE_KEY, "99999999")
+    assert layout_defaults(prefs).section_size == preferences.MAX_SECTION_SIZE == 999
