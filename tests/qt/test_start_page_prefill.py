@@ -146,7 +146,14 @@ def test_creating_a_batch_remembers_its_filing_fields(fresh, tmp_path):
 
 def test_a_failed_create_remembers_nothing(fresh, tmp_path):
     bridge = fresh[0]
-    bridge.newBatch(QUrl.fromLocalFile(str(tmp_path)).toString(), "Bad", "", "not a date", 600,
-                    collection="Nope", box=7)
+    bridge.newBatch(
+        QUrl.fromLocalFile(str(tmp_path)).toString(),
+        "Bad",
+        "",
+        "not a date",
+        600,
+        collection="Nope",
+        box=7,
+    )
     smoke._wait(bridge, lambda: bridge.hasBanner)
     assert layout_defaults(bridge._prefs).next_box == 1
