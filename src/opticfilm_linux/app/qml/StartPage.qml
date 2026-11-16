@@ -53,6 +53,8 @@ Kirigami.ScrollablePage {
     property string guessedName: ""
     // Set once the form's fields exist; property handlers can fire while the page is still loading
     property bool formReady: false
+    // True once the page has filled something in itself; shows the hint under the form
+    property bool prefilled: false
     // Fills the Name only while it is empty or still our own earlier guess
     function fillName() {
         if (!formReady || (nameField.text !== "" && nameField.text !== guessedName))
@@ -60,6 +62,8 @@ Kirigami.ScrollablePage {
         const parts = decodeURIComponent(parentFolder.toString()).split("/").filter(part => part !== "");
         guessedName = bridge.guessBatchName(knowField.text, parts.length > 0 ? parts[parts.length - 1] : "");
         nameField.text = guessedName;
+        if (guessedName !== "")
+            prefilled = true;
     }
     onParentFolderChanged: fillName()
     // Starts from the previous batch's filing fields, only where a field is still at its default
@@ -74,6 +78,8 @@ Kirigami.ScrollablePage {
             sectionSizeField.value = bridge.lastSectionSize;
         if (boxField.value === 1)
             boxField.value = bridge.nextBox;
+        if (bridge.nextBox > 1)
+            prefilled = true;
     }
     onAutomaticExportInputsChanged: bridge.checkAutomaticExport(...automaticExportInputs)
     Component.onCompleted: {
@@ -234,6 +240,7 @@ Kirigami.ScrollablePage {
                 }
                 QQC2.Label {
                     objectName: "newBatchPrefillHint"
+                    visible: page.prefilled
                     font.pixelSize: Theme.fontBody
                     text: qsTr("Filled from your last batch and your notes; edit anything.")
                     color: Theme.muted
