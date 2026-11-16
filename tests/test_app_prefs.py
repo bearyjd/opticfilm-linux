@@ -10,10 +10,12 @@ from opticfilm_linux.app.prefs import (
     RecentBatch,
     batch_subfolder,
     export_defaults,
+    layout_defaults,
     forget_batch,
     recent_batches,
     remember_batch,
     remember_export,
+    remember_layout,
 )
 
 
@@ -131,3 +133,26 @@ def test_export_preferences_keep_legacy_choices_and_ignore_corrupt_enums():
     prefs.set("export_jpeg_size", "unknown")
     defaults = export_defaults(prefs)
     assert (defaults.format, defaults.jpeg_size) == ("jpeg", "3600")
+
+
+def test_layout_defaults_on_a_first_run_start_the_box_at_one():
+    defaults = layout_defaults(MemoryPrefs())
+    assert (defaults.collection, defaults.album, defaults.section) == ("", "", "")
+    assert (defaults.section_size, defaults.next_box) == (0, 1)
+
+
+def test_layout_round_trips_and_the_next_box_follows_the_last():
+    prefs = MemoryPrefs()
+    remember_layout(prefs, "Family", "Maine", "b", 120, 3)
+    defaults = layout_defaults(prefs)
+    assert (defaults.collection, defaults.album, defaults.section) == ("Family", "Maine", "b")
+    assert (defaults.section_size, defaults.next_box) == (120, 4)
+
+
+@pytest.mark.parametrize("junk", ["", "x", "-5", "0", "1.5"])
+def test_a_corrupt_stored_box_or_size_falls_back_to_the_first_run_values(junk):
+    prefs = MemoryPrefs()
+    prefs.set(preferences.LAST_BOX_KEY, junk)
+    prefs.set(preferences.LAST_SECTION_SIZE_KEY, junk)
+    defaults = layout_defaults(prefs)
+    assert (defaults.section_size, defaults.next_box) == (0, 1)
