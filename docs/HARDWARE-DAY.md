@@ -25,11 +25,17 @@ python3 <repo>/scripts/hardware/preflight.py \
   Needs GO. Any FAIL: stop and read the line.
 - [ ] Start the app (PRODUCTION.md section 1, unverified on this day's build):
 ```sh
-distrobox-host-exec env PYTHONPATH=<repo>/src \
+env PYTHONPATH=<repo>/src \
   OPTICFILM_DRIVER_DIR=<repo>/.local-research/publish/driver-latest \
   OPTICFILM_DRIVER_RUNNER=host \
-  python3 -c "from opticfilm_linux.app.qt.app import main; raise SystemExit(main())"
+  /usr/bin/python3 -c "from opticfilm_linux.app.qt.app import main; raise SystemExit(main())"
 ```
+  Run it in a host terminal, not the dev container: on the host the folder pickers are KDE's own
+  dialog (Dolphin keystrokes); in the container they fall back to a plain Qt dialog. One-time
+  setup on this machine (host Python 3.15 has PySide6 but not these):
+  `/usr/bin/python3 -m pip install --user --only-binary=:all: pyusb numpy tifffile 'opencv-python-headless<5'`.
+  If a Fedora update changes the Python minor version, run that line again. (Verified 2026-11-15:
+  the app loads and Browse shows the KDE dialog; scanning from the host is not yet verified.)
 - [ ] New batch outside the repo, on disk (not `/tmp`). Export folder set. dpi 3600.
 - [ ] Guess box, for example `Maine trip, summer 1974, Kodachrome` then **Use suggestion**
       (or Ctrl+Enter). Check the date it fills; edit it if wrong.
