@@ -75,7 +75,8 @@ def test_a_scanner_trouble_text_says_the_work_is_safe(status):
 
 
 @pytest.mark.parametrize(
-    "status", [s for s in ScannerStatus if s not in (ScannerStatus.ERROR, ScannerStatus.INTERRUPTED)]
+    "status",
+    [s for s in ScannerStatus if s not in (ScannerStatus.ERROR, ScannerStatus.INTERRUPTED)],
 )
 def test_a_healthy_or_plain_status_text_does_not_say_it(status):
     assert SAFE_WITHOUT_SCANNER not in scanner_text(status)

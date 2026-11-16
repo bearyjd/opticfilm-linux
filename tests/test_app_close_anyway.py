@@ -4,8 +4,8 @@ import threading
 
 from controller_helpers import open_new, wait_until
 from opticfilm_linux.app.controller import Controller
-from opticfilm_linux.scanner.holder_latch import HolderLatch
 from opticfilm_linux.scanner.fake import FakeScanner
+from opticfilm_linux.scanner.holder_latch import HolderLatch
 
 
 class StoppableScanner(FakeScanner):

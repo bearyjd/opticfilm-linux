@@ -58,6 +58,7 @@ OUTPUT_TAIL_BYTES = 64 * 1024  # all that is kept in memory of a driver run; the
 KEEP_LOGS = 30
 PROTECT_LOG_S = 3600  # a log this recent may belong to a scan still running: never pruned
 DOCTOR_TAIL_BYTES = 1 << 20
+DOCTOR_FAILURE_LOG = "doctor-last-failure.log"  # the one file the last failed status check fills
 HEAD_BYTES = 8192  # the driver prints the USB address it opened on its first lines
 LOCK_POLL_S = 0.2
 LOCK_WAIT_S = STATUS_TIMEOUT_S + 2  # outlasts one status check by the app, never a scan
@@ -324,7 +325,11 @@ def _read_tail(path: Path, limit: int = OUTPUT_TAIL_BYTES) -> str:
 def _prune_logs(directory: Path) -> None:
     """Keep the newest logs; older ones go, but nothing recent (it may still be written to)."""
     now = time.time()
-    logs = sorted(directory.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    logs = sorted(
+        (p for p in directory.glob("*.log") if p.name != DOCTOR_FAILURE_LOG),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     for old in logs[KEEP_LOGS:]:
         if now - old.stat().st_mtime > PROTECT_LOG_S:
             old.unlink(missing_ok=True)
@@ -731,11 +736,15 @@ class DriverScanner:
         try:
             self._require_driver()
             result = self._run(["doctor"], STATUS_TIMEOUT_S, keep_log=False, tail=DOCTOR_TAIL_BYTES)
-        except ScanError:
+        except ScanError as exc:
+            self._keep_doctor_failure(str(exc))
             return StatusReading(ScannerStatus.ERROR)
         status = parse_doctor(result.output)
         if result.returncode != 0 and status is ScannerStatus.READY:
+            self._keep_doctor_failure(result.output)
             return StatusReading(ScannerStatus.ERROR)  # a failing report is not a ready scanner
+        if status in (ScannerStatus.ERROR, ScannerStatus.NOT_CONNECTED):
+            self._keep_doctor_failure(result.output)
         if self._needs_power_cycle:
             address = re.search(r"addr=(\d+)", result.output)
             moved = bool(
@@ -748,6 +757,28 @@ class DriverScanner:
         if status not in BUTTON_STATUSES:
             return StatusReading(status)  # a press seen with anything else going on is not acted on
         return StatusReading(status, parse_doctor_button(result.output))
+
+    def _keep_doctor_failure(self, output: str) -> None:
+        """Evidence for a lost scanner: the last failed status output, in one file that is
+        replaced each time (never grows). Never raises: a missing log must not hide the status."""
+        directory = self._config.log_dir
+        if directory is None:
+            return
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        body = output.encode("utf-8", errors="replace")[-DOCTOR_TAIL_BYTES:]
+        temporary = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            handle, temporary = tempfile.mkstemp(dir=directory, prefix=".doctor-failure-")
+            with os.fdopen(handle, "wb") as sink:
+                sink.write(f"# doctor failed {stamp}\n".encode() + body)
+            os.replace(temporary, directory / DOCTOR_FAILURE_LOG)
+            temporary = None
+        except OSError:
+            log.warning("could not keep the failed doctor output in %s", directory, exc_info=True)
+        finally:
+            if temporary is not None:
+                Path(temporary).unlink(missing_ok=True)
 
     def _run(
         self, args: Sequence[str], timeout: int, keep_log: bool, tail: int = OUTPUT_TAIL_BYTES
