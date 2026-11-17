@@ -398,9 +398,8 @@ the line `GO (scanner state NOT verified)`.
 
 Messages the app shows (from `app/messages.py`):
 
-- "Scanner is not loaded. Between trays, press Load next holder. After power-on, open
-  'How to load the scanner' for the first terminal load." This text is older than the in-app
-  load step. Follow section 2.1.
+- "Scanner is not loaded. Between trays, press Load next holder. After power-on, press First
+  load."
 - "The scanner stopped this scan. Power-cycle it (off until the lights go out, then on), eject,
   load the holder again and rescan this tray."
 - "Could not eject the holder." or "Could not load the next holder." Switch off until the lights
