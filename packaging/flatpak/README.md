@@ -1,8 +1,7 @@
 # Flatpak (draft)
 
-`io.github.bearyjd.OpticFilmLinux.json` describes the app as a Flatpak. It is a draft: it is **not
-buildable yet** because the app commit (`PLACEHOLDER_COMMIT_APP`) is only pinned in the last
-PR. The Python wheels are pinned (below). The test `tests/test_flatpak_manifest.py` lints
+`io.github.bearyjd.OpticFilmLinux.json` describes the app as a Flatpak. It is a draft: every source
+is now pinned (the app at main commit `55ebc04`, the driver, and the Python wheels below). The test `tests/test_flatpak_manifest.py` lints
 the manifest offline and runs `flatpak-builder --show-manifest` on it when that tool is installed.
 No build has been run (not built). `flatpak-builder` is installed here; only the offline `--show-manifest` check in the test was run, no real build or download.
 
@@ -44,10 +43,9 @@ No build has been run (not built). `flatpak-builder` is installed here; only the
   manifest to the standard `share/` paths. The test `tests/test_flatpak_packaging_files.py` lints
   them and runs `desktop-file-validate` and `appstreamcli validate --no-net` when installed.
   No build has been run, so the install commands themselves are unexercised.
-- No REVISION file: the manifest does not reference one. The app commit pin is still
-  `PLACEHOLDER_COMMIT_APP` and is set by hand in the last PR (it must contain these packaging
-  files).
-- Still missing before this is a complete package: the app commit pin, a first real
+- No REVISION file: the manifest does not reference one. The app commit pin is a real
+  main commit (it must contain these packaging files); bump it by hand when they change.
+- Still missing before this is a complete package: a first real
   `flatpak-builder` run, and a check of what the driver needs at runtime (it is copied as is,
   nothing is built).
 - Scanning from inside the Flatpak is unverified, as is the whole sandbox path above.
