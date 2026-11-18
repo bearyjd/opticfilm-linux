@@ -271,9 +271,18 @@ def test_wheel_set_is_pyproject_deps_plus_pyusb_without_numpy():
     assert names == WHEELS
 
 
-def test_only_the_app_commit_is_still_a_placeholder():
-    text = MANIFEST.read_text()
-    assert sorted(set(PLACEHOLDER.findall(text))) == ["PLACEHOLDER_COMMIT_APP"]
+def test_manifest_has_no_placeholders_left():
+    assert PLACEHOLDER.findall(MANIFEST.read_text()) == []
+
+
+def test_app_source_is_pinned_to_a_real_commit():
+    manifest = json.loads(MANIFEST.read_text())
+    apps = [
+        s
+        for s in sources(manifest)
+        if s["type"] == "git" and s["url"].endswith("/opticfilm-linux.git")
+    ]
+    assert len(apps) == 1 and COMMIT.fullmatch(apps[0]["commit"])
 
 
 def test_pin_provenance_and_numpy_finding_are_recorded():
@@ -281,9 +290,9 @@ def test_pin_provenance_and_numpy_finding_are_recorded():
     assert "2026-11" in notes and "PyPI" in notes and "numpy 2.3.5" in notes
 
 
-def test_unpinned_placeholders_are_declared_in_the_notes():
-    manifest = json.loads(MANIFEST.read_text())
-    assert any("PLACEHOLDER" in n and "NOT BUILDABLE" in n for n in manifest["x-notes"])
+def test_notes_do_not_claim_the_manifest_is_unbuildable():
+    notes = " ".join(json.loads(MANIFEST.read_text())["x-notes"])
+    assert "NOT BUILDABLE" not in notes
 
 
 @pytest.mark.skipif(shutil.which("flatpak-builder") is None, reason="flatpak-builder not installed")
