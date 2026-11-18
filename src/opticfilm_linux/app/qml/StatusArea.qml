@@ -340,7 +340,7 @@ QQC2.ScrollView {
                 implicitHeight: loadNextButton.implicitHeight
                 QQC2.ToolTip.visible: loadNextHover.hovered
                 QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Load the next holder after the first terminal load.") + " " + qsTr("Key: L.") : qsTr("Switched off by OPTICFILM_NEXT_STRIP. Unset it and restart the app to enable loading the next holder.") + " " + qsTr("If the scanner was just switched on, use the terminal steps instead; the driver refuses this and nothing is sent.")
+                QQC2.ToolTip.text: bridge.nextStripEnabled ? qsTr("Load the next holder after the first load.") + " " + qsTr("Key: L.") : qsTr("Switched off by OPTICFILM_NEXT_STRIP. Unset it and restart the app to enable loading the next holder.") + " " + qsTr("If the scanner was just switched on, press First load instead; the driver refuses this and nothing is sent.")
 
                 HoverHandler {
                     id: loadNextHover
