@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from opticfilm_linux.batch import cleanup_recovery, review
 from opticfilm_linux.batch import export as exports
-from opticfilm_linux.batch import review
 from opticfilm_linux.batch.manifest import from_json, to_json
 from opticfilm_linux.batch.model import (
     BatchDefaults,
@@ -49,7 +49,9 @@ def store(tmp_path, monkeypatch):
         folder = opened.sweep_dir(i, 1)
         folder.mkdir(parents=True)
         (folder / "raw").write_bytes(b"valuable raw")
-    monkeypatch.setattr(exports, "load_sweep", lambda _: type("Sweep", (), {"dpi": 7200})())
+    sweep = lambda _: type("Sweep", (), {"dpi": 7200})()  # noqa: E731
+    monkeypatch.setattr(exports, "load_sweep", sweep)
+    monkeypatch.setattr(cleanup_recovery, "load_sweep", sweep)
     slides = [
         Slide(
             i - 1,
@@ -59,7 +61,9 @@ def store(tmp_path, monkeypatch):
         )
         for i in (1, 2, 3)
     ]
-    monkeypatch.setattr(exports, "split_positions", lambda _: dict(enumerate(slides, start=1)))
+    split = lambda _: dict(enumerate(slides, start=1))  # noqa: E731
+    monkeypatch.setattr(exports, "split_positions", split)
+    monkeypatch.setattr(cleanup_recovery, "split_positions", split)
     monkeypatch.setattr(exports, "enhance_slide", lambda slide, *_: slide.rgb)
     yield opened
     opened.close()

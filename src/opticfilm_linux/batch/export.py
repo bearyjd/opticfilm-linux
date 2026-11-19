@@ -25,7 +25,6 @@ import hashlib
 import os
 import shutil
 import threading
-import weakref
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +40,17 @@ from opticfilm_linux.batch.cleanup_recovery import (
 )
 from opticfilm_linux.batch.cleanup_recovery import (
     recover_interrupted_cleanup as recover_interrupted_cleanup,
+)
+from opticfilm_linux.batch.cleanup_state import (
+    CLEANUP_LOCK,
+    PENDING_CLEANUP_RESETS,
+    CleanupPolicyRefused,
+    CleanupRefused,
+    CleanupRetryRequired,
+    ExportVerificationFailed,
+    checked_sweep_folders,
+    checked_sweep_versions,
+    tray_of,
 )
 from opticfilm_linux.batch.empty import check_raw_coverage, is_empty_confirmed, scanned_slides
 from opticfilm_linux.batch.enhance import RawRemoved, options_for, require_scanned
@@ -87,22 +97,13 @@ from opticfilm_linux.pipeline.split import split_positions
 from opticfilm_linux.provenance import raw_region_sha256
 from opticfilm_linux.sweepstore import load_sweep
 
-_CLEANUP_LOCK = threading.Lock()
-_PENDING_CLEANUP_RESETS: weakref.WeakKeyDictionary[
-    BatchStore, dict[int, tuple[BatchManifest, bool]]
-] = weakref.WeakKeyDictionary()
-
-
-class CleanupRefused(BatchError):
-    """Raw scans were not removed: the tray is not exported, or a path looked unsafe."""
-
-
-class CleanupPolicyRefused(CleanupRefused):
-    """Cleanup must wait for owner policy, review, or an unfinished application action."""
-
-
-class CleanupRetryRequired(CleanupRefused):
-    """Fresh evidence was superseded by a concurrent change; retry from a new snapshot."""
+# Aliases of the shared objects in cleanup_state (same objects, never copies); the private
+# names stay so export's own flows can be patched through this module.
+_CLEANUP_LOCK = CLEANUP_LOCK
+_PENDING_CLEANUP_RESETS = PENDING_CLEANUP_RESETS
+_checked_sweep_folders = checked_sweep_folders
+_checked_sweep_versions = checked_sweep_versions
+_tray = tray_of
 
 
 @dataclass(frozen=True)
@@ -121,10 +122,6 @@ class ExportResult:
 class FreeableTray:
     number: int
     bytes: int
-
-
-def _tray(manifest: BatchManifest, number: int) -> TrayRecord:
-    return next(t for t in manifest.trays if t.number == number)
 
 
 def _mark_exported(
@@ -369,14 +366,6 @@ def export_batch(
     return ExportResult(written=tuple(written))
 
 
-class ExportVerificationFailed(BatchError):
-    """A particular slide failed its durable export verification."""
-
-    def __init__(self, number: int, position: int, reason: Exception):
-        self.position = position
-        super().__init__(f"tray {number} slide {position}: verification failed: {reason}")
-
-
 MIN_JPEG_BYTES = 512
 
 
@@ -436,20 +425,6 @@ def _folder_size(path: Path) -> int:
     return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
 
-def _checked_sweep_folders(store: BatchStore, number: int) -> list[Path]:
-    root = store.directory.resolve()
-    tray_dir = store.tray_dir(number)
-    if tray_dir.is_symlink() or not tray_dir.resolve().is_relative_to(root):
-        raise CleanupRefused(f"tray folder {tray_dir} is a symlink or outside the batch")
-    folders = sorted(tray_dir.glob("sweep-*"))
-    for path in folders:
-        if path.is_symlink():
-            raise CleanupRefused(f"{path} is a symlink; refusing to delete through it")
-        if not path.is_dir() or not path.resolve().is_relative_to(root):
-            raise CleanupRefused(f"{path} is not a sweep folder inside the batch")
-    return folders
-
-
 def _half_cleaned(store: BatchStore, tray: TrayRecord) -> bool:
     """Marked removed by a cleanup that did not finish: its sweep folders are still there."""
     return tray.raw_removed and any(store.tray_dir(tray.number).glob("sweep-*"))
@@ -467,18 +442,6 @@ def _safe_receipt_paths(store: BatchStore, tray: TrayRecord) -> None:
                 raise CleanupRefused(
                     "export is inside the batch; move/re-export it before freeing raw"
                 )
-
-
-def _checked_sweep_versions(tray: TrayRecord, folders: tuple[Path, ...]) -> None:
-    if any(
-        not p.name.removeprefix("sweep-").isdigit()
-        or int(p.name.removeprefix("sweep-")) > tray.sweep_version
-        for p in folders
-    ):
-        raise CleanupRefused("raw sweep versions changed; re-export before freeing raw")
-    if tray.raw_removed and tray.cleanup_sweeps:
-        if any(int(p.name.removeprefix("sweep-")) not in tray.cleanup_sweeps for p in folders):
-            raise CleanupRefused("unverified raw sweep appeared during interrupted removal")
 
 
 def _verify_raw(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) -> None:
@@ -609,7 +572,7 @@ def _verify_release_evidence(manifest: BatchManifest, tray: TrayRecord) -> None:
 def release_first_tray(store: BatchStore, number: int) -> None:
     """Approve current JPEG settings using the first tray, or one surviving its removal."""
     with _CLEANUP_LOCK:
-        _retry_cleanup_resets(store)
+        retry_cleanup_resets(store)
         evidence = store.snapshot()
         if not _release_candidate(evidence, number):
             raise CleanupRefused("only the first tray can release automatic cleanup")
@@ -685,7 +648,7 @@ def check_cleanup_allowed(
     _recheck_released_raw(store, manifest, number)
     _cleanup_policy(manifest, number, release_first=release_first)
     if tray.raw_removed:
-        _check_interrupted_cleanup(store, tray)
+        _check_interrupted_cleanup(store, tray, _checked_snapshot)
         return tray
     if tray.stage is not TrayStage.EXPORTED:
         raise CleanupPolicyRefused(
@@ -707,7 +670,7 @@ def cleanup_raw(store: BatchStore, number: int, *, release_first: bool = False) 
 
 
 def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
-    _retry_cleanup_resets(store)
+    retry_cleanup_resets(store)
     tray = check_cleanup_allowed(store, number, release_first=release_first)
     folders = tuple(_checked_sweep_folders(store, number))
     freed = sum(_folder_size(path) for path in folders)
@@ -717,7 +680,7 @@ def _cleanup_raw(store: BatchStore, number: int, *, release_first: bool) -> int:
     return freed + drop_turn_masters(store, number)
 
 
-def _retry_cleanup_resets(store: BatchStore) -> None:
+def retry_cleanup_resets(store: BatchStore) -> None:
     """Reset known-invalid cleanup and release markers before any cleanup or approval."""
     pending = _PENDING_CLEANUP_RESETS.get(store, {})
     for number, (before, release_first) in tuple(pending.items()):
@@ -766,7 +729,9 @@ def freeable_trays(store: BatchStore, *, release_first: bool = False) -> tuple[F
     found = []
     for tray in store.snapshot().trays:
         candidate = _still_freeable(tray) or _half_cleaned(store, tray)
-        if candidate and _cleanup_listable(store, tray.number, release_first=release_first):
+        if candidate and _cleanup_listable(
+            store, tray.number, check_allowed=check_cleanup_allowed, release_first=release_first
+        ):
             size = sum(_folder_size(p) for p in _checked_sweep_folders(store, tray.number))
             size += turn_masters_size(store, tray.number)
             found.append(FreeableTray(number=tray.number, bytes=size))
