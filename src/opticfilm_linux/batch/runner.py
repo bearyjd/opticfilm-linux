@@ -21,6 +21,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 
 from opticfilm_linux.batch import export, review
+from opticfilm_linux.batch.cleanup_state import CLEANUP_LOCK
 from opticfilm_linux.batch.enhance import enhance_tray, reenhance_slide
 from opticfilm_linux.batch.events import (
     BatchEvent,
@@ -185,16 +186,16 @@ class BatchRunner:
 
         with self._scan_guard:
             self._require_no_scan_pending()
-            if not export._CLEANUP_LOCK.acquire(blocking=False):
+            if not CLEANUP_LOCK.acquire(blocking=False):
                 raise BatchError("raw scans are being removed; try rescan after cleanup finishes")
             try:
-                export._retry_cleanup_resets(self._store)
+                export.retry_cleanup_resets(self._store)
                 self._store.update(lambda manifest: _restart_rescan(manifest, tray, skipped))
                 drop_skipped_previews(self._store, number, skipped)
                 self._emit(TrayStageChanged(number, TrayStage.SCANNING))
                 self._submit(self._scan_pool, self._scan_job, number, scan=True)
             finally:
-                export._CLEANUP_LOCK.release()
+                CLEANUP_LOCK.release()
         return number
 
     def resume(self) -> None:

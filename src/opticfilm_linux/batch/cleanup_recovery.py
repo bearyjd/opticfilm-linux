@@ -13,24 +13,37 @@ recovery returns the tray to review and requires fresh exports and release appro
 
 import dataclasses
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 
+from opticfilm_linux.batch.cleanup_state import (
+    CLEANUP_LOCK,
+    PENDING_CLEANUP_RESETS,
+    CleanupPolicyRefused,
+    CleanupRefused,
+    CleanupRetryRequired,
+    ExportVerificationFailed,
+    checked_sweep_folders,
+    checked_sweep_versions,
+    tray_of,
+)
 from opticfilm_linux.batch.empty import check_raw_coverage, scanned_slides
+from opticfilm_linux.batch.export_contract import _release_candidate, _release_defaults
 from opticfilm_linux.batch.metadata import without_meta
 from opticfilm_linux.batch.model import BatchManifest, SlideStatus, TrayRecord, TrayStage
-from opticfilm_linux.batch.store import BatchStore
+from opticfilm_linux.batch.store import BatchError, BatchStore
+from opticfilm_linux.pipeline.split import split_positions
 from opticfilm_linux.provenance import raw_region_sha256
+from opticfilm_linux.sweepstore import load_sweep
 
 _RECOVERY_CHECKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _recovery_inventory(store: BatchStore, tray: TrayRecord) -> tuple[Path, ...]:
-    from opticfilm_linux.batch import export
-
     if not tray.raw_removed:
         raise ValueError("no recorded interrupted cleanup")
-    folders = tuple(export._checked_sweep_folders(store, tray.number))
-    export._checked_sweep_versions(tray, folders)
+    folders = tuple(checked_sweep_folders(store, tray.number))
+    checked_sweep_versions(tray, folders)
     versions = tuple(int(path.name.removeprefix("sweep-")) for path in folders)
     if len(set(versions)) != len(versions):
         raise ValueError("additional raw sweep folders have duplicate versions")
@@ -55,13 +68,15 @@ def interrupted_cleanup_guidance(number: int, *, recoverable: bool) -> str:
     )
 
 
-def _check_interrupted_cleanup(store: BatchStore, tray: TrayRecord) -> None:
-    from opticfilm_linux.batch import export
-
+def _check_interrupted_cleanup(
+    store: BatchStore,
+    tray: TrayRecord,
+    checked_snapshot: Callable[[BatchStore, TrayRecord, tuple[Path, ...]], None],
+) -> None:
     try:
-        folders = tuple(export._checked_sweep_folders(store, tray.number))
-        export._checked_snapshot(store, tray, folders)
-    except (OSError, ValueError, export.BatchError) as exc:
+        folders = tuple(checked_sweep_folders(store, tray.number))
+        checked_snapshot(store, tray, folders)
+    except (OSError, ValueError, BatchError) as exc:
         if tray.cleanup_sweeps:
             raise
         message = (
@@ -69,19 +84,15 @@ def _check_interrupted_cleanup(store: BatchStore, tray: TrayRecord) -> None:
             "scans… to recover intact raw, then review and re-export. If verification fails, "
             "restore the original raw sweep folders or rescan this tray."
         )
-        if isinstance(exc, export.ExportVerificationFailed):
-            raise export.ExportVerificationFailed(
-                tray.number, exc.position, ValueError(message)
-            ) from exc
-        raise export.CleanupPolicyRefused(message) from exc
+        if isinstance(exc, ExportVerificationFailed):
+            raise ExportVerificationFailed(tray.number, exc.position, ValueError(message)) from exc
+        raise CleanupPolicyRefused(message) from exc
 
 
 def can_recover_interrupted_cleanup(
     store: BatchStore, manifest: BatchManifest, tray: TrayRecord
 ) -> bool:
     """Check recovery for the window, caching only while raw filesystem evidence is unchanged."""
-    from opticfilm_linux.batch import export
-
     try:
         folders = _recovery_inventory(store, tray)
         members = tuple(sorted(path for folder in folders for path in (folder, *folder.rglob("*"))))
@@ -95,35 +106,31 @@ def can_recover_interrupted_cleanup(
         if tray.number not in cache or cache[tray.number][0] != key:
             try:
                 _recovery_raw(store, manifest, tray, folders)
-            except (OSError, ValueError, export.CleanupRefused):
+            except (OSError, ValueError, CleanupRefused):
                 cache[tray.number] = (key, False)
             else:
                 cache[tray.number] = (key, True)
         return cache[tray.number][1]
-    except (OSError, ValueError, export.CleanupRefused):
+    except (OSError, ValueError, CleanupRefused):
         return False
 
 
 def _recheck_inventory(store: BatchStore, tray: TrayRecord, folders: tuple[Path, ...]) -> None:
-    from opticfilm_linux.batch import export
-
     try:
         if _recovery_inventory(store, tray) != folders:
             raise ValueError("raw sweep folders changed meanwhile")
-    except (OSError, ValueError, export.CleanupRefused) as exc:
-        raise export.CleanupRetryRequired(
+    except (OSError, ValueError, CleanupRefused) as exc:
+        raise CleanupRetryRequired(
             f"tray {tray.number} raw folders changed meanwhile; retry recovery"
         ) from exc
 
 
 def _recovery_raw(store: BatchStore, manifest: BatchManifest, tray: TrayRecord, folders) -> None:
-    from opticfilm_linux.batch import export
-
     current = store.sweep_dir(tray.number, tray.sweep_version)
     if current not in folders:
         raise ValueError("current raw sweep is missing")
-    sweep = export.load_sweep(current)
-    regions = export.split_positions(sweep)
+    sweep = load_sweep(current)
+    regions = split_positions(sweep)
     check_raw_coverage(tray, regions)
     for slide in scanned_slides(tray):
         expected = (
@@ -164,26 +171,24 @@ def _recovered_tray(tray: TrayRecord, *, automatic: bool) -> TrayRecord:
 
 def recover_interrupted_cleanup(store: BatchStore, number: int) -> None:
     """Return verified current raw to review after an explicit owner action."""
-    from opticfilm_linux.batch import export
-
-    with export._CLEANUP_LOCK:
+    with CLEANUP_LOCK:
         evidence = store.snapshot()
         tray = next((t for t in evidence.trays if t.number == number), None)
         if tray is None:
-            raise export.CleanupPolicyRefused(f"no tray {number} in this batch")
+            raise CleanupPolicyRefused(f"no tray {number} in this batch")
         try:
             folders = _recovery_inventory(store, tray)
             _recovery_raw(store, evidence, tray, folders)
             if _recovery_inventory(store, tray) != folders:
                 raise ValueError("raw sweep folders changed meanwhile")
-        except (OSError, ValueError, export.CleanupRefused) as exc:
-            raise export.CleanupPolicyRefused(
+        except (OSError, ValueError, CleanupRefused) as exc:
+            raise CleanupPolicyRefused(
                 f"Cannot recover tray {number}: {exc}; restore the damaged or missing raw "
                 "sweep folders or rescan this tray."
             ) from exc
 
         def reset(manifest: BatchManifest) -> BatchManifest:
-            export._compare_cleanup_evidence(manifest, evidence, number)
+            _compare_cleanup_evidence(manifest, evidence, number)
             _recheck_inventory(store, tray, folders)
             return dataclasses.replace(
                 manifest,
@@ -198,7 +203,7 @@ def recover_interrupted_cleanup(store: BatchStore, number: int) -> None:
             )
 
         store.update(reset)
-        export._PENDING_CLEANUP_RESETS.get(store, {}).pop(number, None)
+        PENDING_CLEANUP_RESETS.get(store, {}).pop(number, None)
 
 
 def _record_cleanup_complete(store: BatchStore, tray: TrayRecord) -> None:
@@ -221,17 +226,15 @@ def _record_cleanup_complete(store: BatchStore, tray: TrayRecord) -> None:
 def _compare_cleanup_evidence(
     manifest: BatchManifest, evidence: BatchManifest, number: int, *, release_first: bool = False
 ) -> None:
-    from opticfilm_linux.batch import export
-
     def policy_key(batch: BatchManifest) -> tuple:
         automatic = batch.defaults.auto_export or any(
             t.auto not in ("", "off") for t in batch.trays
         )
         released = batch.first_tray_released and (
-            batch.released_render == export._release_defaults(batch.defaults)
+            batch.released_render == _release_defaults(batch.defaults)
         )
         candidate = (
-            export._release_candidate(batch, number)
+            _release_candidate(batch, number)
             if (release_first or (automatic and not released))
             else None
         )
@@ -239,23 +242,25 @@ def _compare_cleanup_evidence(
             batch.defaults,
             batch.first_tray_released,
             batch.released_render,
-            without_meta(export._tray(batch, number)),  # a description edit needs no retry
+            without_meta(tray_of(batch, number)),  # a description edit needs no retry
             candidate,
             automatic,
             tuple(without_meta(t) for t in batch.trays if t.number != number and t.raw_removed),
         )
 
     if policy_key(manifest) != policy_key(evidence):
-        raise export.CleanupRetryRequired(
-            "batch changed meanwhile; retry cleanup with current settings"
-        )
+        raise CleanupRetryRequired("batch changed meanwhile; retry cleanup with current settings")
 
 
-def _cleanup_listable(store: BatchStore, number: int, *, release_first: bool) -> bool:
-    from opticfilm_linux.batch import export
-
+def _cleanup_listable(
+    store: BatchStore,
+    number: int,
+    *,
+    check_allowed: Callable[..., TrayRecord],
+    release_first: bool,
+) -> bool:
     try:
-        export.check_cleanup_allowed(store, number, release_first=release_first)
-    except (OSError, export.BatchError):
+        check_allowed(store, number, release_first=release_first)
+    except (OSError, BatchError):
         return False
     return True
