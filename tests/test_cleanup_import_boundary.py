@@ -41,5 +41,8 @@ def test_cleanup_recovery_does_not_import_export():
 def test_single_shared_lock_and_pending_registry():
     assert export._CLEANUP_LOCK is cleanup_state.CLEANUP_LOCK
     assert export._PENDING_CLEANUP_RESETS is cleanup_state.PENDING_CLEANUP_RESETS
+    assert cleanup_recovery.CLEANUP_LOCK is cleanup_state.CLEANUP_LOCK
+    assert runner.CLEANUP_LOCK is cleanup_state.CLEANUP_LOCK
+    assert cleanup_recovery.PENDING_CLEANUP_RESETS is cleanup_state.PENDING_CLEANUP_RESETS
     assert export.CleanupRefused is cleanup_state.CleanupRefused
     assert export.ExportVerificationFailed is cleanup_state.ExportVerificationFailed
