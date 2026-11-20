@@ -110,6 +110,15 @@ Kirigami.Dialog {
             switchObject.objectName: "skipEmptySwitch"
         }
         Setting {
+            objectName: "skipGapsSetting"
+            label: qsTr("Allow gaps between scanned openings")
+            detail: qsTr("Choose any set of openings, for example 1, 3 and 4. Needs the openings choice above. Applies from the next Scan press. Not yet tested on the scanner.")
+            value: bridge.skipGapsEnabled
+            lockedBy: bridge.skipGapsLockedBy
+            onToggled: on => bridge.setSkipGaps(on)
+            switchObject.objectName: "skipGapsSwitch"
+        }
+        Setting {
             objectName: "loadAndScanSetting"
             label: qsTr("Load & scan with one press")
             detail: qsTr("After an eject, one press (or Enter) loads the next holder, waits for the scanner and scans it. Press it only when the holder is seated and latched. Not yet proven on the scanner; watch the first few holders.")

@@ -185,6 +185,19 @@ def test_with_gaps_four_toggles_and_the_last_one_cannot_be_cleared(window, tmp_p
     assert warnings == []
 
 
+def test_gaps_switched_on_from_the_app_shows_the_four_toggles(window):
+    bridge, root, warnings = window(skip_empty=True)
+    assert not _item(root, "openingToggle1").isVisible()
+    bridge.setSkipGaps(True)
+    _wait(bridge, lambda: bridge.skipGapsEnabled)
+    assert not _item(root, "slidesInHolder").isVisible()
+    assert all(_item(root, f"openingToggle{p}").isVisible() for p in (1, 2, 3, 4))
+    bridge.setSkipGaps(False)
+    _wait(bridge, lambda: not bridge.skipGapsEnabled)
+    assert _item(root, "slidesInHolder").isVisible()
+    assert warnings == []
+
+
 def test_values_that_are_not_whole_openings_are_refused_by_the_bridge(window):
     bridge, _root, _warnings = window(skip_empty=True)
     for bad in ([1.9], [True], ["1"], [None]):

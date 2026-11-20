@@ -14,6 +14,7 @@ from opticfilm_linux.app.prefs import (
     AUTO_EXPORT_KEY,
     LOAD_AND_SCAN_KEY,
     SKIP_EMPTY_KEY,
+    SKIP_GAPS_KEY,
     UPDATE_METADATA_KEY,
     read_switch,
     remember_switch,
@@ -42,6 +43,9 @@ class WorkflowBridge(StartBridge):
     )
     skipGapsEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.skip_gaps_enabled, notify=workflowSettingsChanged
+    )
+    skipGapsLockedBy = Property(  # noqa: N815
+        str, lambda self: self._env_name("skip_gaps"), notify=workflowSettingsChanged
     )
     loadAndScanEnabled = Property(  # noqa: N815
         bool, lambda self: self._controller.load_and_scan_enabled, notify=workflowSettingsChanged
@@ -75,6 +79,12 @@ class WorkflowBridge(StartBridge):
     def setSkipEmpty(self, on: bool) -> None:  # noqa: N802
         if self._controller.set_skip_empty(on):
             remember_switch(self._prefs, SKIP_EMPTY_KEY, on)
+        self.workflowSettingsChanged.emit()
+
+    @Slot(bool)
+    def setSkipGaps(self, on: bool) -> None:  # noqa: N802
+        if self._controller.set_skip_gaps(on):
+            remember_switch(self._prefs, SKIP_GAPS_KEY, on)
         self.workflowSettingsChanged.emit()
 
     @Slot(bool)

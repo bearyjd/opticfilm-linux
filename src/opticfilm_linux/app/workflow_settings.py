@@ -1,11 +1,12 @@
-"""Workflow switches that can be saved in the preferences (auto-eject, skip-empty, Load & scan).
+"""Workflow switches that can be saved in the preferences (auto-eject, skip-empty, skip-gaps,
+Load & scan).
 
 An explicit environment variable (``OPTICFILM_AUTO_EJECT``, ``OPTICFILM_SKIP_EMPTY``,
-``OPTICFILM_LOAD_AND_SCAN``, ``OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY``) always
+``OPTICFILM_SKIP_GAPS``, ``OPTICFILM_LOAD_AND_SCAN``,
+``OPTICFILM_UPDATE_EXPORTED_METADATA_AUTOMATICALLY``) always
 wins over the saved value and locks the switch in the app. Unset means "use the saved value",
 which on a fresh profile is on for skip-empty, the automatic-export default and the automatic
-JPEG update, and off for auto-eject and Load & scan (``prefs.SWITCH_DEFAULTS``).
-``OPTICFILM_SKIP_GAPS`` stays environment-only.
+JPEG update, and off for auto-eject, skip-gaps and Load & scan (``prefs.SWITCH_DEFAULTS``).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from opticfilm_linux.app.prefs import (
     AUTO_EJECT_KEY,
     LOAD_AND_SCAN_KEY,
     SKIP_EMPTY_KEY,
+    SKIP_GAPS_KEY,
     UPDATE_METADATA_KEY,
     Prefs,
     read_switch,
@@ -24,21 +26,23 @@ from opticfilm_linux.scanner.select import (
     AUTO_EJECT_ENV,
     LOAD_AND_SCAN_ENV,
     SKIP_EMPTY_ENV,
+    SKIP_GAPS_ENV,
     UPDATE_METADATA_ENV,
     env_switch,
     env_switch_fail_off,
-    skip_gaps_enabled,
 )
 
 ENV_NAMES = {
     "auto_eject": AUTO_EJECT_ENV,
     "skip_empty": SKIP_EMPTY_ENV,
+    "skip_gaps": SKIP_GAPS_ENV,
     "load_and_scan": LOAD_AND_SCAN_ENV,
     "update_exported_metadata_automatically": UPDATE_METADATA_ENV,
 }
 SAVED_KEYS = {
     "auto_eject": AUTO_EJECT_KEY,
     "skip_empty": SKIP_EMPTY_KEY,
+    "skip_gaps": SKIP_GAPS_KEY,
     "load_and_scan": LOAD_AND_SCAN_KEY,
     "update_exported_metadata_automatically": UPDATE_METADATA_KEY,
 }
@@ -62,7 +66,6 @@ def startup_switches(prefs: Prefs) -> dict:
     }
     return {
         **values,
-        "skip_gaps": skip_gaps_enabled(),
         "env_locked": frozenset(name for name, env in envs.items() if env is not None),
     }
 
@@ -98,6 +101,18 @@ class WorkflowSettings:
                 return False
             self._skip_empty = on
             self._skip_gaps = on and self._gaps_requested
+            if self._scan_openings != ALL_POSITIONS:  # a choice made under the old setting
+                self._banner = Banner(OPENINGS_DROPPED)
+            self._scan_openings = ALL_POSITIONS
+            return True
+
+    def set_skip_gaps(self, on: bool) -> bool:
+        """Applies from the next Scan press; needs skip-empty to show. False: refused."""
+        with self._lock:
+            if self._refuse_locked("skip_gaps"):
+                return False
+            self._gaps_requested = on
+            self._skip_gaps = self._skip_empty and on
             if self._scan_openings != ALL_POSITIONS:  # a choice made under the old setting
                 self._banner = Banner(OPENINGS_DROPPED)
             self._scan_openings = ALL_POSITIONS
