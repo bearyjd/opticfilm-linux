@@ -21,10 +21,10 @@ loaded = smoke.loaded
 
 def _setup(loaded, tmp_path, monkeypatch, probe):
     bridge, engine, _warnings = loaded
-    monkeypatch.setattr(bridge_module, "_check_export_directory", probe, raising=False)
+    monkeypatch.setattr(bridge_module, "check_export_directory", probe, raising=False)
     worker = sys.modules.get("opticfilm_linux.app.qt.destination")
     if worker is not None:
-        monkeypatch.setattr(worker, "_check_export_directory", probe)
+        monkeypatch.setattr(worker, "check_export_directory", probe)
     root = engine.rootObjects()[0]
     page = root.findChild(QObject, "startPage")
     page.setProperty("parentFolder", QUrl.fromLocalFile(str(tmp_path)))
