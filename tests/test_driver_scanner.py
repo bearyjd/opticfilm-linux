@@ -361,3 +361,59 @@ def test_the_fake_driver_refuses_a_malformed_slide_list(sweep600_dir, tmp_path, 
 def test_the_positions_error_names_the_holder_openings():
     with pytest.raises(ValueError, match="openings 1-4"):
         ScanSettings(positions=(5,))
+
+
+def _scan_that_leaves(scanner, names, monkeypatch):
+    """Make the driver drop ``names`` (name -> text) into the work folder, as it would on a run."""
+    real = scanner._run
+
+    def run_and_drop(args, timeout, keep_log):
+        result = real(args, timeout, keep_log)
+        work = Path(args[args.index("-o") + 1]).parent
+        for name, text in names.items():
+            (work / name).write_text(text)
+        return result
+
+    monkeypatch.setattr(scanner, "_run", run_and_drop)
+
+
+def test_the_drivers_failure_record_is_kept_when_a_scan_fails(scanner_for, tmp_path, monkeypatch):
+    scanner = scanner_for(FAKE_DRIVER_MODE="missing_frame")
+    _scan_that_leaves(scanner, {"tray-f2.fail.json": '{"why": "usb contact lost"}'}, monkeypatch)
+    with pytest.raises(ScanError):
+        scanner.scan_holder(ScanSettings(dpi=600))
+    kept = list((tmp_path / "logs").glob("*-tray-f2.fail.json"))
+    assert len(kept) == 1 and "usb contact lost" in kept[0].read_text()
+    assert len(list((tmp_path / "logs").glob("*.diag.json"))) == 3  # kept as before
+
+
+def test_a_failed_scan_without_a_failure_record_keeps_none(scanner_for, tmp_path):
+    with pytest.raises(ScanError):
+        scanner_for(FAKE_DRIVER_MODE="missing_frame").scan_holder(ScanSettings(dpi=600))
+    assert list((tmp_path / "logs").glob("*.fail.json")) == []
+
+
+def test_a_failure_record_is_not_kept_from_a_scan_that_succeeded(
+    scanner_for, tmp_path, monkeypatch
+):
+    scanner = scanner_for()
+    _scan_that_leaves(scanner, {"tray-f1.fail.json": "{}"}, monkeypatch)
+    scanner.scan_holder(ScanSettings(dpi=600))
+    assert list((tmp_path / "logs").glob("*.fail.json")) == []
+
+
+def test_old_failure_records_are_pruned_with_the_logs_like_diag_files(scanner_for, tmp_path):
+    from opticfilm_linux.scanner import driver as driver_module
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    old = time.time() - 10 * driver_module.PROTECT_LOG_S
+    for i in range(driver_module.KEEP_LOGS + 3):
+        log = logs / f"scan-20200101-{i:06d}.log"
+        log.write_text("x")
+        os.utime(log, (old + i, old + i))
+    for name in ("20200101-000000-a.fail.json", "20200101-000000-a.diag.json"):
+        (logs / name).write_text("{}")
+        os.utime(logs / name, (old - 7200, old - 7200))
+    scanner_for().scan_holder(ScanSettings(dpi=600))
+    assert list(logs.glob("20200101-*")) == []
