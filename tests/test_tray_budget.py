@@ -149,3 +149,59 @@ def test_cli_reports_a_bad_sidecar(tmp_path, capsys):
     path.write_text("{")
     assert tb.main([str(path)]) == 2
     assert "error" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", [None, [], [1, 2], "text", 3])
+def test_a_sidecar_that_is_not_an_object_is_refused(bad):
+    with pytest.raises(ValueError, match="object"):
+        tb.tray_budget([bad])
+
+
+@pytest.mark.parametrize("total", [float("nan"), float("inf"), -1.0, "nan"])
+def test_a_non_finite_or_negative_total_is_refused(total):
+    diag = _diag(1, 0.0)
+    diag["total_seconds"] = total
+    with pytest.raises(ValueError, match="total_seconds"):
+        tb.tray_budget([diag])
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.5])
+def test_a_non_finite_or_negative_phase_is_refused(value):
+    diag = _diag(1, 0.0)
+    diag["phase_seconds"]["scan"] = value
+    with pytest.raises(ValueError, match="phase"):
+        tb.tray_budget([diag])
+
+
+@pytest.mark.parametrize("phases", [{}, None, [], "x"])
+def test_an_empty_or_malformed_phase_seconds_is_refused(phases):
+    diag = _diag(1, 0.0)
+    diag["phase_seconds"] = phases
+    with pytest.raises(ValueError, match="phase_seconds"):
+        tb.tray_budget([diag])
+
+
+@pytest.mark.parametrize("frame", ["missing", None, "1", 1.5, True])
+def test_a_missing_or_non_int_frame_is_refused(frame):
+    diag = _diag(1, 0.0)
+    if frame == "missing":
+        del diag["frame"]
+    else:
+        diag["frame"] = frame
+    with pytest.raises(ValueError, match="frame"):
+        tb.tray_budget([diag])
+
+
+def test_a_duplicate_frame_number_is_refused():
+    diags = _tray((1, 2))
+    diags[1]["frame"] = 1
+    with pytest.raises(ValueError, match="frame 1"):
+        tb.tray_budget(diags)
+
+
+def test_overlapping_phases_warn_and_clamp_other_at_zero(capsys):
+    diag = _diag(1, 0.0)
+    diag["total_seconds"] -= 5.0  # phases now sum to more than the total
+    budget = tb.tray_budget([diag])
+    assert budget.other == 0.0
+    assert "overlap" in capsys.readouterr().err

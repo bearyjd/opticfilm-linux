@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -67,17 +68,35 @@ class _Timed:
         return self.end - self.start
 
 
-def _timed(diag: Mapping[str, Any]) -> _Timed:
+def _seconds(value: Any, name: str) -> float:
+    """A finite, non-negative duration; the sidecar is external data."""
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds < 0.0:
+        raise ValueError(f"a sidecar's {name} is {value!r}; it must be finite and not negative")
+    return seconds
+
+
+def _timed(diag: Any) -> _Timed:
+    if not isinstance(diag, Mapping):
+        raise ValueError(f"a sidecar is {type(diag).__name__}, not a JSON object")
     for key in REQUIRED:
         if key not in diag:
             raise ValueError(f"a sidecar has no {key}; it cannot be placed in time")
+    frame = diag.get("frame")
+    if not isinstance(frame, int) or isinstance(frame, bool):
+        raise ValueError(f"a sidecar's frame is {frame!r}; it must be an integer")
+    raw_phases = diag["phase_seconds"]
+    if not isinstance(raw_phases, Mapping) or not raw_phases:
+        raise ValueError("a sidecar's phase_seconds must be a non-empty object")
     try:
+        # started_utc is not used: it is the wall clock, while total_seconds is a monotonic
+        # duration; finished_utc - total_seconds is the same clock on both sides of a gap.
         end = dt.datetime.fromisoformat(str(diag["finished_utc"])).timestamp()
-        total = float(diag["total_seconds"])
-        phases = {str(k): float(v) for k, v in dict(diag["phase_seconds"]).items()}
+        total = _seconds(diag["total_seconds"], "total_seconds")
+        phases = {str(k): _seconds(v, f"phase {k}") for k, v in raw_phases.items()}
     except (TypeError, ValueError) as exc:
         raise ValueError(f"a sidecar's timing cannot be read: {exc}") from exc
-    return _Timed(int(diag.get("frame", 0)), end - total, end, phases)
+    return _Timed(frame, end - total, end, phases)
 
 
 def _phase_sum(rows: Sequence[_Timed], wanted: str) -> float:
@@ -86,24 +105,35 @@ def _phase_sum(rows: Sequence[_Timed], wanted: str) -> float:
     return sum(row.phases.get(wanted, 0.0) for row in rows)
 
 
-def tray_budget(diags: Iterable[Mapping[str, Any]]) -> TrayBudget:
+def tray_budget(diags: Iterable[Any]) -> TrayBudget:
     """The budget of one run; refuses sidecars that cannot belong to the same run."""
     rows = sorted((_timed(d) for d in diags), key=lambda row: row.end)
     if not rows:
         raise ValueError("no sidecars given")
+    frames = [row.opening for row in rows]
+    for frame in sorted(set(frames)):
+        if frames.count(frame) > 1:
+            raise ValueError(f"frame {frame} appears in more than one sidecar")
     gaps = [later.start - earlier.end for earlier, later in zip(rows, rows[1:], strict=False)]
     if any(gap < -CLOCK_SLACK_S for gap in gaps):
         raise ValueError("the sidecars overlap in time: they are not from one scan run")
     gaps = [max(0.0, gap) for gap in gaps]
     named = {part: _phase_sum(rows, part) for part in ("scan", "calibration", "position", "park")}
     in_scan = sum(row.total for row in rows)
+    other = in_scan - sum(named.values())
+    if other < -CLOCK_SLACK_S:
+        print(
+            f"warning: the phases add up to {-other:.1f} s more than the totals; "
+            "they overlap, so 'other' is shown as 0",
+            file=sys.stderr,
+        )
     costs = tuple(
         OpeningCost(row.opening, row.total, before)
         for row, before in zip(rows, [0.0, *gaps], strict=True)
     )
     return TrayBudget(
         openings=tuple(row.opening for row in rows),
-        other=in_scan - sum(named.values()),
+        other=max(0.0, other),
         between=sum(gaps),
         wall=in_scan + sum(gaps),
         opening_costs=costs,
