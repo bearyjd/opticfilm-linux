@@ -324,39 +324,6 @@ def run(args: argparse.Namespace) -> int:
         return EXIT_INTERRUPTED
 
 
-def _free_refusal(manifest: BatchManifest, pipeline: AutoPipeline, number: int) -> str | None:
-    """Mirror the silent returns of ``confirm_free_held``, read-only, with a reason for each."""
-    tray = next((t for t in manifest.trays if t.number == number), None)
-    if tray is None:
-        return f"tray {number} does not exist"
-    if tray.auto != "held" or tray.raw_removed or tray.stage not in READY:
-        return f"tray {number} is not held"
-    candidate = pipeline._release_candidate(manifest)
-    if candidate is None:
-        return "no tray is waiting to be released"
-    if number != candidate:
-        return f"tray {number} is not the tray to release (tray {candidate} is)"
-    if manifest.defaults.keep_raw:
-        return "keep_raw is set, so raw scans are never freed"
-    if not manifest.defaults.auto_export:
-        return "auto-export is off, so raw scans are never freed automatically"
-    return _review_refusal(pipeline, tray)
-
-
-def _review_refusal(pipeline: AutoPipeline, tray: TrayRecord) -> str | None:
-    waiting = pipeline._awaiting_review(tray)
-    if waiting:
-        return f"slides {', '.join(map(str, waiting))} await your review"
-    excluded = pipeline._owner_excluded(tray)
-    if excluded:
-        return f"slides {', '.join(map(str, excluded))} were excluded by your decision"
-    if pipeline._unreviewed_flags(tray):
-        return "some slides have flags you have not reviewed"
-    if any(s.preview_stale for s in tray.slides):
-        return "previews are out of date; wait for them, then try again"
-    return None
-
-
 def free_held(args: argparse.Namespace) -> int:
     if not args.yes:
         print(
@@ -367,7 +334,7 @@ def free_held(args: argparse.Namespace) -> int:
         return EXIT_REFUSED
     with BatchStore.open(args.directory) as store:
         pipeline = AutoPipeline(store)
-        reason = _free_refusal(store.snapshot(), pipeline, args.number)
+        reason = pipeline.free_refusal(args.number)
         if reason is not None:
             print(f"refused: {reason}", file=sys.stderr)
             return EXIT_REFUSED

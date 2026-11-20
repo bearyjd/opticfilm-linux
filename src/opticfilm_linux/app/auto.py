@@ -465,16 +465,47 @@ class AutoPipeline:
             )
         )
 
-    def confirm_free_held(self, number: int) -> None:
+    def _free_silent_refusal(self, manifest, number: int) -> str | None:
+        """Guards where ``confirm_free_held`` returns without touching the tray."""
+        tray = next((t for t in manifest.trays if t.number == number), None)
+        if tray is None:
+            return f"tray {number} does not exist"
+        if tray.auto != "held" or tray.raw_removed or tray.stage not in READY:
+            return f"tray {number} is not held"
+        candidate = self._release_candidate(manifest)
+        if candidate is None:
+            return "no tray is waiting to be released"
+        if number != candidate:
+            return f"tray {number} is not the tray to release (tray {candidate} is)"
+        if manifest.defaults.keep_raw:
+            return "keep_raw is set, so raw scans are never freed"
+        if not manifest.defaults.auto_export:
+            return "auto-export is off, so raw scans are never freed automatically"
+        return None
+
+    def free_refusal(self, number: int) -> str | None:
+        """Why freeing this tray would not proceed (read-only), else None."""
         manifest = self.store.snapshot()
+        silent = self._free_silent_refusal(manifest, number)
+        if silent is not None:
+            return silent
         tray = self._tray(number)
-        if (
-            number != self._release_candidate(manifest)
-            or tray.stage not in READY
-            or tray.auto != "held"
-            or tray.raw_removed
-        ):
+        waiting = self._awaiting_review(tray)
+        if waiting:
+            return f"slides {', '.join(map(str, waiting))} await your review"
+        excluded = self._owner_excluded(tray)
+        if excluded:
+            return f"slides {', '.join(map(str, excluded))} were excluded by your decision"
+        if self._unreviewed_flags(tray):
+            return "some slides have flags you have not reviewed"
+        if any(s.preview_stale for s in tray.slides):
+            return "previews are out of date; wait for them, then try again"
+        return None
+
+    def confirm_free_held(self, number: int) -> None:
+        if self._free_silent_refusal(self.store.snapshot(), number) is not None:
             return
+        tray = self._tray(number)
         before = None
         try:
             before = raw_inventory(self.store, (number,))
