@@ -219,8 +219,15 @@ def clear_exported(store: BatchStore, keys: frozenset[SlideKey] | None = None) -
 
 
 def _checked_export_parent(directory: Path, root: Path, store: BatchStore) -> None:
-    """Reject symlinks before creating a directory or opening an output file."""
+    """Reject symlinks at or below the export root before creating or writing.
+
+    Ancestors above the root are the user's own system layout (for example
+    /home -> /var/home on immutable hosts) and are not checked.
+    """
+    root_abs = root.absolute()
     for component in (directory.absolute(), *directory.absolute().parents):
+        if not component.is_relative_to(root_abs):
+            break
         if component.is_symlink():
             raise BatchError(f"export folder {component} is a symlink; choose a regular folder")
     resolved = directory.resolve()

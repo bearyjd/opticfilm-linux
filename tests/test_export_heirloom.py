@@ -138,3 +138,41 @@ def test_closed_section_export_retains_saved_path(store, tmp_path):
     assert store.snapshot().section == "b"
     result = export_batch(store, tmp_path / "out", "jpeg", keys=frozenset({(1, 1)}))
     assert result.written[0] == tmp_path / "out" / "family" / "box-1" / "a" / "001.jpg"
+
+
+def test_export_allows_symlinked_ancestor_above_root(store, tmp_path):
+    real = tmp_path / "real_home"
+    real.mkdir()
+    (tmp_path / "home").symlink_to(real, target_is_directory=True)
+    out = tmp_path / "home" / "user" / "out"
+    result = export_batch(store, out, "jpeg")
+    assert result.written
+    assert all(p.is_file() and p.is_relative_to(out) for p in result.written)
+
+
+def test_export_rejects_symlinked_root(store, tmp_path):
+    real = tmp_path / "real_out"
+    real.mkdir()
+    out = tmp_path / "out"
+    out.symlink_to(real, target_is_directory=True)
+    with pytest.raises(BatchError, match="symlink"):
+        export_batch(store, out, "jpeg")
+    assert list(real.iterdir()) == []
+
+
+def test_export_rejects_symlinked_component_below_root(store, tmp_path):
+    out = tmp_path / "out"
+    (out / "family").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (out / "family" / "box-1").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(BatchError, match="symlink"):
+        export_batch(store, out, "jpeg")
+    assert list(outside.iterdir()) == []
+
+
+def test_export_plain_path_still_works(store, tmp_path):
+    out = tmp_path / "plain" / "out"
+    result = export_batch(store, out, "jpeg")
+    assert result.written
+    assert all(p.is_file() for p in result.written)
