@@ -182,11 +182,15 @@ def test_junk_in_the_other_switches_still_defers_to_the_saved_value(monkeypatch)
     assert "auto_eject" not in result["env_locked"]
 
 
-def test_startup_skip_gaps_stays_env_only(monkeypatch):
-    monkeypatch.setenv("OPTICFILM_SKIP_GAPS", "1")
-    assert startup_switches(MemoryPrefs())["skip_gaps"] is True
-    monkeypatch.delenv("OPTICFILM_SKIP_GAPS")
-    assert startup_switches(MemoryPrefs())["skip_gaps"] is False
+def test_startup_skip_gaps_is_saved_and_the_env_wins(monkeypatch):
+    store = MemoryPrefs()
+    result = startup_switches(store)
+    assert result["skip_gaps"] is False and "skip_gaps" not in result["env_locked"]
+    preferences.remember_switch(store, preferences.SKIP_GAPS_KEY, True)
+    assert startup_switches(store)["skip_gaps"] is True
+    monkeypatch.setenv("OPTICFILM_SKIP_GAPS", "0")
+    result = startup_switches(store)
+    assert result["skip_gaps"] is False and "skip_gaps" in result["env_locked"]
 
 
 # --- live toggles on the fake controller -----------------------------------------------------
@@ -268,6 +272,31 @@ def test_turning_skip_empty_off_drops_gaps_and_on_restores_them(sweep600_dir, tm
         assert c.skip_gaps_enabled is False
         c.set_skip_empty(True)
         assert c.skip_gaps_enabled is True
+    finally:
+        c.shutdown()
+
+
+def test_skip_gaps_toggles_live_and_needs_skip_empty(sweep600_dir, tmp_path):
+    c = _controller(sweep600_dir, tmp_path, skip_empty=True, skip_gaps=False)
+    try:
+        assert c.set_skip_gaps(True) is True
+        assert c.skip_gaps_enabled is True
+        c.set_skip_empty(False)
+        assert c.skip_gaps_enabled is False
+        assert c.set_skip_gaps(False) is True
+        c.set_skip_empty(True)
+        assert c.skip_gaps_enabled is False  # the saved choice survives the round trip
+    finally:
+        c.shutdown()
+
+
+def test_env_locked_skip_gaps_refuses_a_change(sweep600_dir, tmp_path):
+    c = _controller(sweep600_dir, tmp_path, skip_empty=True, env_locked=frozenset({"skip_gaps"}))
+    try:
+        assert c.set_skip_gaps(True) is False
+        assert c.skip_gaps_enabled is False
+        wait_until(c, lambda: c.state().banner is not None)
+        assert "OPTICFILM_SKIP_GAPS" in c.state().banner.message
     finally:
         c.shutdown()
 

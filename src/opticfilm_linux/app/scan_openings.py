@@ -23,8 +23,9 @@ SKIP_EMPTY_OFF = (
 SCAN_PENDING = "Wait for the scan to start before choosing the openings of the next holder."
 NO_OPENINGS = "Choose at least one opening. If the holder is empty, eject it instead of scanning."
 GAPS_OFF = (
-    "Only the first openings can be scanned (for example 1 to 3). "
-    f"Set {SKIP_GAPS_ENV}=1 and restart the app to leave out an opening in between."
+    'Only the first openings can be scanned (for example 1 to 3). Turn on "Allow gaps between '
+    f'scanned openings" in Workflow settings (or set {SKIP_GAPS_ENV}=1 and restart the app) '
+    "to leave out an opening in between."
 )
 
 

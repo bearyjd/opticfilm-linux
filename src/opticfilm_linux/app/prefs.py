@@ -33,12 +33,14 @@ MAX_BOX = 999999  # the New batch Box field's upper limit
 MAX_SECTION_SIZE = 999  # and Slides per section's
 AUTO_EJECT_KEY = "workflow/auto_eject"
 SKIP_EMPTY_KEY = "workflow/skip_empty"
+SKIP_GAPS_KEY = "workflow/skip_gaps"
 AUTO_EXPORT_KEY = "workflow/auto_export_default"
 LOAD_AND_SCAN_KEY = "workflow/load_and_scan"
 UPDATE_METADATA_KEY = "workflow/update_exported_metadata_automatically"
 SWITCH_KEYS = (
     AUTO_EJECT_KEY,
     SKIP_EMPTY_KEY,
+    SKIP_GAPS_KEY,
     AUTO_EXPORT_KEY,
     LOAD_AND_SCAN_KEY,
     UPDATE_METADATA_KEY,

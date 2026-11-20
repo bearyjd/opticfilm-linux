@@ -130,6 +130,22 @@ def test_toggles_save_and_apply_live(window):
     assert preferences.read_switch(prefs, preferences.AUTO_EJECT_KEY) is False
 
 
+def test_skip_gaps_switch_saves_and_applies_live(window):
+    bridge, controller, root, prefs = window()
+    assert bridge.skipGapsEnabled is False and bridge.skipGapsLockedBy == ""
+    assert _find(root, "skipGapsSwitch").property("checked") is False
+    _toggle(root, "skipGapsSwitch")
+    assert controller.skip_gaps_enabled is True
+    assert bridge.skipGapsEnabled is True
+    assert preferences.read_switch(prefs, preferences.SKIP_GAPS_KEY) is True
+
+
+def test_env_locked_skip_gaps_switch_is_disabled(window):
+    bridge, _controller, root, _prefs = window(OPTICFILM_SKIP_GAPS="1")
+    assert _find(root, "skipGapsSwitch").property("enabled") is False
+    assert bridge.skipGapsLockedBy == "OPTICFILM_SKIP_GAPS"
+
+
 def test_auto_export_default_leaves_the_open_batch_alone(window):
     bridge, controller, root, prefs = window()
     _toggle(root, "autoExportDefaultSwitch")
