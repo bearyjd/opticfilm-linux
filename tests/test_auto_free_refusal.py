@@ -59,6 +59,18 @@ CASES = [
 ]
 
 
+# GUI free attempts that must surface tray state (as on main), not no-op silently.
+SURFACED = {
+    "awaiting-review": ("blocked", "Waiting for owner review"),
+    "owner-excluded": ("blocked", "Owner excluded slides"),
+    "stale-preview": ("held", "Waiting for updated previews"),
+}
+
+
+def text_in(error):
+    return next((m for _, m in SURFACED.values() if m in error), error)
+
+
 def _held(store):
     auto = pipeline(store)
     auto.arm(1)
@@ -76,15 +88,12 @@ def test_no_refusal_when_releasable_and_confirm_frees(store):
 
 
 @pytest.mark.parametrize(("case", "number", "edit", "text"), CASES, ids=[c[0] for c in CASES])
-def test_each_refusal_reason_blocks_confirm_and_cli_agrees(store, capsys, case, number, edit, text):
+def test_each_refusal_reason_cli_agrees(store, capsys, case, number, edit, text):
     auto = _held(store)
     if edit is not None:
         store.update(edit)
     reason = auto.free_refusal(number)
     assert reason is not None and text in reason
-    before = store.snapshot()
-    auto.confirm_free_held(number)
-    assert store.snapshot() == before
     directory = store.directory
     store.close()
     capsys.readouterr()
@@ -92,3 +101,19 @@ def test_each_refusal_reason_blocks_confirm_and_cli_agrees(store, capsys, case, 
     assert f"refused: {reason}" in capsys.readouterr().err
     reopened = BatchStore.open(directory)
     reopened.close()
+
+
+@pytest.mark.parametrize(("case", "number", "edit", "text"), CASES, ids=[c[0] for c in CASES])
+def test_gui_confirm_surfaces_or_noops_as_on_main(store, case, number, edit, text):
+    auto = _held(store)
+    if edit is not None:
+        store.update(edit)
+    before = store.snapshot()
+    auto.confirm_free_held(number)
+    after = store.snapshot()
+    if case in SURFACED:
+        tray = after.trays[0]
+        assert not tray.raw_removed
+        assert (tray.auto, text_in(tray.auto_error)) == SURFACED[case]
+    else:
+        assert after == before

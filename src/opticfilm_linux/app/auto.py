@@ -465,9 +465,8 @@ class AutoPipeline:
             )
         )
 
-    def free_refusal(self, number: int) -> str | None:
-        """Why ``confirm_free_held`` would do nothing for this tray (read-only), else None."""
-        manifest = self.store.snapshot()
+    def _free_silent_refusal(self, manifest, number: int) -> str | None:
+        """Guards where ``confirm_free_held`` returns without touching the tray."""
         tray = next((t for t in manifest.trays if t.number == number), None)
         if tray is None:
             return f"tray {number} does not exist"
@@ -482,6 +481,15 @@ class AutoPipeline:
             return "keep_raw is set, so raw scans are never freed"
         if not manifest.defaults.auto_export:
             return "auto-export is off, so raw scans are never freed automatically"
+        return None
+
+    def free_refusal(self, number: int) -> str | None:
+        """Why freeing this tray would not proceed (read-only), else None."""
+        manifest = self.store.snapshot()
+        silent = self._free_silent_refusal(manifest, number)
+        if silent is not None:
+            return silent
+        tray = self._tray(number)
         waiting = self._awaiting_review(tray)
         if waiting:
             return f"slides {', '.join(map(str, waiting))} await your review"
@@ -495,7 +503,7 @@ class AutoPipeline:
         return None
 
     def confirm_free_held(self, number: int) -> None:
-        if self.free_refusal(number) is not None:
+        if self._free_silent_refusal(self.store.snapshot(), number) is not None:
             return
         tray = self._tray(number)
         before = None
