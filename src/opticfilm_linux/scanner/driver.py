@@ -1,8 +1,10 @@
 """The real scanner, through the community driver's command line (``python -m of135i``).
 
 The OpticFilm 135i scans a mounted-slide holder one opening at a time. ``scan --slides 1-4`` (in
-the patched driver; see its docs/slide-scanning.md) calibrates once, then writes one full-window
-frame per opening, with the slide's long side along the transport. This backend runs that command,
+the patched driver; see its docs/slide-scanning.md) prepares, calibrates, positions, scans and
+parks for EVERY opening (a dual-light scan never reuses a calibration: about 5 s per opening,
+measured on one unit), and writes one full-window frame per opening, with the slide's long side
+along the transport. This backend runs that command,
 turns each frame a quarter turn, and stacks the four into one sweep, so the splitting,
 enhancement and batch code work unchanged. It sends nothing to the scanner itself: every hardware
 command is the driver's.
