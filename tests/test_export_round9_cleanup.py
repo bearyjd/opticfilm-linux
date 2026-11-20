@@ -78,12 +78,12 @@ def test_release_evidence_digest_runs_outside_manifest_lock(delivery, monkeypatc
     digest = export._durable_digest
     checked = []
 
-    def unlocked_digest(path):
+    def unlocked_digest(path, root):
         acquired = store._lock.acquire(blocking=False)
         assert acquired, "JPEG hashing must not hold the manifest lock"
         store._lock.release()
         checked.append(True)
-        return digest(path)
+        return digest(path, root)
 
     monkeypatch.setattr(export, "_durable_digest", unlocked_digest)
     if cleanup:
