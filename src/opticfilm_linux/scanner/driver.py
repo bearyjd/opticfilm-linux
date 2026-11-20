@@ -339,7 +339,11 @@ def _prune_logs(directory: Path) -> None:
     if len(logs) <= KEEP_LOGS:
         return
     cutoff = logs[KEEP_LOGS - 1].stat().st_mtime - PROTECT_LOG_S
-    for sidecar in [*directory.glob("*.diag.json"), *directory.glob("*.cal.npz")]:
+    for sidecar in [
+        *directory.glob("*.diag.json"),
+        *directory.glob("*.cal.npz"),
+        *directory.glob("*.fail.json"),
+    ]:
         if sidecar.stat().st_mtime < cutoff:
             sidecar.unlink(missing_ok=True)
 
@@ -548,7 +552,7 @@ class DriverScanner:
         if directory is None:
             return
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        patterns = ["*.diag.json", "*.cal.npz"] if failed else ["*.diag.json"]
+        patterns = ["*.diag.json", "*.cal.npz", "*.fail.json"] if failed else ["*.diag.json"]
         try:
             directory.mkdir(parents=True, exist_ok=True)
             for pattern in patterns:
