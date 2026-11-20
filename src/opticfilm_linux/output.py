@@ -86,34 +86,66 @@ def _next_sequence(directory: int, prefix: str) -> int:
     return max(used, default=0) + 1
 
 
+def _is_under(directory: Path, root: Path) -> bool:
+    """Lexical containment on normalised absolute paths; the one boundary test for exports."""
+    return Path(os.path.abspath(directory)).is_relative_to(Path(os.path.abspath(root)))
+
+
+def _component_flags(walked: Path, trusted: Path | None, path_flags: int) -> int:
+    """Drop O_NOFOLLOW only for strict ancestors of the trusted export root."""
+    if trusted is not None and walked != trusted and _is_under(trusted, walked):
+        return path_flags & ~os.O_NOFOLLOW
+    return path_flags
+
+
+def _create_component(descriptor: int, component: str, read_flags: int, require_sync: bool) -> None:
+    try:
+        os.mkdir(component, dir_fd=descriptor)
+    except FileExistsError:
+        return
+    try:
+        sync_fd = os.open(".", read_flags, dir_fd=descriptor)
+    except PermissionError:
+        if require_sync:
+            raise
+        return
+    try:
+        _sync_directory(sync_fd, require_sync)
+    finally:
+        os.close(sync_fd)
+
+
 @contextmanager
-def _directory_fd(directory: Path, *, create: bool, require_sync: bool = True):
-    """Anchor each component without following symlinks or reading ancestors."""
+def _directory_fd(
+    directory: Path,
+    *,
+    create: bool,
+    require_sync: bool = True,
+    trusted_above: Path | None = None,
+):
+    """Anchor each component without following symlinks or reading ancestors.
+
+    Symlinks in strict ancestors of ``trusted_above`` (the export root) are the
+    user's own system layout, such as /home -> /var/home, and are followed. That
+    trust is by design: a root under a directory another user can write is the
+    user's own risk. The root itself and everything below it are never followed.
+    """
+    trusted = Path(os.path.abspath(trusted_above)) if trusted_above is not None else None
     path_flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
     read_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptor = os.open(os.path.sep, path_flags)
     try:
+        walked = Path(os.path.sep)
         for component in Path(os.path.abspath(directory)).parts[1:]:
+            walked = walked / component
+            flags = _component_flags(walked, trusted, path_flags)
             try:
-                child = os.open(component, path_flags, dir_fd=descriptor)
+                child = os.open(component, flags, dir_fd=descriptor)
             except FileNotFoundError:
                 if not create:
                     raise
-                try:
-                    os.mkdir(component, dir_fd=descriptor)
-                    try:
-                        sync_fd = os.open(".", read_flags, dir_fd=descriptor)
-                    except PermissionError:
-                        if require_sync:
-                            raise
-                    else:
-                        try:
-                            _sync_directory(sync_fd, require_sync)
-                        finally:
-                            os.close(sync_fd)
-                except FileExistsError:
-                    pass
-                child = os.open(component, path_flags, dir_fd=descriptor)
+                _create_component(descriptor, component, read_flags, require_sync)
+                child = os.open(component, flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
         readable = os.open(".", read_flags, dir_fd=descriptor)
@@ -125,8 +157,8 @@ def _directory_fd(directory: Path, *, create: bool, require_sync: bool = True):
         os.close(descriptor)
 
 
-def _check_directory_identity(directory: Path, descriptor: int) -> None:
-    with _directory_fd(directory, create=False) as current:
+def _check_directory_identity(directory: Path, descriptor: int, trusted_above: Path | None) -> None:
+    with _directory_fd(directory, create=False, trusted_above=trusted_above) as current:
         expected, actual = os.fstat(descriptor), os.fstat(current)
         if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
             raise ValueError("Export directory changed while writing; retry the export.")
@@ -217,19 +249,27 @@ def _sync_directory(descriptor: int, required: bool = True) -> None:
         raise
 
 
-def _sync_directories(directory: Path, root: Path | None = None, *, required: bool = True) -> None:
+def _sync_directories(
+    directory: Path,
+    root: Path | None = None,
+    *,
+    required: bool = True,
+    trusted_above: Path | None = None,
+) -> None:
     """Persist destination entries through the export root, including failed attempts."""
-    root = (root or directory).absolute()
-    parent = directory.absolute()
-    if not parent.is_relative_to(root):
+    root = Path(os.path.abspath(root or directory))
+    parent = Path(os.path.abspath(directory))
+    if not _is_under(parent, root):
         raise ValueError("Export directory must be inside the export root")
     while True:
-        with _directory_fd(parent, create=False) as descriptor:
+        with _directory_fd(parent, create=False, trusted_above=trusted_above) as descriptor:
             _sync_directory(descriptor, required)
         if parent == root:
             if root != root.parent:
                 try:
-                    with _directory_fd(root.parent, create=False) as descriptor:
+                    with _directory_fd(
+                        root.parent, create=False, trusted_above=trusted_above
+                    ) as descriptor:
                         _sync_directory(descriptor, required)
                 except PermissionError:
                     if required:
@@ -270,7 +310,7 @@ def _write_claimed_slide(
                 metadata=spec.metadata,
             )
             digest = _written_digest(handle) if on_written is not None else ""
-        _check_directory_identity(spec.directory, parent)
+        _check_directory_identity(spec.directory, parent, spec.export_root)
         if not _same_file(parent, path.name, opened):
             raise ValueError("Export file changed while writing; retry the export.")
         if on_written is not None:
@@ -280,8 +320,9 @@ def _write_claimed_slide(
                 if spec.require_directory_sync
                 else spec.export_root,
                 required=spec.require_directory_sync,
+                trusted_above=spec.export_root,
             )
-            _check_directory_identity(spec.directory, parent)
+            _check_directory_identity(spec.directory, parent, spec.export_root)
             if not _same_file(parent, path.name, opened):
                 raise ValueError("Export file changed while writing; retry the export.")
             on_written(path, digest)
@@ -305,7 +346,10 @@ def write_slide(
         jpeg_geometry(rgb.shape[1], rgb.shape[0], spec.scan_dpi, spec.jpeg_size)
     prefix = _prefix(spec) if spec.position is None else ""
     with _directory_fd(
-        spec.directory, create=True, require_sync=spec.require_directory_sync
+        spec.directory,
+        create=True,
+        require_sync=spec.require_directory_sync,
+        trusted_above=spec.export_root,
     ) as parent:
         sequence = _next_sequence(parent, prefix) if spec.position is None else spec.position
         while True:
