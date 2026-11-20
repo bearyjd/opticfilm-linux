@@ -4,7 +4,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from opticfilm_linux.batch.export import clear_exported, export_batch
+from opticfilm_linux.batch.export import (
+    _checked_export_parent,
+    _verify_export,
+    clear_exported,
+    export_batch,
+    verify_tray_export,
+)
 from opticfilm_linux.batch.manifest import from_json, to_json
 from opticfilm_linux.batch.model import (
     SlideRecord,
@@ -15,7 +21,7 @@ from opticfilm_linux.batch.model import (
 )
 from opticfilm_linux.batch.store import BatchError, BatchStore
 from opticfilm_linux.model import Slide
-from opticfilm_linux.output import OutputSpec, write_slide
+from opticfilm_linux.output import OutputSpec, _directory_fd, write_slide
 
 
 @pytest.fixture
@@ -155,7 +161,7 @@ def test_export_rejects_symlinked_root(store, tmp_path):
     real.mkdir()
     out = tmp_path / "out"
     out.symlink_to(real, target_is_directory=True)
-    with pytest.raises(BatchError, match="symlink"):
+    with pytest.raises(BatchError, match="is a symlink"):
         export_batch(store, out, "jpeg")
     assert list(real.iterdir()) == []
 
@@ -166,7 +172,7 @@ def test_export_rejects_symlinked_component_below_root(store, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (out / "family" / "box-1").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(BatchError, match="symlink"):
+    with pytest.raises(BatchError, match="is a symlink"):
         export_batch(store, out, "jpeg")
     assert list(outside.iterdir()) == []
 
@@ -176,3 +182,104 @@ def test_export_plain_path_still_works(store, tmp_path):
     result = export_batch(store, out, "jpeg")
     assert result.written
     assert all(p.is_file() for p in result.written)
+
+
+def _symlinked_home(tmp_path):
+    real = tmp_path / "real_home"
+    real.mkdir()
+    (tmp_path / "home").symlink_to(real, target_is_directory=True)
+    return tmp_path / "home" / "user" / "out"
+
+
+def test_verification_passes_under_symlinked_ancestor(store, tmp_path):
+    export_batch(store, _symlinked_home(tmp_path), "jpeg")
+    for tray in store.snapshot().trays:
+        verify_tray_export(store, tray.number)
+        _verify_export(tray, jpeg_only=False)
+
+
+def _slide_spec(directory, root, **kwargs):
+    return OutputSpec(directory=directory, fmt="png8", export_root=root, **kwargs)
+
+
+_PIXELS = np.zeros((9, 11, 3), np.uint16)
+
+
+def test_write_slide_refuses_symlink_at_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OSError):
+        write_slide(_PIXELS, _slide_spec(root / "a", root))
+    assert list(outside.iterdir()) == []
+
+
+def test_write_slide_refuses_symlink_below_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.mkdir()
+    (root / "sub").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OSError):
+        write_slide(_PIXELS, _slide_spec(root / "sub" / "a", root))
+    assert list(outside.iterdir()) == []
+
+
+def test_directory_fd_refuses_symlink_at_and_below_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "out"
+    root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OSError), _directory_fd(root, create=False, trusted_above=root):
+        pass
+    root.unlink()
+    root.mkdir()
+    (root / "sub").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OSError), _directory_fd(root / "sub", create=False, trusted_above=root):
+        pass
+
+
+@pytest.mark.parametrize("sync", [False, True])
+def test_write_slide_follows_symlinked_ancestor_only_with_export_root(tmp_path, sync):
+    root = _symlinked_home(tmp_path)
+    spec = _slide_spec(root / "a", root, require_directory_sync=sync)
+    path = write_slide(_PIXELS, spec, on_written=lambda *_: None)
+    assert path.is_file()
+    strict = OutputSpec(directory=root / "b", fmt="png8")
+    with pytest.raises(OSError):
+        write_slide(_PIXELS, strict)
+
+
+def test_write_slide_symlinked_parent_of_root_syncs(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    root = link / "out"
+    path = write_slide(
+        _PIXELS, _slide_spec(root, root, require_directory_sync=False), on_written=lambda *_: None
+    )
+    assert path.is_file() and (real / "out" / path.name).is_file()
+
+
+def test_checked_parent_rejects_dotdot_directory(store, tmp_path):
+    root = tmp_path / "out"
+    with pytest.raises(BatchError, match="'..'"):
+        _checked_export_parent(root / "a" / ".." / "b", root, store)
+
+
+def test_checked_parent_rejects_directory_outside_root(store, tmp_path):
+    with pytest.raises(BatchError, match="inside the export folder"):
+        _checked_export_parent(tmp_path / "elsewhere", tmp_path / "out", store)
+
+
+def test_export_root_dotdot_through_symlink_is_normalised(store, tmp_path):
+    real = tmp_path / "real"
+    (real / "deep").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real / "deep", target_is_directory=True)
+    result = export_batch(store, link / ".." / "out", "jpeg")
+    assert result.written
+    assert all(p.is_relative_to(tmp_path / "out") for p in result.written)
+    assert list(real.rglob("*.jpg")) == []

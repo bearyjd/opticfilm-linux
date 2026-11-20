@@ -86,6 +86,35 @@ def _next_sequence(directory: int, prefix: str) -> int:
     return max(used, default=0) + 1
 
 
+def _is_under(directory: Path, root: Path) -> bool:
+    """Lexical containment on normalised absolute paths; the one boundary test for exports."""
+    return Path(os.path.abspath(directory)).is_relative_to(Path(os.path.abspath(root)))
+
+
+def _component_flags(walked: Path, trusted: Path | None, path_flags: int) -> int:
+    """Drop O_NOFOLLOW only for strict ancestors of the trusted export root."""
+    if trusted is not None and walked != trusted and _is_under(trusted, walked):
+        return path_flags & ~os.O_NOFOLLOW
+    return path_flags
+
+
+def _create_component(descriptor: int, component: str, read_flags: int, require_sync: bool) -> None:
+    try:
+        os.mkdir(component, dir_fd=descriptor)
+    except FileExistsError:
+        return
+    try:
+        sync_fd = os.open(".", read_flags, dir_fd=descriptor)
+    except PermissionError:
+        if require_sync:
+            raise
+        return
+    try:
+        _sync_directory(sync_fd, require_sync)
+    finally:
+        os.close(sync_fd)
+
+
 @contextmanager
 def _directory_fd(
     directory: Path,
@@ -97,9 +126,11 @@ def _directory_fd(
     """Anchor each component without following symlinks or reading ancestors.
 
     Symlinks in strict ancestors of ``trusted_above`` (the export root) are the
-    user's own system layout, such as /home -> /var/home, and are followed.
+    user's own system layout, such as /home -> /var/home, and are followed. That
+    trust is by design: a root under a directory another user can write is the
+    user's own risk. The root itself and everything below it are never followed.
     """
-    trusted = trusted_above.absolute() if trusted_above is not None else None
+    trusted = Path(os.path.abspath(trusted_above)) if trusted_above is not None else None
     path_flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
     read_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptor = os.open(os.path.sep, path_flags)
@@ -107,31 +138,14 @@ def _directory_fd(
         walked = Path(os.path.sep)
         for component in Path(os.path.abspath(directory)).parts[1:]:
             walked = walked / component
-            open_flags = (
-                path_flags & ~os.O_NOFOLLOW
-                if trusted is not None and walked != trusted and trusted.is_relative_to(walked)
-                else path_flags
-            )
+            flags = _component_flags(walked, trusted, path_flags)
             try:
-                child = os.open(component, open_flags, dir_fd=descriptor)
+                child = os.open(component, flags, dir_fd=descriptor)
             except FileNotFoundError:
                 if not create:
                     raise
-                try:
-                    os.mkdir(component, dir_fd=descriptor)
-                    try:
-                        sync_fd = os.open(".", read_flags, dir_fd=descriptor)
-                    except PermissionError:
-                        if require_sync:
-                            raise
-                    else:
-                        try:
-                            _sync_directory(sync_fd, require_sync)
-                        finally:
-                            os.close(sync_fd)
-                except FileExistsError:
-                    pass
-                child = os.open(component, open_flags, dir_fd=descriptor)
+                _create_component(descriptor, component, read_flags, require_sync)
+                child = os.open(component, flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
         readable = os.open(".", read_flags, dir_fd=descriptor)
@@ -143,9 +157,7 @@ def _directory_fd(
         os.close(descriptor)
 
 
-def _check_directory_identity(
-    directory: Path, descriptor: int, trusted_above: Path | None = None
-) -> None:
+def _check_directory_identity(directory: Path, descriptor: int, trusted_above: Path | None) -> None:
     with _directory_fd(directory, create=False, trusted_above=trusted_above) as current:
         expected, actual = os.fstat(descriptor), os.fstat(current)
         if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
@@ -245,9 +257,9 @@ def _sync_directories(
     trusted_above: Path | None = None,
 ) -> None:
     """Persist destination entries through the export root, including failed attempts."""
-    root = (root or directory).absolute()
-    parent = directory.absolute()
-    if not parent.is_relative_to(root):
+    root = Path(os.path.abspath(root or directory))
+    parent = Path(os.path.abspath(directory))
+    if not _is_under(parent, root):
         raise ValueError("Export directory must be inside the export root")
     while True:
         with _directory_fd(parent, create=False, trusted_above=trusted_above) as descriptor:

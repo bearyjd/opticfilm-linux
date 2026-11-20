@@ -88,6 +88,7 @@ from opticfilm_linux.output import (
     Format,
     JpegSize,
     OutputSpec,
+    _is_under,
     _sync_directories,
     jpeg_geometry,
     write_slide,
@@ -222,14 +223,20 @@ def _checked_export_parent(directory: Path, root: Path, store: BatchStore) -> No
     """Reject symlinks at or below the export root before creating or writing.
 
     Ancestors above the root are the user's own system layout (for example
-    /home -> /var/home on immutable hosts) and are not checked.
+    /home -> /var/home on immutable hosts) and are trusted; a root under a
+    directory another user can write is the user's own risk.
     """
-    root_abs = root.absolute()
-    for component in (directory.absolute(), *directory.absolute().parents):
-        if not component.is_relative_to(root_abs):
-            break
+    if ".." in directory.parts:
+        raise BatchError(f"export folder {directory} must not contain '..'")
+    root = Path(os.path.abspath(root))
+    directory = Path(os.path.abspath(directory))
+    if not _is_under(directory, root):
+        raise BatchError("export section must remain inside the export folder")
+    for component in (directory, *directory.parents):
         if component.is_symlink():
             raise BatchError(f"export folder {component} is a symlink; choose a regular folder")
+        if component == root:
+            break
     resolved = directory.resolve()
     if not resolved.is_relative_to(root.resolve()):
         raise BatchError("export section must remain inside the export folder")
@@ -346,6 +353,7 @@ def export_batch(
     *,
     jpeg_size: JpegSize = "full",
 ) -> ExportResult:
+    directory = Path(os.path.abspath(directory))
     if directory.resolve().is_relative_to(store.directory.resolve()):
         raise BatchError(f"export to a folder outside the batch folder, not {directory}")
     manifest = store.snapshot()
@@ -376,14 +384,24 @@ def export_batch(
 MIN_JPEG_BYTES = 512
 
 
-def _durable_digest(path: Path) -> str:
+def _receipt_root(slide: SlideRecord) -> Path:
+    """The export root a delivery was written under, from its absolute and relative paths."""
+    record = slide.exports[-1]
+    depth = len(Path(record.path).parts)
+    parents = Path(record.export_path).parents
+    if depth < 1 or depth > len(parents):
+        raise ValueError("invalid delivery path; re-export before verifying")
+    return parents[depth - 1]
+
+
+def _durable_digest(path: Path, root: Path) -> str:
     """Read in bounded chunks and persist both the artifact and its directory entry."""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
         os.fsync(handle.fileno())
-    _sync_directories(path.parent, Path(path.absolute().anchor))
+    _sync_directories(path.parent, Path(path.absolute().anchor), trusted_above=root)
     return digest.hexdigest()
 
 
@@ -404,7 +422,7 @@ def _verify_export(tray: TrayRecord, *, jpeg_only: bool) -> None:
             actual_length = path.stat().st_size
             if jpeg_only and actual_length <= MIN_JPEG_BYTES:
                 raise ValueError("JPEG is too short")
-            if _durable_digest(path) != digest:
+            if _durable_digest(path, _receipt_root(slide)) != digest:
                 raise ValueError("export digest differs from written artifact")
             if byte_length is not None and actual_length != byte_length:
                 raise ValueError("export byte length differs from written artifact")
