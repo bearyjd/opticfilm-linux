@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from opticfilm_linux.app.auto import MISSING_DESTINATION
-from opticfilm_linux.app.batch_rules import check_export_directory as _check_export_directory
+from opticfilm_linux.app.batch_rules import check_export_directory
 from opticfilm_linux.app.selection import Selection
 from opticfilm_linux.app.state import EMPTY_STATE, Banner
 from opticfilm_linux.batch.metadata import checked_meta
@@ -52,7 +52,7 @@ class LifecycleCommands:
             if auto_export and not export_dir.strip():
                 raise BatchError(MISSING_DESTINATION)
             if export_dir:
-                _check_export_directory(directory, Path(export_dir))
+                check_export_directory(directory, Path(export_dir))
             defaults = BatchDefaults(
                 dpi=dpi,
                 rotation=rotation,

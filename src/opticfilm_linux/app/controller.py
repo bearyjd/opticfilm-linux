@@ -15,6 +15,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path as Path
 from typing import Literal
 
+# run_export, AutoPipeline and run_free_space are re-exported here on purpose: the mixins call
+# them as ``controller.<name>`` and tests patch them on this module.
 from opticfilm_linux.app.auto import AutoPipeline as AutoPipeline
 from opticfilm_linux.app.commands import ReviewCommands
 from opticfilm_linux.app.eject_watch import UNIT, EjectWatch
@@ -30,9 +32,6 @@ from opticfilm_linux.app.jobs import (
     run_free_space as run_free_space,
 )
 from opticfilm_linux.app.lifecycle_commands import LifecycleCommands
-from opticfilm_linux.app.lifecycle_commands import (
-    _check_export_directory as _check_export_directory,
-)
 from opticfilm_linux.app.load_and_scan import LOAD_READY_TIMEOUT_S, LoadAndScanCommands
 from opticfilm_linux.app.messages import failure_text, scanner_problem_text
 from opticfilm_linux.app.preview_tokens import PreviewTokens

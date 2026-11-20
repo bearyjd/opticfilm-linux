@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from opticfilm_linux.app.batch_rules import check_export_directory
 from opticfilm_linux.app.holder import WAIT_BATCH
 from opticfilm_linux.app.messages import meta_update_text
 from opticfilm_linux.app.raw import cleanup_pending
@@ -279,10 +280,8 @@ class ReviewCommands:
         )
 
     def _save_export_settings(self, directory: Path, fmt: Format, jpeg_size: JpegSize) -> None:
-        from opticfilm_linux.app import controller
-
         store = self._open_store()
-        controller._check_export_directory(store.directory, directory)
+        check_export_directory(store.directory, directory)
 
         def change(manifest):
             defaults = dataclasses.replace(

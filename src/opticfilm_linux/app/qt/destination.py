@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
-from opticfilm_linux.app.controller import _check_export_directory
+from opticfilm_linux.app.batch_rules import check_export_directory
 from opticfilm_linux.app.prefs import batch_subfolder
 from opticfilm_linux.batch.store import BatchError
 
@@ -13,7 +13,7 @@ from opticfilm_linux.batch.store import BatchError
 def _problem(parent: str, name: str, destination: str) -> str:
     try:
         folder = batch_subfolder(Path(parent), name)
-        _check_export_directory(folder, Path(destination))
+        check_export_directory(folder, Path(destination))
     except (BatchError, OSError, ValueError) as exc:
         return str(exc)
     return ""
